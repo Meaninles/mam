@@ -1,0 +1,39 @@
+# Temporary work
+.tmp/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Node / frontend
+node_modules/
+dist/
+dist-ssr/
+coverage/
+*.local
+
+# Tauri / Rust
+target/
+gen/schemas/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Editor / OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

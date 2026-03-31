@@ -1,0 +1,7 @@
+interface:
+  display_name: "UI UX Pro Max"
+  short_description: "Professional UI/UX design intelligence and searchable design guidance"
+  brand_color: "#F97316"
+  default_prompt: "Apply UI UX Pro Max design reasoning and implementation guidance"
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,39 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "\u7edf\u4e00\u6587\u4ef6\u7ba1\u7406\u7cfb\u7edf",
+  "version": "0.1.0",
+  "identifier": "com.mare.client",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "cnpm run dev",
+    "beforeBuildCommand": "cnpm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "\u7edf\u4e00\u6587\u4ef6\u7ba1\u7406\u7cfb\u7edf",
+        "width": 1480,
+        "height": 940,
+        "minWidth": 1280,
+        "minHeight": 820,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

@@ -1,0 +1,25 @@
+[package]
+name = "mare_client"
+version = "0.1.0"
+description = "统一文件管理系统 Tauri 客户端"
+authors = ["Mare"]
+license = ""
+repository = ""
+edition = "2021"
+rust-version = "1.77.2"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "mare_client_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.6", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.10.3", features = [] }
+tauri-plugin-log = "2"
