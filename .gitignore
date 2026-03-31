@@ -1,5 +1,7 @@
 # Temporary work
 .tmp/
+__pycache__/
+*.py[cod]
 
 # Logs
 logs/
