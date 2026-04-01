@@ -103,6 +103,7 @@ describe('MARE 客户端', () => {
 
     await user.click(screen.getByRole('button', { name: '存储节点' }));
 
+<<<<<<< ours
     expect(await screen.findByLabelText('按类型筛选')).toBeInTheDocument();
 
     const row = await screen.findByRole('row', { name: /115 云归档/ });
@@ -110,6 +111,15 @@ describe('MARE 客户端', () => {
 
     expect(await screen.findByRole('dialog', { name: '连接测试结果' })).toBeInTheDocument();
     expect(screen.getByText('当前连接可达，但仍建议先处理风险提示。')).toBeInTheDocument();
+=======
+    expect(await screen.findByRole('button', { name: '挂载文件夹管理' })).toBeInTheDocument();
+
+    const row = await screen.findByRole('row', { name: /视频工作流 NAS 挂载/ });
+    await user.click(within(row).getByRole('button', { name: '连接测试 视频工作流 NAS 挂载' }));
+
+    expect(await screen.findByRole('dialog', { name: '连接测试结果' })).toBeInTheDocument();
+    expect(screen.getByText('挂载目录可达且当前配置可继续使用。')).toBeInTheDocument();
+>>>>>>> theirs
   });
 
   it('支持通知标记已读并清除红点', async () => {

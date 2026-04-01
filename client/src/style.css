@@ -347,7 +347,7 @@ button {
 .page-header {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   gap: 16px;
 }
 
@@ -357,6 +357,34 @@ button {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.page-header-feedback {
+  min-height: 22px;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.page-header-feedback.success {
+  color: var(--success);
+}
+
+.page-header-feedback.warning {
+  color: var(--warning);
+}
+
+.page-header-feedback.critical {
+  color: var(--critical);
+}
+
+.page-header-feedback.info {
+  color: var(--info);
 }
 
 .notification-trigger {
@@ -467,6 +495,7 @@ button {
 }
 
 .icon-button {
+  position: relative;
   width: 38px;
   height: 38px;
   display: inline-grid;
@@ -481,6 +510,65 @@ button {
 .icon-button.active {
   color: var(--text-main);
   background: var(--accent-soft);
+}
+
+.icon-button.has-tooltip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%) translateY(4px);
+  opacity: 0;
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 30;
+  padding: 0.38rem 0.6rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-main);
+  box-shadow: var(--shadow-soft);
+  font-size: 0.78rem;
+  line-height: 1.1;
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.icon-button.has-tooltip::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 2px);
+  width: 8px;
+  height: 8px;
+  transform: translateX(-50%) rotate(45deg) translateY(4px);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 29;
+  background: var(--bg-elevated);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.icon-button.has-tooltip:hover::after,
+.icon-button.has-tooltip:hover::before,
+.icon-button.has-tooltip:focus-visible::after,
+.icon-button.has-tooltip:focus-visible::before {
+  opacity: 1;
+}
+
+.icon-button.has-tooltip:hover::after,
+.icon-button.has-tooltip:focus-visible::after {
+  transform: translateX(-50%) translateY(0);
+}
+
+.icon-button.has-tooltip:hover::before,
+.icon-button.has-tooltip:focus-visible::before {
+  transform: translateX(-50%) rotate(45deg) translateY(0);
 }
 
 .tab-switch {
@@ -1081,6 +1169,23 @@ button {
   min-width: 1160px;
 }
 
+.storage-simple-table {
+  min-width: 900px;
+}
+
+.storage-table th,
+.storage-table td {
+  padding: 10px 12px;
+}
+
+.storage-table th {
+  font-size: 0.8rem;
+}
+
+.storage-table td {
+  font-size: 0.94rem;
+}
+
 .storage-table tbody tr[aria-selected='true'] {
   background: var(--accent-soft);
 }
@@ -1098,14 +1203,20 @@ button {
 .storage-capacity-cell {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
+}
+
+.inline-action-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
 }
 
 .storage-node-title {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
 }
 
 .storage-capacity-cell .progress {
@@ -1115,6 +1226,34 @@ button {
 .storage-row-actions {
   flex-wrap: nowrap;
   align-items: flex-start;
+}
+
+.storage-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 12px;
+}
+
+.storage-pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.storage-page-chip {
+  min-width: 38px;
+  height: 38px;
+  padding: 0 10px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--accent);
+  color: #fff;
+}
+
+.storage-page-size {
+  min-width: 88px;
 }
 
 .storage-menu-anchor {

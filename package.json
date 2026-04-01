@@ -1,0 +1,11 @@
+{
+  "name": "mare",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix client run dev",
+    "build": "npm --prefix client run build",
+    "test": "npm --prefix client run test",
+    "tauri:dev": "npm --prefix client run tauri:dev",
+    "tauri:build": "npm --prefix client run tauri:build"
+  }
+}

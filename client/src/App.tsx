@@ -6,9 +6,7 @@ import {
   FolderInput,
   FolderOpen,
   HardDrive,
-  Moon,
   Settings2,
-  SunMedium,
 } from 'lucide-react';
 import type {
   FileNode,
@@ -35,7 +33,7 @@ import {
   type NotificationItem,
   type PersistedState,
 } from './lib/clientState';
-import { ActionButton, FeedbackBanner, IconButton, LibraryManagerSheet, Sheet } from './components/Shared';
+import { ActionButton, IconButton, LibraryManagerSheet, Sheet } from './components/Shared';
 import { FileCenterPage } from './pages/FileCenterPage';
 import { FileDetailSheet } from './pages/FileDetailSheet';
 import { ImportCenterPage } from './pages/ImportCenterPage';
@@ -394,6 +392,9 @@ export default function App() {
 
       <main className="content-shell">
         <header className="page-header">
+          <div className={`page-header-feedback${feedback ? ` ${feedback.tone}` : ''}`}>
+            {feedback ? feedback.message : null}
+          </div>
           <div className="page-header-actions">
             <IconButton ariaLabel="导入中心" onClick={() => setActiveView('import-center')}>
               <FolderInput size={16} />
@@ -404,35 +405,8 @@ export default function App() {
               </IconButton>
               {unreadNotificationCount > 0 ? <span className="notification-dot" aria-hidden="true" /> : null}
             </div>
-            <IconButton
-              ariaLabel={theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'}
-              onClick={() =>
-                commitState((current) => ({
-                  ...current,
-                  settings: {
-                    ...current.settings,
-                    appearance: current.settings.appearance.map((section) =>
-                      section.id === 'appearance'
-                        ? {
-                            ...section,
-                            rows: section.rows.map((row) =>
-                              row.id === 'theme'
-                                ? { ...row, value: theme === 'dark' ? '浅色主题' : '深色主题' }
-                                : row,
-                            ),
-                          }
-                        : section,
-                    ),
-                  },
-                }))
-              }
-            >
-              {theme === 'dark' ? <SunMedium size={16} /> : <Moon size={16} />}
-            </IconButton>
           </div>
         </header>
-
-        {feedback ? <FeedbackBanner message={feedback.message} tone={feedback.tone} /> : null}
 
         {activeView === 'file-center' ? (
           <FileCenterPage
@@ -648,6 +622,8 @@ export default function App() {
 
         {activeView === 'storage-nodes' ? (
           <StorageNodesPage
+            libraries={persisted.libraries}
+            onFeedback={setFeedback}
             onOpenIssueCenter={() => setActiveView('issues')}
             onOpenTaskCenter={() => setActiveView('task-center')}
           />

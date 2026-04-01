@@ -1,558 +1,526 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  CircleAlert,
-  CircleCheckBig,
+  ChevronLeft,
+  ChevronRight,
   CircleDashed,
   CircleEllipsis,
-  HardDrive,
   LoaderCircle,
   Pencil,
   Plus,
   Radar,
   RefreshCw,
-  ShieldCheck,
 } from 'lucide-react';
+import type { Library } from '../data';
 import {
   ActionButton,
   EmptyState,
-  FeedbackBanner,
   IconButton,
   ProgressBar,
   SelectPill,
   Sheet,
+  TabSwitch,
   TonePill,
 } from '../components/Shared';
 import type {
+  CloudDraft,
+  CloudRecord,
+  MountFolderDraft,
+  MountFolderRecord,
+  MountFolderType,
+  NasDraft,
+  NasRecord,
   StorageCloudAccessMethod,
   StorageCloudQrChannel,
   StorageConnectionTestResult,
-  StorageCredentialDraft,
   StorageHeartbeatPolicy,
-  StorageNodeDraft,
-  StorageNodeRecord,
-  StorageNodeType,
+  StorageMountMode,
+  StorageNodesDashboard,
   StorageScanHistoryItem,
 } from '../lib/storageNodesApi';
 import { storageNodesApi } from '../lib/storageNodesApi';
 
-type FeedbackState = {
-  message: string;
-  tone: 'success' | 'warning' | 'critical' | 'info';
-};
-
+type StorageSubPage = 'mounts' | 'nas' | 'cloud';
+type StoragePageSize = 10 | 20 | 50 | 100;
+type FeedbackTone = 'success' | 'warning' | 'critical' | 'info';
+type FeedbackState = { message: string; tone: FeedbackTone } | null;
 type StatusFilter = '全部' | '可用' | '异常' | '已停用' | '扫描中';
 
-type FormState = {
-  mode: 'create' | 'edit';
-  draft: StorageNodeDraft;
+type MountFormState = {
+  draft: MountFolderDraft;
   errors: Partial<Record<string, string>>;
-  formConnectionResult: StorageConnectionTestResult | null;
-  testing: boolean;
   saving: boolean;
 };
 
-type HeartbeatState = {
-  ids: string[];
-  title: string;
+type NasFormState = {
+  draft: NasDraft;
+  errors: Partial<Record<string, string>>;
   saving: boolean;
-  value: StorageHeartbeatPolicy;
+};
+
+type CloudFormState = {
+  draft: CloudDraft;
+  errors: Partial<Record<string, string>>;
+  saving: boolean;
 };
 
 type HistoryState = {
+  mountName: string;
   loading: boolean;
-  nodeName: string;
   items: StorageScanHistoryItem[];
 };
 
-type MenuState = {
-  nodeId: string;
-};
+const SUB_PAGES: Array<{ id: StorageSubPage; label: string }> = [
+  { id: 'mounts', label: '挂载文件夹管理' },
+  { id: 'nas', label: 'NAS 管理' },
+  { id: 'cloud', label: '网盘管理' },
+];
 
-const TYPE_OPTIONS: Array<'全部' | StorageNodeType> = ['全部', '本机磁盘', 'NAS/SMB', '网盘'];
+const MOUNT_TYPE_OPTIONS: Array<'全部' | MountFolderType> = ['全部', '本地', 'NAS', '网盘'];
 const STATUS_OPTIONS: StatusFilter[] = ['全部', '可用', '异常', '已停用', '扫描中'];
 const HEARTBEAT_OPTIONS: StorageHeartbeatPolicy[] = ['从不', '每周（深夜）', '每日（深夜）', '每小时'];
 const CLOUD_ACCESS_OPTIONS: StorageCloudAccessMethod[] = ['填入 Token', '扫码登录获取 Token'];
-const CLOUD_QR_CHANNEL_OPTIONS: StorageCloudQrChannel[] = ['微信小程序', '支付宝小程序', '电视端'];
+const CLOUD_QR_OPTIONS: StorageCloudQrChannel[] = ['微信小程序', '支付宝小程序', '电视端'];
+const PAGE_SIZE_OPTIONS: StoragePageSize[] = [10, 20, 50, 100];
 
-const EMPTY_LOCAL_DRAFT: StorageNodeDraft = {
+const EMPTY_MOUNT_DRAFT: MountFolderDraft = {
   name: '',
-  nodeType: '本机磁盘',
-  notes: '',
+  libraryId: '',
+  folderType: '本地',
   mountMode: '可写',
   heartbeatPolicy: '从不',
-  detail: {
-    kind: 'local',
-    rootPath: '',
-  },
+  localPath: '',
+  nasId: '',
+  cloudId: '',
+  targetFolder: '',
+  notes: '',
+};
+
+const EMPTY_NAS_DRAFT: NasDraft = {
+  name: '',
+  address: '',
+  username: '',
+  password: '',
+  notes: '',
+};
+
+const EMPTY_CLOUD_DRAFT: CloudDraft = {
+  name: '',
+  vendor: '115',
+  accessMethod: '填入 Token',
+  qrChannel: '微信小程序',
+  accountAlias: '',
+  mountDirectory: '',
+  token: '',
+  notes: '',
 };
 
 export function StorageNodesPage({
+  libraries,
+  onFeedback,
   onOpenIssueCenter,
   onOpenTaskCenter,
 }: {
-  onOpenIssueCenter?: (nodeId: string) => void;
-  onOpenTaskCenter?: (nodeId: string) => void;
+  libraries: Library[];
+  onFeedback?: (value: FeedbackState) => void;
+  onOpenIssueCenter?: (id: string) => void;
+  onOpenTaskCenter?: (id: string) => void;
 }) {
   const [loading, setLoading] = useState(true);
-  const [nodes, setNodes] = useState<StorageNodeRecord[]>([]);
-  const [feedback, setFeedback] = useState<FeedbackState | null>(null);
-  const [typeFilter, setTypeFilter] = useState<'全部' | StorageNodeType>('全部');
+  const [dashboard, setDashboard] = useState<StorageNodesDashboard>({ mountFolders: [], nasNodes: [], cloudNodes: [] });
+  const [feedback, setFeedback] = useState<FeedbackState>(null);
+  const [subPage, setSubPage] = useState<StorageSubPage>('mounts');
+  const [mountTypeFilter, setMountTypeFilter] = useState<'全部' | MountFolderType>('全部');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('全部');
   const [searchText, setSearchText] = useState('');
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [formState, setFormState] = useState<FormState | null>(null);
-  const [credentialState, setCredentialState] = useState<StorageCredentialDraft | null>(null);
-  const [heartbeatState, setHeartbeatState] = useState<HeartbeatState | null>(null);
-  const [connectionResults, setConnectionResults] = useState<StorageConnectionTestResult[] | null>(null);
+  const [selectedMountIds, setSelectedMountIds] = useState<string[]>([]);
+  const [mountForm, setMountForm] = useState<MountFormState | null>(null);
+  const [nasForm, setNasForm] = useState<NasFormState | null>(null);
+  const [cloudForm, setCloudForm] = useState<CloudFormState | null>(null);
   const [historyState, setHistoryState] = useState<HistoryState | null>(null);
-  const [placeholderMessage, setPlaceholderMessage] = useState<string | null>(null);
-  const [menuState, setMenuState] = useState<MenuState | null>(null);
-  const [testingIds, setTestingIds] = useState<string[]>([]);
+  const [connectionResults, setConnectionResults] = useState<StorageConnectionTestResult[] | null>(null);
+  const [heartbeatEditor, setHeartbeatEditor] = useState<{ ids: string[]; value: StorageHeartbeatPolicy; saving: boolean } | null>(null);
+  const [menuState, setMenuState] = useState<{ type: 'mount' | 'nas' | 'cloud'; id: string } | null>(null);
   const [scanningIds, setScanningIds] = useState<string[]>([]);
-  const [bulkLoading, setBulkLoading] = useState<null | 'scan' | 'test' | 'enable' | 'disable'>(null);
+  const [testingIds, setTestingIds] = useState<string[]>([]);
+  const [testingNasIds, setTestingNasIds] = useState<string[]>([]);
+  const [testingCloudIds, setTestingCloudIds] = useState<string[]>([]);
+  const [pageBySubPage, setPageBySubPage] = useState<Record<StorageSubPage, number>>({
+    mounts: 1,
+    nas: 1,
+    cloud: 1,
+  });
+  const [pageSizeBySubPage, setPageSizeBySubPage] = useState<Record<StorageSubPage, StoragePageSize>>({
+    mounts: 20,
+    nas: 20,
+    cloud: 20,
+  });
 
   useEffect(() => {
     void refreshDashboard();
   }, []);
 
   useEffect(() => {
-    if (!feedback) {
+    onFeedback?.(feedback);
+  }, [feedback, onFeedback]);
+
+  useEffect(() => {
+    setPageBySubPage((current) => ({ ...current, mounts: 1 }));
+  }, [mountTypeFilter, searchText, statusFilter]);
+
+  useEffect(() => {
+    setPageBySubPage((current) => ({ ...current, nas: 1 }));
+  }, [searchText, statusFilter, subPage]);
+
+  useEffect(() => {
+    setPageBySubPage((current) => ({ ...current, cloud: 1 }));
+  }, [searchText, statusFilter, subPage]);
+
+  useEffect(() => {
+    if (!menuState) {
       return;
     }
 
-    const timer = window.setTimeout(() => setFeedback(null), 3200);
-    return () => window.clearTimeout(timer);
-  }, [feedback]);
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target) return;
+      if (target.closest('.storage-menu-anchor')) return;
+      if (target.closest('.context-menu')) return;
+      setMenuState(null);
+    };
 
-  const visibleNodes = useMemo(() => {
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [menuState]);
+
+  const visibleMounts = useMemo(() => {
     const keyword = searchText.trim().toLowerCase();
-
-    return nodes.filter((node) => {
-      const matchesType = typeFilter === '全部' ? true : node.nodeType === typeFilter;
-      const matchesStatus = statusFilter === '全部' ? true : resolveStatusFilter(node) === statusFilter;
-      const matchesSearch = keyword
-        ? [
-            node.name,
-            node.address,
-            node.notes,
-            node.nodeType,
-            node.libraryBindings.join(' '),
-            node.riskTags.join(' '),
-            node.authStatus,
-          ]
-            .join(' ')
-            .toLowerCase()
-            .includes(keyword)
-        : true;
-
-      return matchesType && matchesStatus && matchesSearch;
+    return dashboard.mountFolders.filter((item) => {
+      const matchesType = mountTypeFilter === '全部' ? true : item.folderType === mountTypeFilter;
+      const matchesStatus = statusFilter === '全部' ? true : resolveMountStatus(item) === statusFilter;
+      const haystack = `${item.name} ${item.address} ${item.libraryName} ${item.sourceName ?? ''} ${item.folderType}`.toLowerCase();
+      return matchesType && matchesStatus && (keyword ? haystack.includes(keyword) : true);
     });
-  }, [nodes, searchText, statusFilter, typeFilter]);
+  }, [dashboard.mountFolders, mountTypeFilter, searchText, statusFilter]);
 
-  const selectedVisibleIds = visibleNodes.filter((node) => selectedIds.includes(node.id)).map((node) => node.id);
-  const allVisibleSelected = visibleNodes.length > 0 && selectedVisibleIds.length === visibleNodes.length;
+  const visibleNas = useMemo(() => {
+    const keyword = searchText.trim().toLowerCase();
+    return dashboard.nasNodes.filter((item) =>
+      keyword ? `${item.name} ${item.address} ${item.username}`.toLowerCase().includes(keyword) : true,
+    );
+  }, [dashboard.nasNodes, searchText]);
+
+  const visibleCloud = useMemo(() => {
+    const keyword = searchText.trim().toLowerCase();
+    return dashboard.cloudNodes.filter((item) =>
+      keyword ? `${item.name} ${item.accountAlias} ${item.mountDirectory} ${item.vendor}`.toLowerCase().includes(keyword) : true,
+    );
+  }, [dashboard.cloudNodes, searchText]);
+
+  const mountPageCount = Math.max(1, Math.ceil(visibleMounts.length / pageSizeBySubPage.mounts));
+  const nasPageCount = Math.max(1, Math.ceil(visibleNas.length / pageSizeBySubPage.nas));
+  const cloudPageCount = Math.max(1, Math.ceil(visibleCloud.length / pageSizeBySubPage.cloud));
+
+  const pagedMounts = useMemo(() => {
+    const start = (pageBySubPage.mounts - 1) * pageSizeBySubPage.mounts;
+    return visibleMounts.slice(start, start + pageSizeBySubPage.mounts);
+  }, [pageBySubPage.mounts, pageSizeBySubPage.mounts, visibleMounts]);
+
+  const pagedNas = useMemo(() => {
+    const start = (pageBySubPage.nas - 1) * pageSizeBySubPage.nas;
+    return visibleNas.slice(start, start + pageSizeBySubPage.nas);
+  }, [pageBySubPage.nas, pageSizeBySubPage.nas, visibleNas]);
+
+  const pagedCloud = useMemo(() => {
+    const start = (pageBySubPage.cloud - 1) * pageSizeBySubPage.cloud;
+    return visibleCloud.slice(start, start + pageSizeBySubPage.cloud);
+  }, [pageBySubPage.cloud, pageSizeBySubPage.cloud, visibleCloud]);
+
+  const allVisibleMountsSelected =
+    pagedMounts.length > 0 && pagedMounts.every((item) => selectedMountIds.includes(item.id));
+
+  useEffect(() => {
+    setPageBySubPage((current) => ({
+      ...current,
+      mounts: Math.min(current.mounts, mountPageCount),
+      nas: Math.min(current.nas, nasPageCount),
+      cloud: Math.min(current.cloud, cloudPageCount),
+    }));
+  }, [cloudPageCount, mountPageCount, nasPageCount]);
 
   async function refreshDashboard() {
     setLoading(true);
     try {
-      const snapshot = await storageNodesApi.loadDashboard();
-      setNodes(snapshot.nodes);
-      setSelectedIds((current) => current.filter((id) => snapshot.nodes.some((node) => node.id === id)));
+      const next = await storageNodesApi.loadDashboard();
+      setDashboard(next);
+      setSelectedMountIds((current) => current.filter((id) => next.mountFolders.some((item) => item.id === id)));
     } catch (error) {
-      setFeedback({
-        message: extractErrorMessage(error, '加载存储节点失败，请稍后重试'),
-        tone: 'critical',
-      });
+      setFeedback({ message: extractErrorMessage(error, '加载存储节点失败，请稍后重试'), tone: 'critical' });
     } finally {
       setLoading(false);
     }
   }
 
-  function beginCreate() {
-    setFormState({
-      mode: 'create',
-      draft: structuredClone(EMPTY_LOCAL_DRAFT),
-      errors: {},
-      formConnectionResult: null,
-      testing: false,
-      saving: false,
-    });
-  }
-
-  function beginEdit(node: StorageNodeRecord) {
+  function openCreate() {
     setMenuState(null);
-    setFormState({
-      mode: 'edit',
-      draft: createDraftFromNode(node),
-      errors: {},
-      formConnectionResult: null,
-      testing: false,
-      saving: false,
-    });
-  }
-
-  function updateDraft(nextDraft: StorageNodeDraft) {
-    setFormState((current) =>
-      current
-        ? {
-            ...current,
-            draft: nextDraft,
-            errors: {},
-          }
-        : current,
-    );
-  }
-
-  async function saveDraft() {
-    if (!formState) {
+    if (subPage === 'mounts') {
+      setMountForm({
+        draft: { ...EMPTY_MOUNT_DRAFT, libraryId: libraries[0]?.id ?? '' },
+        errors: {},
+        saving: false,
+      });
       return;
     }
+    if (subPage === 'nas') {
+      setNasForm({ draft: { ...EMPTY_NAS_DRAFT }, errors: {}, saving: false });
+      return;
+    }
+    setCloudForm({ draft: { ...EMPTY_CLOUD_DRAFT }, errors: {}, saving: false });
+  }
 
-    const errors = validateDraft(formState.draft);
+  async function saveMountFolder() {
+    if (!mountForm) return;
+    const errors = validateMountDraft(mountForm.draft);
     if (Object.keys(errors).length > 0) {
-      setFormState((current) => (current ? { ...current, errors } : current));
+      setMountForm((current) => (current ? { ...current, errors } : current));
       return;
     }
-
-    setFormState((current) => (current ? { ...current, saving: true } : current));
-
+    setMountForm((current) => (current ? { ...current, saving: true } : current));
     try {
-      const result = await storageNodesApi.saveNode({ draft: formState.draft });
+      const result = await storageNodesApi.saveMountFolder(mountForm.draft);
       await refreshDashboard();
       setFeedback({ message: result.message, tone: 'success' });
-      setFormState(null);
+      setMountForm(null);
     } catch (error) {
-      setFormState((current) => (current ? { ...current, saving: false } : current));
-      setFeedback({ message: extractErrorMessage(error, '保存节点失败'), tone: 'critical' });
+      setMountForm((current) => (current ? { ...current, saving: false } : current));
+      setFeedback({ message: extractErrorMessage(error, '保存挂载文件夹失败'), tone: 'critical' });
     }
   }
 
-  async function testDraftConnection() {
-    if (!formState) {
-      return;
-    }
-
-    const errors = validateDraft(formState.draft);
+  async function saveNasNode() {
+    if (!nasForm) return;
+    const errors = validateNasDraft(nasForm.draft);
     if (Object.keys(errors).length > 0) {
-      setFormState((current) => (current ? { ...current, errors } : current));
+      setNasForm((current) => (current ? { ...current, errors } : current));
       return;
     }
-
-    setFormState((current) => (current ? { ...current, testing: true, formConnectionResult: null } : current));
-
+    setNasForm((current) => (current ? { ...current, saving: true } : current));
     try {
-      const result = buildDraftConnectionResult(formState.draft);
-      await waitBriefly();
-      setFormState((current) =>
-        current
-          ? {
-              ...current,
-              testing: false,
-              formConnectionResult: result,
-            }
-          : current,
-      );
+      const result = await storageNodesApi.saveNasNode(nasForm.draft);
+      await refreshDashboard();
+      setFeedback({ message: result.message, tone: 'success' });
+      setNasForm(null);
     } catch (error) {
-      setFormState((current) =>
-        current
-          ? {
-              ...current,
-              testing: false,
-              formConnectionResult: {
-                nodeId: current.draft.id ?? 'draft',
-                nodeName: current.draft.name || '未命名节点',
-                overallTone: 'critical',
-                summary: extractErrorMessage(error, '连接测试失败'),
-                checks: [],
-                suggestion: '检查表单配置后重试',
-                testedAt: '刚刚',
-              },
-            }
-          : current,
-      );
+      setNasForm((current) => (current ? { ...current, saving: false } : current));
+      setFeedback({ message: extractErrorMessage(error, '保存 NAS 失败'), tone: 'critical' });
     }
   }
 
-  function toggleSelection(id: string) {
-    setSelectedIds((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
-  }
-
-  function toggleSelectVisible() {
-    setSelectedIds((current) => {
-      if (allVisibleSelected) {
-        return current.filter((id) => !visibleNodes.some((node) => node.id === id));
-      }
-
-      return Array.from(new Set([...current, ...visibleNodes.map((node) => node.id)]));
-    });
-  }
-
-  async function runScan(ids: string[]) {
-    if (ids.length === 0) {
-      setFeedback({ message: '请先选择需要扫描的节点', tone: 'info' });
+  async function saveCloudNode() {
+    if (!cloudForm) return;
+    const errors = validateCloudDraft(cloudForm.draft);
+    if (Object.keys(errors).length > 0) {
+      setCloudForm((current) => (current ? { ...current, errors } : current));
       return;
     }
-
-    setBulkLoading(ids.length > 1 ? 'scan' : null);
-    setScanningIds(ids);
-    setMenuState(null);
-
+    setCloudForm((current) => (current ? { ...current, saving: true } : current));
     try {
-      const result = await storageNodesApi.runScan({ ids });
+      const result = await storageNodesApi.saveCloudNode(cloudForm.draft);
+      await refreshDashboard();
+      setFeedback({ message: result.message, tone: 'success' });
+      setCloudForm(null);
+    } catch (error) {
+      setCloudForm((current) => (current ? { ...current, saving: false } : current));
+      setFeedback({ message: extractErrorMessage(error, '保存网盘失败'), tone: 'critical' });
+    }
+  }
+
+  async function browseLocalFolder() {
+    if (!mountForm) return;
+    try {
+      const result = await storageNodesApi.browseLocalFolder();
+      if (result.path) {
+        setMountForm((current) =>
+          current
+            ? {
+                ...current,
+                draft: { ...current.draft, localPath: result.path! },
+              }
+            : current,
+        );
+      }
+    } catch {
+      setFeedback({ message: '打开文件夹选择器失败', tone: 'warning' });
+    }
+  }
+
+  async function runMountScan(ids: string[]) {
+    if (ids.length === 0) {
+      setFeedback({ message: '请先选择需要扫描的挂载文件夹', tone: 'info' });
+      return;
+    }
+    setScanningIds(ids);
+    try {
+      const result = await storageNodesApi.runMountScan(ids);
       await refreshDashboard();
       setFeedback({ message: result.message, tone: 'info' });
-      setSelectedIds((current) => current.filter((id) => !ids.includes(id)));
+      setSelectedMountIds((current) => current.filter((id) => !ids.includes(id)));
     } catch (error) {
       setFeedback({ message: extractErrorMessage(error, '扫描发起失败'), tone: 'critical' });
     } finally {
       setScanningIds([]);
-      setBulkLoading(null);
     }
   }
 
-  async function runConnectionTest(ids: string[]) {
+  async function runMountConnectionTest(ids: string[]) {
     if (ids.length === 0) {
-      setFeedback({ message: '请先选择需要测试的节点', tone: 'info' });
+      setFeedback({ message: '请先选择需要测试的挂载文件夹', tone: 'info' });
       return;
     }
-
-    setBulkLoading(ids.length > 1 ? 'test' : null);
     setTestingIds(ids);
-    setMenuState(null);
-
     try {
-      const result = await storageNodesApi.runConnectionTest({ ids });
-      await refreshDashboard();
-      setFeedback({
-        message: result.message,
-        tone: result.results.some((item) => item.overallTone === 'critical') ? 'warning' : 'success',
-      });
+      const result = await storageNodesApi.runMountConnectionTest(ids);
       setConnectionResults(result.results);
+      setFeedback({ message: result.message, tone: 'success' });
     } catch (error) {
       setFeedback({ message: extractErrorMessage(error, '连接测试失败'), tone: 'critical' });
     } finally {
       setTestingIds([]);
-      setBulkLoading(null);
     }
   }
 
-  async function updateEnabled(ids: string[], enabled: boolean) {
+  async function runNasConnectionTest(ids: string[]) {
     if (ids.length === 0) {
-      setFeedback({ message: enabled ? '请先选择需要启用的节点' : '请先选择需要停用的节点', tone: 'info' });
+      setFeedback({ message: '请先选择需要测试的 NAS', tone: 'info' });
       return;
     }
-
-    setBulkLoading(enabled ? 'enable' : 'disable');
+    setTestingNasIds(ids);
     setMenuState(null);
-
     try {
-      const result = await storageNodesApi.updateEnabled({ ids, enabled });
+      const result = await storageNodesApi.runNasConnectionTest(ids);
       await refreshDashboard();
+      setConnectionResults(result.results);
       setFeedback({ message: result.message, tone: 'success' });
-      setSelectedIds((current) => current.filter((id) => !ids.includes(id)));
     } catch (error) {
-      setFeedback({ message: extractErrorMessage(error, enabled ? '启用失败' : '停用失败'), tone: 'critical' });
+      setFeedback({ message: extractErrorMessage(error, 'NAS 连接测试失败'), tone: 'critical' });
     } finally {
-      setBulkLoading(null);
+      setTestingNasIds([]);
     }
   }
 
-  function openHeartbeatEditor(ids: string[]) {
-    const relatedNodes = nodes.filter((node) => ids.includes(node.id));
-    if (relatedNodes.length === 0) {
+  async function runCloudConnectionTest(ids: string[]) {
+    if (ids.length === 0) {
+      setFeedback({ message: '请先选择需要测试的网盘', tone: 'info' });
       return;
     }
-
+    setTestingCloudIds(ids);
     setMenuState(null);
-    setHeartbeatState({
-      ids,
-      title: ids.length > 1 ? `批量设置心跳（${ids.length} 个节点）` : '设置心跳',
-      saving: false,
-      value: relatedNodes[0]?.heartbeatPolicy ?? '从不',
-    });
-  }
-
-  async function saveHeartbeat() {
-    if (!heartbeatState) {
-      return;
-    }
-
-    setHeartbeatState((current) => (current ? { ...current, saving: true } : current));
-
     try {
-      const result = await storageNodesApi.updateHeartbeat({
-        ids: heartbeatState.ids,
-        heartbeatPolicy: heartbeatState.value,
-      });
+      const result = await storageNodesApi.runCloudConnectionTest(ids);
       await refreshDashboard();
+      setConnectionResults(result.results);
       setFeedback({ message: result.message, tone: 'success' });
-      setHeartbeatState(null);
-      setSelectedIds((current) => current.filter((id) => !heartbeatState.ids.includes(id)));
     } catch (error) {
-      setHeartbeatState((current) => (current ? { ...current, saving: false } : current));
-      setFeedback({ message: extractErrorMessage(error, '心跳策略更新失败'), tone: 'critical' });
+      setFeedback({ message: extractErrorMessage(error, '网盘连接测试失败'), tone: 'critical' });
+    } finally {
+      setTestingCloudIds([]);
     }
   }
 
-  async function openHistory(node: StorageNodeRecord) {
-    setMenuState(null);
-    setHistoryState({
-      loading: true,
-      nodeName: node.name,
-      items: [],
-    });
-
+  async function openHistory(item: MountFolderRecord) {
+    setHistoryState({ mountName: item.name, loading: true, items: [] });
     try {
-      const result = await storageNodesApi.loadScanHistory({ id: node.id });
-      setHistoryState({
-        loading: false,
-        nodeName: node.name,
-        items: result.items,
-      });
+      const result = await storageNodesApi.loadMountScanHistory(item.id);
+      setHistoryState({ mountName: item.name, loading: false, items: result.items });
     } catch (error) {
-      setHistoryState({
-        loading: false,
-        nodeName: node.name,
-        items: [],
-      });
+      setHistoryState({ mountName: item.name, loading: false, items: [] });
       setFeedback({ message: extractErrorMessage(error, '加载扫描历史失败'), tone: 'critical' });
     }
   }
 
-  function openCredentialSheet(node: StorageNodeRecord) {
-    if (node.detail.kind === 'local') {
-      setPlaceholderMessage('本地节点无需鉴权配置，后续会在这里补充更多高级策略。');
-      return;
-    }
-
-    setMenuState(null);
-    setCredentialState(createCredentialDraft(node));
-  }
-
-  async function saveCredentialDraft() {
-    if (!credentialState) {
-      return;
-    }
-
-    if (credentialState.authMode !== '账号密码' && !credentialState.token.trim()) {
-      setFeedback({ message: credentialState.authMode === '填入 Token' ? 'Token 不能为空' : '请先生成扫码登录会话', tone: 'warning' });
-      return;
-    }
-
-    if (credentialState.authMode === '账号密码' && !credentialState.username.trim()) {
-      setFeedback({ message: '用户名不能为空', tone: 'warning' });
-      return;
-    }
-
+  async function saveHeartbeat() {
+    if (!heartbeatEditor) return;
+    setHeartbeatEditor((current) => (current ? { ...current, saving: true } : current));
     try {
-      const result = await storageNodesApi.saveCredentials(credentialState);
+      const result = await storageNodesApi.updateMountHeartbeat(heartbeatEditor.ids, heartbeatEditor.value);
       await refreshDashboard();
       setFeedback({ message: result.message, tone: 'success' });
-      setCredentialState(null);
+      setHeartbeatEditor(null);
     } catch (error) {
-      setFeedback({ message: extractErrorMessage(error, '保存鉴权失败'), tone: 'critical' });
+      setHeartbeatEditor((current) => (current ? { ...current, saving: false } : current));
+      setFeedback({ message: extractErrorMessage(error, '更新心跳失败'), tone: 'critical' });
     }
   }
 
-  async function removeNode(node: StorageNodeRecord) {
-    setMenuState(null);
-
-    try {
-      const result = await storageNodesApi.deleteNode({ id: node.id });
-      await refreshDashboard();
-      setFeedback({ message: result.message, tone: 'success' });
-    } catch (error) {
-      setFeedback({ message: extractErrorMessage(error, '删除节点失败'), tone: 'critical' });
-    }
+  async function deleteMountFolder(id: string) {
+    const result = await storageNodesApi.deleteMountFolder(id);
+    await refreshDashboard();
+    setFeedback({ message: result.message, tone: 'success' });
   }
 
-  function openRelatedTasks(nodeId: string) {
-    setMenuState(null);
-    if (onOpenTaskCenter) {
-      onOpenTaskCenter(nodeId);
-      setFeedback({ message: '已切换到任务中心，可继续查看与该节点相关的任务', tone: 'info' });
-      return;
-    }
-
-    setPlaceholderMessage('任务中心联动接口已预留，接入真实后端后可直接按节点过滤跳转。');
+  async function deleteNasNode(id: string) {
+    const result = await storageNodesApi.deleteNasNode(id);
+    await refreshDashboard();
+    setFeedback({ message: result.message, tone: 'success' });
   }
 
-  function openRelatedIssues(nodeId: string) {
-    setMenuState(null);
-    if (onOpenIssueCenter) {
-      onOpenIssueCenter(nodeId);
-      setFeedback({ message: '已切换到异常中心，可继续查看与该节点相关的异常', tone: 'info' });
-      return;
-    }
-
-    setPlaceholderMessage('异常中心联动接口已预留，接入真实后端后可直接按节点过滤跳转。');
+  async function deleteCloudNode(id: string) {
+    const result = await storageNodesApi.deleteCloudNode(id);
+    await refreshDashboard();
+    setFeedback({ message: result.message, tone: 'success' });
   }
 
   return (
     <section className="page-stack storage-page">
-      {feedback ? <FeedbackBanner message={feedback.message} tone={feedback.tone} /> : null}
+      <div className="toolbar-card">
+        <TabSwitch items={SUB_PAGES} value={subPage} onChange={(value) => setSubPage(value as StorageSubPage)} />
+      </div>
 
-      <div className="toolbar-card storage-topbar">
+      <div className="toolbar-card action-toolbar storage-topbar">
         <div className="toolbar-group wrap storage-toolbar-main">
-          <SelectPill ariaLabel="按类型筛选" options={TYPE_OPTIONS} value={typeFilter} onChange={(value) => setTypeFilter(value as '全部' | StorageNodeType)} />
-          <SelectPill ariaLabel="按状态筛选" options={STATUS_OPTIONS} value={statusFilter} onChange={(value) => setStatusFilter(value as StatusFilter)} />
+          {subPage === 'mounts' ? (
+            <SelectPill
+              ariaLabel="挂载类型筛选"
+              options={MOUNT_TYPE_OPTIONS}
+              value={mountTypeFilter}
+              onChange={(value) => setMountTypeFilter(value as '全部' | MountFolderType)}
+            />
+          ) : null}
+          <SelectPill
+            ariaLabel="状态筛选"
+            options={STATUS_OPTIONS}
+            value={statusFilter}
+            onChange={(value) => setStatusFilter(value as StatusFilter)}
+          />
           <label className="search-field">
             <input
-              aria-label="搜索节点"
-              placeholder="搜索名称、路径、资产库或风险"
+              aria-label="搜索存储项"
+              placeholder={subPage === 'mounts' ? '搜索名称、路径、资产库' : subPage === 'nas' ? '搜索名称、地址、账号' : '搜索名称、目录、账号别名'}
               value={searchText}
               onChange={(event) => setSearchText(event.target.value)}
             />
           </label>
         </div>
-      </div>
-
-      <div className="toolbar-card action-toolbar">
         <div className="toolbar-group wrap">
-          <span className="selection-caption">{nodes.length} 个节点</span>
-          <span className="selection-caption">{nodes.filter((node) => resolveStatusFilter(node) === '异常').length} 个异常风险</span>
-        </div>
-        <div className="toolbar-group wrap">
-          <ActionButton onClick={beginCreate}>
+          <ActionButton onClick={openCreate}>
             <Plus size={14} />
-            新增节点
-          </ActionButton>
-          <ActionButton ariaLabel="批量扫描" onClick={() => void runScan(selectedIds)}>
-            {bulkLoading === 'scan' ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}
-            批量扫描
-          </ActionButton>
-          <ActionButton ariaLabel="批量连接测试" onClick={() => void runConnectionTest(selectedIds)}>
-            {bulkLoading === 'test' ? <LoaderCircle className="spin" size={14} /> : <Radar size={14} />}
-            批量连接测试
+            {subPage === 'mounts' ? '新增挂载文件夹' : subPage === 'nas' ? '新增 NAS' : '新增网盘'}
           </ActionButton>
         </div>
       </div>
 
-      {selectedIds.length > 0 ? (
+      {subPage === 'mounts' && selectedMountIds.length > 0 ? (
         <div className="toolbar-card selection-toolbar">
-          <span className="selection-caption">已选择 {selectedIds.length} 个节点</span>
+          <span className="selection-caption">已选择 {selectedMountIds.length} 个挂载文件夹</span>
           <div className="toolbar-group wrap">
-            <ActionButton ariaLabel="批量扫描" onClick={() => void runScan(selectedIds)}>
+            <ActionButton ariaLabel="批量扫描" onClick={() => void runMountScan(selectedMountIds)}>
               <RefreshCw size={14} />
               批量扫描
             </ActionButton>
-            <ActionButton ariaLabel="批量连接测试" onClick={() => void runConnectionTest(selectedIds)}>
+            <ActionButton ariaLabel="批量连接测试" onClick={() => void runMountConnectionTest(selectedMountIds)}>
               <Radar size={14} />
               批量连接测试
             </ActionButton>
-            <ActionButton ariaLabel="批量启用" onClick={() => void updateEnabled(selectedIds, true)}>
-              {bulkLoading === 'enable' ? <LoaderCircle className="spin" size={14} /> : <CircleCheckBig size={14} />}
-              批量启用
-            </ActionButton>
-            <ActionButton ariaLabel="批量停用" onClick={() => void updateEnabled(selectedIds, false)}>
-              {bulkLoading === 'disable' ? <LoaderCircle className="spin" size={14} /> : <CircleAlert size={14} />}
-              批量停用
-            </ActionButton>
-            <ActionButton ariaLabel="批量设置心跳" onClick={() => openHeartbeatEditor(selectedIds)}>
-              <HardDrive size={14} />
-              批量设置心跳
-            </ActionButton>
-            <ActionButton ariaLabel="清空选择" onClick={() => setSelectedIds([])}>
+            <ActionButton ariaLabel="清空选择" onClick={() => setSelectedMountIds([])}>
               清空选择
             </ActionButton>
           </div>
@@ -563,221 +531,197 @@ export function StorageNodesPage({
         {loading ? (
           <div className="empty-state">
             <LoaderCircle className="spin" size={18} />
-            <strong>正在加载存储节点</strong>
-            <p>正在从当前数据源读取节点信息与最近状态。</p>
+            <strong>正在加载存储配置</strong>
+            <p>正在从当前 mock 数据源读取挂载文件夹、NAS 和网盘配置。</p>
           </div>
-        ) : visibleNodes.length === 0 ? (
-          <EmptyState
-            title="没有匹配的存储节点"
-            description="可以调整筛选条件，或直接新增一个节点配置。"
-            action={
-              <ActionButton onClick={beginCreate}>
-                <Plus size={14} />
-                新增节点
-              </ActionButton>
+        ) : subPage === 'mounts' ? (
+          <MountFoldersTable
+            items={pagedMounts}
+            menuState={menuState}
+            allVisibleSelected={allVisibleMountsSelected}
+            page={pageBySubPage.mounts}
+            pageCount={mountPageCount}
+            pageSize={pageSizeBySubPage.mounts}
+            total={visibleMounts.length}
+            onOpenHistory={openHistory}
+            onOpenIssueCenter={onOpenIssueCenter}
+            onOpenTaskCenter={onOpenTaskCenter}
+            onDelete={deleteMountFolder}
+            onEdit={(item) =>
+              setMountForm({
+                draft: mountRecordToDraft(item),
+                errors: {},
+                saving: false,
+              })
             }
+            onMenuChange={setMenuState}
+            onRunConnectionTest={(id) => void runMountConnectionTest([id])}
+            onRunScan={(id) => void runMountScan([id])}
+            onSetHeartbeat={(id, value) => setHeartbeatEditor({ ids: [id], value, saving: false })}
+            onToggleSelect={(id) =>
+              setSelectedMountIds((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]))
+            }
+            onToggleSelectVisible={() =>
+              setSelectedMountIds((current) =>
+                allVisibleMountsSelected
+                  ? current.filter((id) => !pagedMounts.some((item) => item.id === id))
+                  : Array.from(new Set([...current, ...pagedMounts.map((item) => item.id)])),
+              )
+            }
+            onPageChange={(value) => setPageBySubPage((current) => ({ ...current, mounts: value }))}
+            onPageSizeChange={(value) =>
+              setPageSizeBySubPage((current) => ({ ...current, mounts: value }))
+            }
+            scanningIds={scanningIds}
+            selectedIds={selectedMountIds}
+            testingIds={testingIds}
+          />
+        ) : subPage === 'nas' ? (
+          <NasTable
+            items={pagedNas}
+            menuState={menuState}
+            page={pageBySubPage.nas}
+            pageCount={nasPageCount}
+            pageSize={pageSizeBySubPage.nas}
+            total={visibleNas.length}
+            onDelete={(id) => void deleteNasNode(id)}
+            onEdit={(item) => setNasForm({ draft: nasRecordToDraft(item), errors: {}, saving: false })}
+            onMenuChange={setMenuState}
+            onPageChange={(value) => setPageBySubPage((current) => ({ ...current, nas: value }))}
+            onPageSizeChange={(value) => setPageSizeBySubPage((current) => ({ ...current, nas: value }))}
+            onRunConnectionTest={(id) => void runNasConnectionTest([id])}
+            testingIds={testingNasIds}
           />
         ) : (
-          <div className="storage-table-wrap">
-            <table className="file-table storage-table">
-              <thead>
-                <tr>
-                  <th className="checkbox-cell">
-                    <input
-                      aria-label="选择当前筛选结果"
-                      checked={allVisibleSelected}
-                      type="checkbox"
-                      onChange={toggleSelectVisible}
-                    />
-                  </th>
-                  <th>节点名称</th>
-                  <th>节点类型</th>
-                  <th>地址 / 路径</th>
-                  <th>扫描状态</th>
-                  <th>最近扫描</th>
-                  <th>心跳周期</th>
-                  <th>容量 / 可用空间</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleNodes.map((node) => {
-                  const rowSelected = selectedIds.includes(node.id);
-                  const operationalStatus = resolveStatusFilter(node);
-                  const connectionLoading = testingIds.includes(node.id);
-                  const scanLoading = scanningIds.includes(node.id);
-
-                  return (
-                    <tr key={node.id} aria-selected={rowSelected}>
-                      <td className="checkbox-cell">
-                        <input
-                          aria-label={`选择节点 ${node.name}`}
-                          checked={rowSelected}
-                          type="checkbox"
-                          onChange={() => toggleSelection(node.id)}
-                        />
-                      </td>
-                      <td>
-                        <div className="storage-node-cell">
-                          <div className="storage-node-title">
-                            <strong>{node.name}</strong>
-                            <TonePill tone={resolveToneByStatus(operationalStatus)}>{operationalStatus}</TonePill>
-                          </div>
-                          <div className="endpoint-row">
-                            {node.badges.map((badge) => (
-                              <TonePill key={badge} tone={badge === '只读' ? 'warning' : 'info'}>
-                                {badge}
-                              </TonePill>
-                            ))}
-                            {node.riskTags.map((tag) => (
-                              <TonePill key={tag} tone="warning">
-                                {tag}
-                              </TonePill>
-                            ))}
-                          </div>
-                          <span>{node.authStatus}</span>
-                        </div>
-                      </td>
-                      <td>{node.nodeType}</td>
-                      <td>
-                        <div className="row-main">
-                          <strong>{node.address}</strong>
-                          <span>{node.libraryBindings.length > 0 ? `已绑定 ${node.libraryBindings.length} 个资产库` : '暂未绑定资产库'}</span>
-                        </div>
-                      </td>
-                      <td>
-                        <div className="row-main">
-                          <TonePill tone={node.scanTone}>{node.scanStatus}</TonePill>
-                          <span>{node.enabled ? '允许扫描' : '已停用，不参与扫描'}</span>
-                        </div>
-                      </td>
-                      <td>{node.lastScanAt}</td>
-                      <td>
-                        <div className="row-main">
-                          <strong>{node.heartbeatPolicy}</strong>
-                          <span>{node.nextHeartbeatAt}</span>
-                        </div>
-                      </td>
-                      <td>
-                        <div className="storage-capacity-cell">
-                          <strong>{node.capacitySummary}</strong>
-                          <ProgressBar value={node.capacityPercent} />
-                          <span>{node.freeSpaceSummary}</span>
-                        </div>
-                      </td>
-                      <td>
-                        <div className="row-actions storage-row-actions">
-                          <IconButton ariaLabel={`连接测试 ${node.name}`} tooltip="连接测试" onClick={() => void runConnectionTest([node.id])}>
-                            {connectionLoading ? <LoaderCircle className="spin" size={15} /> : <Radar size={15} />}
-                          </IconButton>
-                          <IconButton ariaLabel={`立即扫描 ${node.name}`} tooltip="立即扫描" onClick={() => void runScan([node.id])}>
-                            {scanLoading ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />}
-                          </IconButton>
-                          <IconButton ariaLabel={`编辑 ${node.name}`} tooltip="编辑" onClick={() => beginEdit(node)}>
-                            <Pencil size={15} />
-                          </IconButton>
-                          <div className="storage-menu-anchor">
-                            <IconButton ariaLabel={`更多操作 ${node.name}`} tooltip="更多操作" onClick={() => setMenuState((current) => (current?.nodeId === node.id ? null : { nodeId: node.id }))}>
-                              <CircleEllipsis size={15} />
-                            </IconButton>
-                            {menuState?.nodeId === node.id ? (
-                              <div className="context-menu storage-menu-inline">
-                                <button type="button" onClick={() => void updateEnabled([node.id], true)}>
-                                  启用
-                                </button>
-                                <button type="button" onClick={() => void updateEnabled([node.id], false)}>
-                                  停用
-                                </button>
-                                <button type="button" onClick={() => openHeartbeatEditor([node.id])}>
-                                  设置心跳
-                                </button>
-                                <button type="button" onClick={() => openCredentialSheet(node)}>
-                                  鉴权设置
-                                </button>
-                                <button type="button" onClick={() => void openHistory(node)}>
-                                  查看扫描历史
-                                </button>
-                                <button type="button" onClick={() => openRelatedTasks(node.id)}>
-                                  查看相关任务
-                                </button>
-                                <button type="button" onClick={() => openRelatedIssues(node.id)}>
-                                  查看相关异常
-                                </button>
-                                <button type="button" onClick={() => setPlaceholderMessage('节点模板 / 复制配置即将支持，当前版本已预留入口。')}>
-                                  节点模板 / 复制配置
-                                </button>
-                                <button className="danger-text" type="button" onClick={() => void removeNode(node)}>
-                                  删除节点
-                                </button>
-                              </div>
-                            ) : null}
-                          </div>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <CloudTable
+            items={pagedCloud}
+            menuState={menuState}
+            page={pageBySubPage.cloud}
+            pageCount={cloudPageCount}
+            pageSize={pageSizeBySubPage.cloud}
+            total={visibleCloud.length}
+            onDelete={(id) => void deleteCloudNode(id)}
+            onEdit={(item) => setCloudForm({ draft: cloudRecordToDraft(item), errors: {}, saving: false })}
+            onMenuChange={setMenuState}
+            onPageChange={(value) => setPageBySubPage((current) => ({ ...current, cloud: value }))}
+            onPageSizeChange={(value) => setPageSizeBySubPage((current) => ({ ...current, cloud: value }))}
+            onRunConnectionTest={(id) => void runCloudConnectionTest([id])}
+            testingIds={testingCloudIds}
+          />
         )}
       </div>
 
-      {formState ? (
-        <Sheet onClose={() => setFormState(null)} title={formState.mode === 'create' ? '新增存储节点' : '编辑存储节点'}>
+      {mountForm ? (
+        <Sheet onClose={() => setMountForm(null)} title={mountForm.draft.id ? '编辑挂载文件夹' : '新增挂载文件夹'}>
           <div className="sheet-section">
-            <strong>基础信息</strong>
             <div className="sheet-form">
-              <Field label="节点名称" error={formState.errors.name}>
+              <Field label="挂载名称" error={mountForm.errors.name}>
                 <input
-                  aria-label="节点名称"
-                  value={formState.draft.name}
-                  onChange={(event) => updateDraft({ ...formState.draft, name: event.target.value })}
+                  aria-label="挂载名称"
+                  value={mountForm.draft.name}
+                  onChange={(event) => setMountForm(updateMountForm(mountForm, { name: event.target.value }))}
                 />
               </Field>
-              {formState.mode === 'create' ? (
-                <Field label="节点类型" error={formState.errors.nodeType}>
-                  <div aria-label="节点类型" className="mini-segmented" role="group">
-                    {(['本机磁盘', 'NAS/SMB', '网盘'] as StorageNodeType[]).map((option) => (
-                      <button
-                        key={option}
-                        className={option === formState.draft.nodeType ? 'active' : ''}
-                        type="button"
-                        onClick={() => updateDraft(resetDraftType(formState.draft, option))}
-                      >
-                        {option}
-                      </button>
-                    ))}
+              <Field label="所属资产库" error={mountForm.errors.libraryId}>
+                <select
+                  aria-label="所属资产库"
+                  value={mountForm.draft.libraryId}
+                  onChange={(event) => setMountForm(updateMountForm(mountForm, { libraryId: event.target.value }))}
+                >
+                  {libraries.map((library) => (
+                    <option key={library.id} value={library.id}>
+                      {library.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="文件夹类型">
+                <div className="mini-segmented" role="group" aria-label="文件夹类型">
+                  {(['本地', 'NAS', '网盘'] as MountFolderType[]).map((option) => (
+                    <button
+                      key={option}
+                      className={mountForm.draft.folderType === option ? 'active' : ''}
+                      type="button"
+                      onClick={() =>
+                        setMountForm(
+                          updateMountForm(mountForm, {
+                            folderType: option,
+                            localPath: '',
+                            nasId: '',
+                            cloudId: '',
+                            targetFolder: '',
+                          }),
+                        )
+                      }
+                    >
+                      {option}
+                    </button>
+                  ))}
+                </div>
+              </Field>
+              {mountForm.draft.folderType === '本地' ? (
+                <Field label="本地目录" error={mountForm.errors.localPath}>
+                  <div className="inline-action-row">
+                    <input aria-label="本地目录" value={mountForm.draft.localPath} readOnly />
+                    <ActionButton onClick={() => void browseLocalFolder()}>浏览目录</ActionButton>
                   </div>
                 </Field>
+              ) : mountForm.draft.folderType === 'NAS' ? (
+                <>
+                  <Field label="NAS 来源" error={mountForm.errors.nasId}>
+                    <select
+                      aria-label="NAS 来源"
+                      value={mountForm.draft.nasId}
+                      onChange={(event) => setMountForm(updateMountForm(mountForm, { nasId: event.target.value }))}
+                    >
+                      <option value="">请选择 NAS</option>
+                      {dashboard.nasNodes.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="NAS 共享文件夹" error={mountForm.errors.targetFolder}>
+                    <input
+                      aria-label="NAS 共享文件夹"
+                      placeholder="例如：video_workflow"
+                      value={mountForm.draft.targetFolder}
+                      onChange={(event) => setMountForm(updateMountForm(mountForm, { targetFolder: event.target.value }))}
+                    />
+                  </Field>
+                </>
               ) : (
-                <Field label="节点类型">
-                  <div className="field-static-value">{formState.draft.nodeType}</div>
-                </Field>
+                <>
+                  <Field label="网盘来源" error={mountForm.errors.cloudId}>
+                    <select
+                      aria-label="网盘来源"
+                      value={mountForm.draft.cloudId}
+                      onChange={(event) => setMountForm(updateMountForm(mountForm, { cloudId: event.target.value }))}
+                    >
+                      <option value="">请选择网盘</option>
+                      {dashboard.cloudNodes.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="网盘文件夹名 / ID" error={mountForm.errors.targetFolder}>
+                    <input
+                      aria-label="网盘文件夹名 / ID"
+                      placeholder="例如：family_album 或 123456"
+                      value={mountForm.draft.targetFolder}
+                      onChange={(event) => setMountForm(updateMountForm(mountForm, { targetFolder: event.target.value }))}
+                    />
+                  </Field>
+                </>
               )}
-              <Field label="节点备注">
-                <input
-                  aria-label="节点备注"
-                  value={formState.draft.notes}
-                  onChange={(event) => updateDraft({ ...formState.draft, notes: event.target.value })}
-                />
-              </Field>
-            </div>
-          </div>
-
-          <div className="sheet-section">
-            <strong>类型专属配置</strong>
-            <div className="sheet-form">{renderDraftDetailFields(formState.draft, updateDraft, formState.errors)}</div>
-          </div>
-
-          <div className="sheet-section">
-            <strong>管理选项</strong>
-            <div className="sheet-form">
               <Field label="挂载模式">
                 <select
                   aria-label="挂载模式"
-                  value={formState.draft.mountMode}
-                  onChange={(event) => updateDraft({ ...formState.draft, mountMode: event.target.value as StorageNodeDraft['mountMode'] })}
+                  value={mountForm.draft.mountMode}
+                  onChange={(event) => setMountForm(updateMountForm(mountForm, { mountMode: event.target.value as StorageMountMode }))}
                 >
                   <option value="可写">可写</option>
                   <option value="只读">只读</option>
@@ -786,8 +730,8 @@ export function StorageNodesPage({
               <Field label="心跳周期">
                 <select
                   aria-label="心跳周期"
-                  value={formState.draft.heartbeatPolicy}
-                  onChange={(event) => updateDraft({ ...formState.draft, heartbeatPolicy: event.target.value as StorageHeartbeatPolicy })}
+                  value={mountForm.draft.heartbeatPolicy}
+                  onChange={(event) => setMountForm(updateMountForm(mountForm, { heartbeatPolicy: event.target.value as StorageHeartbeatPolicy }))}
                 >
                   {HEARTBEAT_OPTIONS.map((option) => (
                     <option key={option} value={option}>
@@ -797,524 +741,595 @@ export function StorageNodesPage({
                 </select>
               </Field>
             </div>
-            {formState.formConnectionResult ? (
-              <div className={`form-test-result ${formState.formConnectionResult.overallTone}`}>
-                <strong>{formState.formConnectionResult.summary}</strong>
-                <div className="dense-result-list">
-                  {formState.formConnectionResult.checks.map((check) => (
-                    <div className="dense-result-row" key={check.label}>
-                      <span>{check.label}</span>
-                      <strong>{check.detail}</strong>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
           </div>
-
           <div className="sheet-actions right">
-            <ActionButton ariaLabel="测试表单连接" onClick={() => void testDraftConnection()}>
-              {formState.testing ? <LoaderCircle className="spin" size={14} /> : <Radar size={14} />}
-              {formState.testing ? '测试中...' : '测试连接'}
-            </ActionButton>
-            <ActionButton ariaLabel="保存节点" tone="primary" onClick={() => void saveDraft()}>
-              {formState.saving ? <LoaderCircle className="spin" size={14} /> : null}
-              保存节点
+            <ActionButton tone="primary" onClick={() => void saveMountFolder()}>
+              {mountForm.saving ? <LoaderCircle className="spin" size={14} /> : null}
+              保存挂载文件夹
             </ActionButton>
           </div>
         </Sheet>
       ) : null}
 
-      {credentialState ? (
-        <Sheet onClose={() => setCredentialState(null)} title="鉴权设置">
+      {nasForm ? (
+        <Sheet onClose={() => setNasForm(null)} title={nasForm.draft.id ? '编辑 NAS' : '新增 NAS'}>
           <div className="sheet-section">
-            <strong>{credentialState.nodeName}</strong>
-            <p className="muted-paragraph">鉴权信息将保存在当前 mock 数据源中，后续切换真实后端时可直接复用表单与交互。</p>
             <div className="sheet-form">
-              <Field label="鉴权方式">
-                <select
-                  aria-label="鉴权方式"
-                  value={credentialState.authMode}
-                  onChange={(event) =>
-                    setCredentialState((current) =>
-                      current
-                        ? {
-                            ...current,
-                            authMode: event.target.value as StorageCredentialDraft['authMode'],
-                          }
-                        : current,
-                    )
-                  }
-                >
-                  <option value="账号密码">账号密码</option>
-                  <option value="填入 Token">填入 Token</option>
-                  <option value="扫码登录获取 Token">扫码登录获取 Token</option>
-                </select>
+              <Field label="名称" error={nasForm.errors.name}>
+                <input aria-label="NAS 名称" value={nasForm.draft.name} onChange={(event) => setNasForm(updateNasForm(nasForm, { name: event.target.value }))} />
               </Field>
-
-              {credentialState.authMode === '账号密码' ? (
-                <>
-                  <Field label="用户名">
-                    <input
-                      aria-label="用户名"
-                      value={credentialState.username}
-                      onChange={(event) =>
-                        setCredentialState((current) =>
-                          current
-                            ? {
-                                ...current,
-                                username: event.target.value,
-                              }
-                            : current,
-                        )
-                      }
-                    />
-                  </Field>
-                  <Field label="密码">
-                    <input
-                      aria-label="密码"
-                      type="password"
-                      value={credentialState.password}
-                      onChange={(event) =>
-                        setCredentialState((current) =>
-                          current
-                            ? {
-                                ...current,
-                                password: event.target.value,
-                              }
-                            : current,
-                        )
-                      }
-                    />
-                  </Field>
-                </>
-              ) : credentialState.authMode === '填入 Token' ? (
-                <Field label="Token">
-                  <input
-                    aria-label="Token"
-                    value={credentialState.token}
-                    onChange={(event) =>
-                      setCredentialState((current) =>
-                        current
-                          ? {
-                              ...current,
-                              token: event.target.value,
-                            }
-                          : current,
-                      )
-                    }
-                  />
-                </Field>
-              ) : (
-                <>
-                  <Field label="扫码登录类型">
-                    <select
-                      aria-label="扫码登录类型"
-                      value={credentialState.qrChannel}
-                      onChange={(event) =>
-                        setCredentialState((current) =>
-                          current
-                            ? {
-                                ...current,
-                                qrChannel: event.target.value as StorageCloudQrChannel,
-                              }
-                            : current,
-                        )
-                      }
-                    >
-                      {CLOUD_QR_CHANNEL_OPTIONS.map((option) => (
-                        <option key={option} value={option}>
-                          {option}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                  <div className="inline-warning">
-                    生成扫码会话后会自动回填 Token，当前为前端 mock 流程。
-                  </div>
-                  <ActionButton
-                    onClick={() =>
-                      setCredentialState((current) =>
-                        current
-                          ? {
-                              ...current,
-                              token: `mock-token-${Date.now()}`,
-                            }
-                          : current,
-                      )
-                    }
-                  >
-                    生成扫码登录会话
-                  </ActionButton>
-                </>
-              )}
+              <Field label="地址" error={nasForm.errors.address}>
+                <input aria-label="NAS 地址" placeholder="例如：\\\\192.168.10.20\\media" value={nasForm.draft.address} onChange={(event) => setNasForm(updateNasForm(nasForm, { address: event.target.value }))} />
+              </Field>
+              <Field label="账号" error={nasForm.errors.username}>
+                <input aria-label="NAS 账号" value={nasForm.draft.username} onChange={(event) => setNasForm(updateNasForm(nasForm, { username: event.target.value }))} />
+              </Field>
+              <Field label="密码">
+                <input aria-label="NAS 密码" type="password" value={nasForm.draft.password} onChange={(event) => setNasForm(updateNasForm(nasForm, { password: event.target.value }))} />
+              </Field>
             </div>
           </div>
-
           <div className="sheet-actions right">
-            <ActionButton ariaLabel="保存鉴权" tone="primary" onClick={() => void saveCredentialDraft()}>
-              <ShieldCheck size={14} />
-              保存鉴权
+            <ActionButton tone="primary" onClick={() => void saveNasNode()}>
+              {nasForm.saving ? <LoaderCircle className="spin" size={14} /> : null}
+              保存 NAS
             </ActionButton>
           </div>
         </Sheet>
       ) : null}
 
-      {heartbeatState ? (
-        <Dialog title={heartbeatState.title} onClose={() => setHeartbeatState(null)}>
-          <div className="sheet-form">
-            <Field label="心跳周期设置">
-              <select
-                aria-label="心跳周期设置"
-                value={heartbeatState.value}
-                onChange={(event) =>
-                  setHeartbeatState((current) =>
-                    current
-                      ? {
-                          ...current,
-                          value: event.target.value as StorageHeartbeatPolicy,
-                        }
-                      : current,
-                  )
-                }
-              >
-                {HEARTBEAT_OPTIONS.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <p className="muted-paragraph">保存后会同时更新节点列表中的当前周期、下次执行时间与最近结果摘要。</p>
-          </div>
-
-          <div className="sheet-actions right">
-            <ActionButton ariaLabel="保存心跳" tone="primary" onClick={() => void saveHeartbeat()}>
-              {heartbeatState.saving ? <LoaderCircle className="spin" size={14} /> : <HardDrive size={14} />}
-              保存心跳
-            </ActionButton>
-          </div>
-        </Dialog>
-      ) : null}
-
-      {connectionResults ? (
-        <Dialog title="连接测试结果" onClose={() => setConnectionResults(null)}>
-          <div className="storage-dialog-stack">
-            {connectionResults.map((result) => (
-              <section className="dialog-card" key={result.nodeId}>
-                <div className="section-header">
-                  <div className="row-main">
-                    <strong>{result.nodeName}</strong>
-                    <span>{result.testedAt}</span>
-                  </div>
-                  <TonePill tone={result.overallTone}>{result.overallTone === 'success' ? '可继续使用' : '建议处理后再继续'}</TonePill>
-                </div>
-                <p className="muted-paragraph">{result.summary}</p>
-                <div className="dense-result-list">
-                  {result.checks.map((check) => (
-                    <div className="dense-result-row" key={`${result.nodeId}-${check.label}`}>
-                      <span>{check.label}</span>
-                      <strong className={`tone-text-${check.status}`}>{check.detail}</strong>
-                    </div>
+      {cloudForm ? (
+        <Sheet onClose={() => setCloudForm(null)} title={cloudForm.draft.id ? '编辑网盘' : '新增网盘'}>
+          <div className="sheet-section">
+            <div className="sheet-form">
+              <Field label="名称" error={cloudForm.errors.name}>
+                <input aria-label="网盘名称" value={cloudForm.draft.name} onChange={(event) => setCloudForm(updateCloudForm(cloudForm, { name: event.target.value }))} />
+              </Field>
+              <Field label="网盘类型">
+                <div className="field-static-value">115</div>
+              </Field>
+              <Field label="接入方式">
+                <div className="mini-segmented" role="group" aria-label="网盘接入方式">
+                  {CLOUD_ACCESS_OPTIONS.map((option) => (
+                    <button key={option} className={cloudForm.draft.accessMethod === option ? 'active' : ''} type="button" onClick={() => setCloudForm(updateCloudForm(cloudForm, { accessMethod: option }))}>
+                      {option}
+                    </button>
                   ))}
                 </div>
-                {result.suggestion ? <div className="inline-warning">{result.suggestion}</div> : null}
-              </section>
-            ))}
-          </div>
-        </Dialog>
-      ) : null}
-
-      {historyState ? (
-        <Dialog title="扫描历史" onClose={() => setHistoryState(null)}>
-          <div className="storage-dialog-stack">
-            <div className="row-main">
-              <strong>{historyState.nodeName}</strong>
-              <span>最近扫描历史与结果摘要</span>
+              </Field>
+              {cloudForm.draft.accessMethod === '扫码登录获取 Token' ? (
+                <Field label="扫码登录类型">
+                  <select aria-label="扫码登录类型" value={cloudForm.draft.qrChannel} onChange={(event) => setCloudForm(updateCloudForm(cloudForm, { qrChannel: event.target.value as StorageCloudQrChannel }))}>
+                    {CLOUD_QR_OPTIONS.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              ) : null}
+              <Field label="账号别名" error={cloudForm.errors.accountAlias}>
+                <input aria-label="账号别名" value={cloudForm.draft.accountAlias} onChange={(event) => setCloudForm(updateCloudForm(cloudForm, { accountAlias: event.target.value }))} />
+              </Field>
+              <Field label="挂载目录" error={cloudForm.errors.mountDirectory}>
+                <input aria-label="挂载目录" placeholder="例如：/MareArchive" value={cloudForm.draft.mountDirectory} onChange={(event) => setCloudForm(updateCloudForm(cloudForm, { mountDirectory: event.target.value }))} />
+              </Field>
+              <Field label="Token" error={cloudForm.errors.token}>
+                <input aria-label="网盘 Token" value={cloudForm.draft.token} onChange={(event) => setCloudForm(updateCloudForm(cloudForm, { token: event.target.value }))} />
+              </Field>
             </div>
-            {historyState.loading ? (
-              <div className="empty-state">
-                <LoaderCircle className="spin" size={18} />
-                <strong>正在加载扫描历史</strong>
-              </div>
-            ) : (
-              historyState.items.map((item) => (
-                <section className="dialog-card" key={item.id}>
-                  <div className="section-header">
-                    <strong>{item.startedAt}</strong>
-                    <TonePill tone={item.status === '成功' ? 'success' : item.status === '失败' ? 'critical' : 'info'}>
-                      {item.status}
-                    </TonePill>
-                  </div>
-                  <p className="muted-paragraph">{item.summary}</p>
-                  <div className="dense-result-list">
-                    <div className="dense-result-row">
-                      <span>触发方式</span>
-                      <strong>{item.trigger}</strong>
-                    </div>
-                    <div className="dense-result-row">
-                      <span>完成时间</span>
-                      <strong>{item.finishedAt}</strong>
-                    </div>
-                  </div>
-                </section>
-              ))
-            )}
           </div>
-        </Dialog>
+          <div className="sheet-actions right">
+            <ActionButton tone="primary" onClick={() => void saveCloudNode()}>
+              {cloudForm.saving ? <LoaderCircle className="spin" size={14} /> : null}
+              保存网盘
+            </ActionButton>
+          </div>
+        </Sheet>
       ) : null}
 
-      {placeholderMessage ? (
-        <Dialog title="即将支持" onClose={() => setPlaceholderMessage(null)}>
-          <p className="muted-paragraph">{placeholderMessage}</p>
-        </Dialog>
-      ) : null}
-    </section>
-  );
-}
-
-function renderDraftDetailFields(
-  draft: StorageNodeDraft,
-  onChange: (draft: StorageNodeDraft) => void,
-  errors: Partial<Record<string, string>>,
-) {
-  if (draft.detail.kind === 'local') {
-    const detail = draft.detail;
-    return (
-      <Field label="根路径" error={errors.rootPath}>
-        <input
-          aria-label="根路径"
-          value={detail.rootPath}
-          onChange={(event) =>
-            onChange({
-              ...draft,
-              detail: {
-                ...detail,
-                rootPath: event.target.value,
-              },
-            })
-          }
-        />
-      </Field>
-    );
-  }
-
-  if (draft.detail.kind === 'nas') {
-    const detail = draft.detail;
-    return (
-      <>
-        <Field label="主机/IP" error={errors.host}>
-          <input
-            aria-label="主机/IP"
-            placeholder="例如：192.168.10.20"
-            value={detail.host}
-            onChange={(event) =>
-              onChange({
-                ...draft,
-                detail: {
-                  ...detail,
-                  host: event.target.value,
-                },
-              })
-            }
-          />
-        </Field>
-        <Field label="共享目录" error={errors.shareName}>
-          <input
-            aria-label="共享目录"
-            placeholder="例如：media"
-            value={detail.shareName}
-            onChange={(event) =>
-              onChange({
-                ...draft,
-                detail: {
-                  ...detail,
-                  shareName: event.target.value,
-                },
-              })
-            }
-          />
-        </Field>
-        <Field label="用户名">
-          <input
-            aria-label="用户名"
-            value={detail.username}
-            onChange={(event) =>
-              onChange({
-                ...draft,
-                detail: {
-                  ...detail,
-                  username: event.target.value,
-                },
-              })
-            }
-          />
-        </Field>
-        <Field label="密码">
-          <input
-            aria-label="密码"
-            type="password"
-            value={detail.password}
-            onChange={(event) =>
-              onChange({
-                ...draft,
-                detail: {
-                  ...detail,
-                  password: event.target.value,
-                },
-              })
-            }
-          />
-        </Field>
-      </>
-    );
-  }
-
-  const detail = draft.detail;
-  return (
-    <>
-      <Field label="厂商">
-        <select
-          aria-label="网盘类型"
-          value={detail.vendor}
-          onChange={(event) =>
-            onChange({
-              ...draft,
-              detail: {
-                ...detail,
-                vendor: event.target.value as '115',
-              },
-            })
-          }
-        >
-          <option value="115">115</option>
-        </select>
-      </Field>
-      <Field label="接入方式">
-        <div aria-label="接入方式" className="mini-segmented" role="group">
-          {CLOUD_ACCESS_OPTIONS.map((option) => (
-            <button
-              key={option}
-              className={option === detail.accessMethod ? 'active' : ''}
-              type="button"
-              onClick={() =>
-                onChange({
-                  ...draft,
-                  detail: {
-                    ...detail,
-                    accessMethod: option,
-                    token: option === '填入 Token' ? detail.token : detail.token,
-                  },
-                })
-              }
-            >
-              {option}
-            </button>
-          ))}
-        </div>
-      </Field>
-      <Field label="账号别名">
-        <input
-          aria-label="账号别名"
-          value={detail.accountAlias}
-          onChange={(event) =>
-            onChange({
-              ...draft,
-              detail: {
-                ...detail,
-                accountAlias: event.target.value,
-              },
-            })
-          }
-        />
-      </Field>
-      <Field label="挂载目录" error={errors.mountDirectory}>
-        <input
-          aria-label="挂载目录"
-          placeholder="例如：/MareArchive"
-          value={detail.mountDirectory}
-          onChange={(event) =>
-            onChange({
-              ...draft,
-              detail: {
-                ...detail,
-                mountDirectory: event.target.value,
-              },
-            })
-          }
-        />
-      </Field>
-      {detail.accessMethod === '填入 Token' ? (
-        <Field label="Token" error={errors.token}>
-          <input
-            aria-label="Token"
-            placeholder="例如：eyJhbGciOi..."
-            value={detail.token}
-            onChange={(event) =>
-              onChange({
-                ...draft,
-                detail: {
-                  ...detail,
-                  token: event.target.value,
-                },
-              })
-            }
-          />
-        </Field>
-      ) : (
-        <>
-          <Field label="扫码登录类型">
-            <select
-              aria-label="扫码登录类型"
-              value={detail.qrChannel}
-              onChange={(event) =>
-                onChange({
-                  ...draft,
-                  detail: {
-                    ...detail,
-                    qrChannel: event.target.value as StorageCloudQrChannel,
-                  },
-                })
-              }
-            >
-              {CLOUD_QR_CHANNEL_OPTIONS.map((option) => (
+      {heartbeatEditor ? (
+        <Dialog title="设置心跳" onClose={() => setHeartbeatEditor(null)}>
+          <Field label="心跳周期">
+            <select aria-label="心跳周期设置" value={heartbeatEditor.value} onChange={(event) => setHeartbeatEditor((current) => (current ? { ...current, value: event.target.value as StorageHeartbeatPolicy } : current))}>
+              {HEARTBEAT_OPTIONS.map((option) => (
                 <option key={option} value={option}>
                   {option}
                 </option>
               ))}
             </select>
           </Field>
-          <div className="inline-warning">
-            当前仅提供 mock 扫码登录流程，生成会话后会自动回填 Token。
+          <div className="sheet-actions right">
+            <ActionButton tone="primary" onClick={() => void saveHeartbeat()}>
+              {heartbeatEditor.saving ? <LoaderCircle className="spin" size={14} /> : null}
+              保存心跳
+            </ActionButton>
           </div>
-          <ActionButton
-            onClick={() =>
-              onChange({
-                ...draft,
-                detail: {
-                  ...detail,
-                  token: `mock-token-${detail.qrChannel}-${Date.now()}`,
-                },
-              })
-            }
-          >
-            生成扫码登录会话
-          </ActionButton>
-        </>
-      )}
+        </Dialog>
+      ) : null}
+
+      {historyState ? (
+        <Dialog title="扫描历史" onClose={() => setHistoryState(null)}>
+          {historyState.loading ? (
+            <div className="empty-state">
+              <LoaderCircle className="spin" size={18} />
+              <strong>正在加载扫描历史</strong>
+            </div>
+          ) : (
+            <div className="storage-dialog-stack">
+              {historyState.items.map((item) => (
+                <section className="dialog-card" key={item.id}>
+                  <div className="section-header">
+                    <strong>{item.startedAt}</strong>
+                    <TonePill tone={item.status === '成功' ? 'success' : item.status === '失败' ? 'critical' : 'info'}>{item.status}</TonePill>
+                  </div>
+                  <p className="muted-paragraph">{item.summary}</p>
+                </section>
+              ))}
+            </div>
+          )}
+        </Dialog>
+      ) : null}
+
+      {connectionResults ? (
+        <Dialog title="连接测试结果" onClose={() => setConnectionResults(null)}>
+          <div className="storage-dialog-stack">
+            {connectionResults.map((item) => (
+              <section className="dialog-card" key={item.id}>
+                <div className="section-header">
+                  <strong>{item.name}</strong>
+                  <TonePill tone={item.overallTone}>{item.overallTone === 'success' ? '可继续使用' : '建议处理后再继续'}</TonePill>
+                </div>
+                <p className="muted-paragraph">{item.summary}</p>
+                <div className="dense-result-list">
+                  {item.checks.map((check) => (
+                    <div className="dense-result-row" key={`${item.id}-${check.label}`}>
+                      <span>{check.label}</span>
+                      <strong className={`tone-text-${check.status}`}>{check.detail}</strong>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ))}
+          </div>
+        </Dialog>
+      ) : null}
+    </section>
+  );
+}
+
+function MountFoldersTable({
+  allVisibleSelected,
+  items,
+  menuState,
+  page,
+  pageCount,
+  pageSize,
+  onDelete,
+  onEdit,
+  onMenuChange,
+  onOpenHistory,
+  onOpenIssueCenter,
+  onOpenTaskCenter,
+  onRunConnectionTest,
+  onRunScan,
+  onSetHeartbeat,
+  onToggleSelect,
+  onToggleSelectVisible,
+  onPageChange,
+  onPageSizeChange,
+  scanningIds,
+  selectedIds,
+  testingIds,
+  total,
+}: {
+  allVisibleSelected: boolean;
+  items: MountFolderRecord[];
+  menuState: { type: 'mount' | 'nas' | 'cloud'; id: string } | null;
+  page: number;
+  pageCount: number;
+  pageSize: StoragePageSize;
+  onDelete: (id: string) => void | Promise<void>;
+  onEdit: (item: MountFolderRecord) => void;
+  onMenuChange: (value: { type: 'mount' | 'nas' | 'cloud'; id: string } | null) => void;
+  onOpenHistory: (item: MountFolderRecord) => void;
+  onOpenIssueCenter?: (id: string) => void;
+  onOpenTaskCenter?: (id: string) => void;
+  onRunConnectionTest: (id: string) => void;
+  onRunScan: (id: string) => void;
+  onSetHeartbeat: (id: string, value: StorageHeartbeatPolicy) => void;
+  onToggleSelect: (id: string) => void;
+  onToggleSelectVisible: () => void;
+  onPageChange: (value: number) => void;
+  onPageSizeChange: (value: StoragePageSize) => void;
+  scanningIds: string[];
+  selectedIds: string[];
+  testingIds: string[];
+  total: number;
+}) {
+  if (items.length === 0) {
+    return <EmptyState title="没有匹配的挂载文件夹" description="可以调整筛选条件，或新增一个挂载文件夹。" />;
+  }
+
+  return (
+    <>
+    <div className="storage-table-wrap">
+      <table className="file-table storage-table">
+        <thead>
+          <tr>
+            <th className="checkbox-cell">
+              <input aria-label="选择当前挂载文件夹" checked={allVisibleSelected} type="checkbox" onChange={onToggleSelectVisible} />
+            </th>
+            <th>名称</th>
+            <th>类型</th>
+            <th>地址 / 路径</th>
+            <th>扫描状态</th>
+            <th>最近扫描</th>
+            <th>心跳周期</th>
+            <th>容量 / 可用空间</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((item) => (
+            <tr key={item.id} aria-selected={selectedIds.includes(item.id)}>
+              <td className="checkbox-cell">
+                <input aria-label={`选择挂载文件夹 ${item.name}`} checked={selectedIds.includes(item.id)} type="checkbox" onChange={() => onToggleSelect(item.id)} />
+              </td>
+              <td>
+                <div className="storage-node-cell">
+                  <div className="storage-node-title">
+                    <strong>{item.name}</strong>
+                    <TonePill tone={resolveMountStatusTone(item)}>{resolveMountStatus(item)}</TonePill>
+                  </div>
+                  <div className="endpoint-row">
+                    {item.badges.map((badge) => (
+                      <TonePill key={badge} tone="info">
+                        {badge}
+                      </TonePill>
+                    ))}
+                    <TonePill tone="warning">{item.libraryName}</TonePill>
+                    {item.riskTags.map((tag) => (
+                      <TonePill key={tag} tone="warning">
+                        {tag}
+                      </TonePill>
+                    ))}
+                  </div>
+                </div>
+              </td>
+              <td>{item.folderType}</td>
+              <td>
+                <div className="row-main">
+                  <strong>{item.address}</strong>
+                  <span>{item.sourceName ?? '本地目录'}</span>
+                </div>
+              </td>
+              <td>
+                <div className="row-main">
+                  <TonePill tone={item.scanTone}>{item.scanStatus}</TonePill>
+                </div>
+              </td>
+              <td>{item.lastScanAt}</td>
+              <td>
+                <div className="row-main">
+                  <strong>{item.heartbeatPolicy}</strong>
+                  <span>{item.nextHeartbeatAt}</span>
+                </div>
+              </td>
+              <td>
+                <div className="storage-capacity-cell">
+                  <strong>{item.capacitySummary}</strong>
+                  <ProgressBar value={item.capacityPercent} />
+                  <span>{item.freeSpaceSummary}</span>
+                </div>
+              </td>
+              <td>
+                <div className="row-actions storage-row-actions">
+                  <IconButton ariaLabel={`连接测试 ${item.name}`} tooltip="连接测试" onClick={() => onRunConnectionTest(item.id)}>
+                    {testingIds.includes(item.id) ? <LoaderCircle className="spin" size={15} /> : <Radar size={15} />}
+                  </IconButton>
+                  <IconButton ariaLabel={`立即扫描 ${item.name}`} tooltip="立即扫描" onClick={() => onRunScan(item.id)}>
+                    {scanningIds.includes(item.id) ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />}
+                  </IconButton>
+                  <IconButton ariaLabel={`编辑 ${item.name}`} tooltip="编辑" onClick={() => onEdit(item)}>
+                    <Pencil size={15} />
+                  </IconButton>
+                  <div className="storage-menu-anchor">
+                    <IconButton ariaLabel={`更多操作 ${item.name}`} tooltip="更多操作" onClick={() => onMenuChange(menuState?.id === item.id ? null : { type: 'mount', id: item.id })}>
+                      <CircleEllipsis size={15} />
+                    </IconButton>
+                    {menuState?.type === 'mount' && menuState.id === item.id ? (
+                      <div className="context-menu storage-menu-inline">
+                        <button type="button" onClick={() => onSetHeartbeat(item.id, item.heartbeatPolicy)}>
+                          设置心跳
+                        </button>
+                        <button type="button" onClick={() => onOpenHistory(item)}>
+                          查看扫描历史
+                        </button>
+                        <button type="button" onClick={() => onOpenTaskCenter?.(item.id)}>
+                          查看相关任务
+                        </button>
+                        <button type="button" onClick={() => onOpenIssueCenter?.(item.id)}>
+                          查看相关异常
+                        </button>
+                        <button className="danger-text" type="button" onClick={() => void onDelete(item.id)}>
+                          删除
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+    <StoragePagination
+      page={page}
+      pageCount={pageCount}
+      pageSize={pageSize}
+      total={total}
+      onPageChange={onPageChange}
+      onPageSizeChange={onPageSizeChange}
+    />
     </>
   );
 }
 
-function Field({
-  children,
-  error,
-  label,
+function NasTable({
+  items,
+  menuState,
+  page,
+  pageCount,
+  pageSize,
+  onDelete,
+  onEdit,
+  onMenuChange,
+  onPageChange,
+  onPageSizeChange,
+  onRunConnectionTest,
+  testingIds,
+  total,
 }: {
-  children: React.ReactNode;
-  error?: string;
-  label: string;
+  items: NasRecord[];
+  menuState: { type: 'mount' | 'nas' | 'cloud'; id: string } | null;
+  page: number;
+  pageCount: number;
+  pageSize: StoragePageSize;
+  onDelete: (id: string) => void;
+  onEdit: (item: NasRecord) => void;
+  onMenuChange: (value: { type: 'mount' | 'nas' | 'cloud'; id: string } | null) => void;
+  onPageChange: (value: number) => void;
+  onPageSizeChange: (value: StoragePageSize) => void;
+  onRunConnectionTest: (id: string) => void;
+  testingIds: string[];
+  total: number;
 }) {
+  if (items.length === 0) {
+    return <EmptyState title="没有 NAS 配置" description="可以新增一个 NAS 主机配置。" />;
+  }
+
+  return (
+    <>
+    <div className="storage-table-wrap">
+      <table className="file-table storage-table storage-simple-table">
+        <thead>
+          <tr>
+            <th>名称</th>
+            <th>地址</th>
+            <th>账号密码</th>
+            <th>鉴权状态</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((item) => (
+            <tr key={item.id}>
+              <td>{item.name}</td>
+              <td>{item.address}</td>
+              <td>
+                <div className="row-main">
+                  <strong>{item.username}</strong>
+                  <span>{item.passwordHint}</span>
+                </div>
+              </td>
+              <td>
+                <div className="row-main">
+                  <TonePill tone={item.tone}>{item.status}</TonePill>
+                  <span>{item.lastTestAt ?? '尚未测试'}</span>
+                </div>
+              </td>
+              <td>
+                <div className="row-actions storage-row-actions">
+                  <IconButton ariaLabel={`连接测试 ${item.name}`} tooltip="连接测试" onClick={() => onRunConnectionTest(item.id)}>
+                    {testingIds.includes(item.id) ? <LoaderCircle className="spin" size={15} /> : <Radar size={15} />}
+                  </IconButton>
+                  <IconButton ariaLabel={`编辑 ${item.name}`} tooltip="编辑" onClick={() => onEdit(item)}>
+                    <Pencil size={15} />
+                  </IconButton>
+                  <div className="storage-menu-anchor">
+                    <IconButton ariaLabel={`更多操作 ${item.name}`} tooltip="更多操作" onClick={() => onMenuChange(menuState?.id === item.id ? null : { type: 'nas', id: item.id })}>
+                      <CircleEllipsis size={15} />
+                    </IconButton>
+                    {menuState?.type === 'nas' && menuState.id === item.id ? (
+                      <div className="context-menu storage-menu-inline">
+                        <button className="danger-text" type="button" onClick={() => onDelete(item.id)}>
+                          删除
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+    <StoragePagination
+      page={page}
+      pageCount={pageCount}
+      pageSize={pageSize}
+      total={total}
+      onPageChange={onPageChange}
+      onPageSizeChange={onPageSizeChange}
+    />
+    </>
+  );
+}
+
+function CloudTable({
+  items,
+  menuState,
+  page,
+  pageCount,
+  pageSize,
+  onDelete,
+  onEdit,
+  onMenuChange,
+  onPageChange,
+  onPageSizeChange,
+  onRunConnectionTest,
+  testingIds,
+  total,
+}: {
+  items: CloudRecord[];
+  menuState: { type: 'mount' | 'nas' | 'cloud'; id: string } | null;
+  page: number;
+  pageCount: number;
+  pageSize: StoragePageSize;
+  onDelete: (id: string) => void;
+  onEdit: (item: CloudRecord) => void;
+  onMenuChange: (value: { type: 'mount' | 'nas' | 'cloud'; id: string } | null) => void;
+  onPageChange: (value: number) => void;
+  onPageSizeChange: (value: StoragePageSize) => void;
+  onRunConnectionTest: (id: string) => void;
+  testingIds: string[];
+  total: number;
+}) {
+  if (items.length === 0) {
+    return <EmptyState title="没有网盘配置" description="可以新增一个网盘接入配置。" />;
+  }
+
+  return (
+    <>
+    <div className="storage-table-wrap">
+      <table className="file-table storage-table storage-simple-table">
+        <thead>
+          <tr>
+            <th>名称</th>
+            <th>网盘类型</th>
+            <th>接入方式</th>
+            <th>挂载目录</th>
+            <th>鉴权状态</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((item) => (
+            <tr key={item.id}>
+              <td>{item.name}</td>
+              <td>{item.vendor}</td>
+              <td>{item.accessMethod}{item.qrChannel ? ` / ${item.qrChannel}` : ''}</td>
+              <td>{item.mountDirectory}</td>
+              <td>
+                <div className="row-main">
+                  <TonePill tone={item.tone}>{item.status}</TonePill>
+                  <span>{item.lastTestAt ?? '尚未测试'}</span>
+                </div>
+              </td>
+              <td>
+                <div className="row-actions storage-row-actions">
+                  <IconButton ariaLabel={`连接测试 ${item.name}`} tooltip="连接测试" onClick={() => onRunConnectionTest(item.id)}>
+                    {testingIds.includes(item.id) ? <LoaderCircle className="spin" size={15} /> : <Radar size={15} />}
+                  </IconButton>
+                  <IconButton ariaLabel={`编辑 ${item.name}`} tooltip="编辑" onClick={() => onEdit(item)}>
+                    <Pencil size={15} />
+                  </IconButton>
+                  <div className="storage-menu-anchor">
+                    <IconButton ariaLabel={`更多操作 ${item.name}`} tooltip="更多操作" onClick={() => onMenuChange(menuState?.id === item.id ? null : { type: 'cloud', id: item.id })}>
+                      <CircleEllipsis size={15} />
+                    </IconButton>
+                    {menuState?.type === 'cloud' && menuState.id === item.id ? (
+                      <div className="context-menu storage-menu-inline">
+                        <button className="danger-text" type="button" onClick={() => onDelete(item.id)}>
+                          删除
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+    <StoragePagination
+      page={page}
+      pageCount={pageCount}
+      pageSize={pageSize}
+      total={total}
+      onPageChange={onPageChange}
+      onPageSizeChange={onPageSizeChange}
+    />
+    </>
+  );
+}
+
+function StoragePagination({
+  page,
+  pageCount,
+  pageSize,
+  total,
+  onPageChange,
+  onPageSizeChange,
+}: {
+  page: number;
+  pageCount: number;
+  pageSize: StoragePageSize;
+  total: number;
+  onPageChange: (value: number) => void;
+  onPageSizeChange: (value: StoragePageSize) => void;
+}) {
+  return (
+    <div className="storage-pagination">
+      <span className="selection-caption">页 {page}/{pageCount}</span>
+      <div className="storage-pagination-controls">
+        <IconButton ariaLabel="首页" onClick={() => onPageChange(1)}>
+          <ChevronLeft size={14} />
+          <ChevronLeft size={14} />
+        </IconButton>
+        <IconButton ariaLabel="上一页" onClick={() => onPageChange(Math.max(1, page - 1))}>
+          <ChevronLeft size={14} />
+        </IconButton>
+        <button className="storage-page-chip active" type="button">
+          {page}
+        </button>
+        <IconButton ariaLabel="下一页" onClick={() => onPageChange(Math.min(pageCount, page + 1))}>
+          <ChevronRight size={14} />
+        </IconButton>
+        <IconButton ariaLabel="末页" onClick={() => onPageChange(pageCount)}>
+          <ChevronRight size={14} />
+          <ChevronRight size={14} />
+        </IconButton>
+      </div>
+      <label className="select-pill storage-page-size">
+        <select aria-label="每页数量" value={String(pageSize)} onChange={(event) => onPageSizeChange(Number(event.target.value) as StoragePageSize)}>
+          {PAGE_SIZE_OPTIONS.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </select>
+      </label>
+      <span className="selection-caption">项/页，共 {total} 项</span>
+    </div>
+  );
+}
+
+function Field({ children, error, label }: { children: React.ReactNode; error?: string; label: string }) {
   return (
     <label className="form-field">
       <span>{label}</span>
@@ -1335,12 +1350,7 @@ function Dialog({
 }) {
   return (
     <div className="dialog-backdrop" role="presentation" onClick={onClose}>
-      <section
-        aria-label={title}
-        className="dialog-panel"
-        role="dialog"
-        onClick={(event) => event.stopPropagation()}
-      >
+      <section aria-label={title} className="dialog-panel" role="dialog" onClick={(event) => event.stopPropagation()}>
         <div className="sheet-header">
           <strong>{title}</strong>
           <IconButton ariaLabel="关闭" onClick={onClose}>
@@ -1353,264 +1363,104 @@ function Dialog({
   );
 }
 
-function resolveStatusFilter(node: StorageNodeRecord): StatusFilter {
-  if (!node.enabled) {
-    return '已停用';
-  }
-  if (node.scanStatus === '扫描中') {
-    return '扫描中';
-  }
-  if (node.scanTone === 'critical' || node.authTone === 'critical' || node.riskTags.length > 0) {
-    return '异常';
-  }
-  return '可用';
+function updateMountForm(current: MountFormState, patch: Partial<MountFolderDraft>): MountFormState {
+  return { ...current, draft: { ...current.draft, ...patch }, errors: {} };
 }
 
-function resolveToneByStatus(status: StatusFilter) {
-  if (status === '异常') {
-    return 'critical';
-  }
-  if (status === '扫描中') {
-    return 'warning';
-  }
-  if (status === '已停用') {
-    return 'info';
-  }
-  return 'success';
+function updateNasForm(current: NasFormState, patch: Partial<NasDraft>): NasFormState {
+  return { ...current, draft: { ...current.draft, ...patch }, errors: {} };
 }
 
-function createDraftFromNode(node: StorageNodeRecord): StorageNodeDraft {
-  if (node.detail.kind === 'local') {
-    return {
-      id: node.id,
-      name: node.name,
-      nodeType: node.nodeType,
-      notes: node.notes,
-      mountMode: node.mountMode,
-      heartbeatPolicy: node.heartbeatPolicy,
-      detail: {
-        kind: 'local',
-        rootPath: node.detail.rootPath,
-      },
-    };
-  }
+function updateCloudForm(current: CloudFormState, patch: Partial<CloudDraft>): CloudFormState {
+  return { ...current, draft: { ...current.draft, ...patch }, errors: {} };
+}
 
-  if (node.detail.kind === 'nas') {
-    return {
-      id: node.id,
-      name: node.name,
-      nodeType: node.nodeType,
-      notes: node.notes,
-      mountMode: node.mountMode,
-      heartbeatPolicy: node.heartbeatPolicy,
-      detail: {
-        kind: 'nas',
-        protocol: node.detail.protocol,
-        host: node.detail.host,
-        shareName: node.detail.shareName,
-        username: node.detail.username,
-        password: '',
-      },
-    };
-  }
-
+function mountRecordToDraft(item: MountFolderRecord): MountFolderDraft {
   return {
-    id: node.id,
-    name: node.name,
-    nodeType: node.nodeType,
-    notes: node.notes,
-    mountMode: node.mountMode,
-    heartbeatPolicy: node.heartbeatPolicy,
-    detail: {
-      kind: 'cloud',
-      vendor: node.detail.vendor,
-      accountAlias: node.detail.accountAlias,
-      mountDirectory: node.detail.mountDirectory,
-      accessMethod: node.detail.accessMethod,
-      qrChannel: node.detail.qrChannel ?? '微信小程序',
-      token: '',
-    },
+    id: item.id,
+    name: item.name,
+    libraryId: item.libraryId,
+    folderType: item.folderType,
+    mountMode: item.mountMode,
+    heartbeatPolicy: item.heartbeatPolicy,
+    localPath: item.folderType === '本地' ? item.address : '',
+    nasId: item.folderType === 'NAS' ? item.sourceRefId ?? '' : '',
+    cloudId: item.folderType === '网盘' ? item.sourceRefId ?? '' : '',
+    targetFolder: '',
+    notes: item.notes,
   };
 }
 
-function createCredentialDraft(node: StorageNodeRecord): StorageCredentialDraft {
-  if (node.detail.kind === 'nas') {
-    return {
-      id: node.id,
-      nodeName: node.name,
-      authMode: '账号密码',
-      username: node.detail.username,
-      password: '',
-      token: '',
-      qrChannel: '微信小程序',
-    };
-  }
-
-  if (node.detail.kind !== 'cloud') {
-    return {
-      id: node.id,
-      nodeName: node.name,
-      authMode: '填入 Token',
-      username: '',
-      password: '',
-      token: '',
-      qrChannel: '微信小程序',
-    };
-  }
-
+function nasRecordToDraft(item: NasRecord): NasDraft {
   return {
-    id: node.id,
-    nodeName: node.name,
-    authMode: node.detail.accessMethod,
-    username: '',
+    id: item.id,
+    name: item.name,
+    address: item.address,
+    username: item.username,
     password: '',
-    token: '',
-    qrChannel: node.detail.qrChannel ?? '微信小程序',
+    notes: item.notes,
   };
 }
 
-function resetDraftType(draft: StorageNodeDraft, nodeType: StorageNodeType): StorageNodeDraft {
-  if (nodeType === draft.nodeType) {
-    return draft;
-  }
-
-  if (nodeType === '本机磁盘') {
-    return {
-      id: draft.id,
-      name: draft.name,
-      nodeType,
-      notes: draft.notes,
-      mountMode: draft.mountMode,
-      heartbeatPolicy: draft.heartbeatPolicy,
-      detail: {
-        kind: 'local',
-        rootPath: '',
-      },
-    };
-  }
-
-  if (nodeType === 'NAS/SMB') {
-    return {
-      id: draft.id,
-      name: draft.name,
-      nodeType,
-      notes: draft.notes,
-      mountMode: draft.mountMode,
-      heartbeatPolicy: draft.heartbeatPolicy,
-      detail: {
-        kind: 'nas',
-        protocol: 'SMB',
-        host: '',
-        shareName: '',
-        username: '',
-        password: '',
-      },
-    };
-  }
-
+function cloudRecordToDraft(item: CloudRecord): CloudDraft {
   return {
-    id: draft.id,
-    name: draft.name,
-    nodeType,
-    notes: draft.notes,
-    mountMode: draft.mountMode,
-    heartbeatPolicy: draft.heartbeatPolicy,
-    detail: {
-      kind: 'cloud',
-      vendor: '115',
-      accountAlias: '',
-      mountDirectory: '',
-      accessMethod: '填入 Token',
-      qrChannel: '微信小程序',
-      token: '',
-    },
+    id: item.id,
+    name: item.name,
+    vendor: '115',
+    accessMethod: item.accessMethod,
+    qrChannel: item.qrChannel ?? '微信小程序',
+    accountAlias: item.accountAlias,
+    mountDirectory: item.mountDirectory,
+    token: '',
+    notes: item.notes,
   };
 }
 
-function validateDraft(draft: StorageNodeDraft) {
+function validateMountDraft(draft: MountFolderDraft) {
   const errors: Partial<Record<string, string>> = {};
-
-  if (!draft.name.trim()) {
-    errors.name = '请输入节点名称';
+  if (!draft.name.trim()) errors.name = '请输入挂载名称';
+  if (!draft.libraryId.trim()) errors.libraryId = '请选择资产库';
+  if (draft.folderType === '本地' && !draft.localPath.trim()) errors.localPath = '请选择本地目录';
+  if (draft.folderType === 'NAS' && !draft.nasId) errors.nasId = '请选择 NAS 来源';
+  if (draft.folderType === '网盘' && !draft.cloudId) errors.cloudId = '请选择网盘来源';
+  if ((draft.folderType === 'NAS' || draft.folderType === '网盘') && !draft.targetFolder.trim()) {
+    errors.targetFolder = draft.folderType === 'NAS' ? '请输入 NAS 共享文件夹' : '请输入网盘文件夹名 / ID';
   }
-  if (draft.detail.kind === 'local' && !draft.detail.rootPath.trim()) {
-    errors.rootPath = '请输入根路径';
-  }
-  if (draft.detail.kind === 'nas') {
-    if (!draft.detail.host.trim()) {
-      errors.host = '请输入主机/IP';
-    }
-    if (!draft.detail.shareName.trim()) {
-      errors.shareName = '请输入共享目录';
-    }
-  }
-  if (draft.detail.kind === 'cloud') {
-    if (!draft.detail.mountDirectory.trim()) {
-      errors.mountDirectory = '请输入挂载目录';
-    }
-    if (!draft.detail.token.trim()) {
-      errors.token = draft.detail.accessMethod === '填入 Token' ? '请输入 Token' : '请先生成扫码登录会话';
-    }
-  }
-
   return errors;
 }
 
-function buildDraftConnectionResult(draft: StorageNodeDraft): StorageConnectionTestResult {
-  const checks = [];
+function validateNasDraft(draft: NasDraft) {
+  const errors: Partial<Record<string, string>> = {};
+  if (!draft.name.trim()) errors.name = '请输入 NAS 名称';
+  if (!draft.address.trim()) errors.address = '请输入 NAS 地址';
+  if (!draft.username.trim()) errors.username = '请输入账号';
+  return errors;
+}
 
-  if (draft.detail.kind === 'local') {
-    checks.push({ label: '可达性', status: 'success' as const, detail: `路径 ${draft.detail.rootPath} 可访问。` });
-    checks.push({ label: '鉴权状态', status: 'success' as const, detail: '本地节点无需鉴权。' });
-  } else if (draft.detail.kind === 'nas') {
-    checks.push({ label: '可达性', status: 'success' as const, detail: `主机 ${draft.detail.host} 可达。` });
-    checks.push({
-      label: '鉴权状态',
-      status: draft.detail.username ? ('success' as const) : ('warning' as const),
-      detail: draft.detail.username ? '已填写账号信息。' : '建议补充账号信息后再保存。',
-    });
-  } else {
-    checks.push({ label: '可达性', status: 'success' as const, detail: `网盘类型 ${draft.detail.vendor} 接入通道可用。` });
-    checks.push({
-      label: '鉴权状态',
-      status: draft.detail.token ? ('success' as const) : ('warning' as const),
-      detail:
-        draft.detail.accessMethod === '扫码登录获取 Token'
-          ? draft.detail.token
-            ? `已通过${draft.detail.qrChannel}生成 Token。`
-            : `请先完成${draft.detail.qrChannel}扫码登录。`
-          : draft.detail.token
-            ? 'Token 已填写。'
-            : 'Token 为空，保存前请补齐。',
-    });
-  }
+function validateCloudDraft(draft: CloudDraft) {
+  const errors: Partial<Record<string, string>> = {};
+  if (!draft.name.trim()) errors.name = '请输入网盘名称';
+  if (!draft.accountAlias.trim()) errors.accountAlias = '请输入账号别名';
+  if (!draft.mountDirectory.trim()) errors.mountDirectory = '请输入挂载目录';
+  if (!draft.token.trim()) errors.token = '请输入 Token';
+  return errors;
+}
 
-  checks.push({ label: '读权限', status: 'success' as const, detail: '模拟环境中可读取目标目录。' });
-  checks.push({
-    label: '写权限',
-    status: draft.mountMode === '只读' ? ('warning' as const) : ('success' as const),
-    detail: draft.mountMode === '只读' ? '当前为只读挂载。' : '当前配置允许写入。',
-  });
-  checks.push({ label: '目标目录可访问', status: 'success' as const, detail: '目录检查通过。' });
+function resolveMountStatus(item: MountFolderRecord): StatusFilter {
+  if (!item.enabled) return '已停用';
+  if (item.scanStatus === '扫描中') return '扫描中';
+  if (item.riskTags.length > 0 || item.authTone === 'warning' || item.authTone === 'critical') return '异常';
+  return '可用';
+}
 
-  return {
-    nodeId: draft.id ?? 'draft',
-    nodeName: draft.name || '未命名节点',
-    overallTone: checks.some((item) => item.status === 'warning') ? 'warning' : 'success',
-    summary: '连接测试已完成，当前结果来自表单即时模拟，可用于提前确认接入配置方向。',
-    checks,
-    suggestion: checks.some((item) => item.status === 'warning') ? '检查配置后保存' : '可继续保存节点',
-    testedAt: '刚刚',
-  };
+function resolveMountStatusTone(item: MountFolderRecord): FeedbackTone {
+  const status = resolveMountStatus(item);
+  if (status === '异常') return 'critical';
+  if (status === '扫描中') return 'warning';
+  if (status === '已停用') return 'info';
+  return 'success';
 }
 
 function extractErrorMessage(error: unknown, fallback: string) {
-  if (error instanceof Error && error.message) {
-    return error.message;
-  }
-  return fallback;
-}
-
-function waitBriefly() {
-  return new Promise((resolve) => window.setTimeout(resolve, 420));
+  return error instanceof Error && error.message ? error.message : fallback;
 }
