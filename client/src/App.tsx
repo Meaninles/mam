@@ -9,7 +9,6 @@ import {
   Settings2,
 } from 'lucide-react';
 import type {
-  FileNode,
   FileTypeFilter,
   Library,
   MainView,
@@ -21,11 +20,9 @@ import type {
 } from './data';
 import { navigationItems } from './data';
 import {
-  collectNodeIds,
   cloneSettingsRecord,
   createId,
   getDefaultPageSize,
-  getSortableSize,
   loadPersistedState,
   resolveLibraryForImport,
   resolveThemeMode,
@@ -33,6 +30,15 @@ import {
   type NotificationItem,
   type PersistedState,
 } from './lib/clientState';
+import {
+  fileCenterApi,
+  type FileCenterColorLabel,
+  type FileCenterDirectoryResult,
+  type FileCenterEntry,
+  type FileCenterSortValue,
+  type FileCenterStatusFilter,
+  type FileCenterTagSuggestion,
+} from './lib/fileCenterApi';
 import { ActionButton, IconButton, LibraryManagerSheet, Sheet } from './components/Shared';
 import { FileCenterPage } from './pages/FileCenterPage';
 import { FileDetailSheet } from './pages/FileDetailSheet';
@@ -44,12 +50,19 @@ import { TaskCenterPage, TaskDetailSheet } from './pages/TaskCenterPage';
 
 export type PageSize = 10 | 20 | 50 | 100;
 export type ContextMenuTarget =
-  | { type: 'file'; item: FileNode; x: number; y: number }
+  | { type: 'file'; item: FileCenterEntry; x: number; y: number }
   | { type: 'task'; item: TaskRecord; x: number; y: number }
   | { type: 'storage'; item: StorageNode; x: number; y: number }
   | null;
 
 type FeedbackState = { message: string; tone: Severity } | null;
+type FileConfirmAction =
+  | { kind: 'sync'; item: FileCenterEntry; endpointName: string }
+  | { kind: 'delete-asset'; items: FileCenterEntry[] }
+  | { kind: 'delete-endpoint'; item: FileCenterEntry; endpointName: string; willDeleteAsset: boolean };
+type TagEditorState = {
+  item: FileCenterEntry;
+} | null;
 
 export default function App() {
   const [persisted, setPersisted] = useState<PersistedState>(loadPersistedState);
@@ -58,10 +71,11 @@ export default function App() {
   const [taskTab, setTaskTab] = useState<TaskTab>('transfer');
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('general');
   const [fileTypeFilter, setFileTypeFilter] = useState<FileTypeFilter>('全部');
+  const [fileStatusFilter, setFileStatusFilter] = useState<FileCenterStatusFilter>('全部');
   const [taskStatusFilter, setTaskStatusFilter] = useState('全部');
   const [issueTypeFilter, setIssueTypeFilter] = useState('全部');
   const [searchText, setSearchText] = useState('');
-  const [fileSort, setFileSort] = useState('修改时间');
+  const [fileSort, setFileSort] = useState<FileCenterSortValue>('修改时间');
   const deferredSearchText = useDeferredValue(searchText);
   const [pageSize, setPageSize] = useState<PageSize>(() => getDefaultPageSize(persisted.settings));
   const [currentPage, setCurrentPage] = useState(1);
@@ -79,7 +93,18 @@ export default function App() {
   const [libraryMenuOpen, setLibraryMenuOpen] = useState(false);
   const [managedLibrary, setManagedLibrary] = useState<Library | null>(null);
   const [taskDetail, setTaskDetail] = useState<TaskRecord | null>(null);
-  const [fileDetail, setFileDetail] = useState<FileNode | null>(null);
+  const [fileDetail, setFileDetail] = useState<FileCenterEntry | null>(null);
+  const [fileCenterState, setFileCenterState] = useState<FileCenterDirectoryResult>({
+    breadcrumbs: [],
+    items: [],
+    total: 0,
+    currentPathChildren: 0,
+  });
+  const [fileCenterLoading, setFileCenterLoading] = useState(true);
+  const [fileCenterVersion, setFileCenterVersion] = useState(0);
+  const [availableTags, setAvailableTags] = useState<FileCenterTagSuggestion[]>([]);
+  const [pendingAction, setPendingAction] = useState<FileConfirmAction | null>(null);
+  const [tagEditorState, setTagEditorState] = useState<TagEditorState>(null);
   const [folderDraft, setFolderDraft] = useState<string | null>(null);
   const unreadNotificationCount = useMemo(
     () => persisted.notifications.filter((item) => item.read === false).length,
@@ -106,50 +131,88 @@ export default function App() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [currentFolderId, deferredSearchText, fileSort, fileTypeFilter, pageSize]);
+  }, [currentFolderId, deferredSearchText, fileSort, fileStatusFilter, fileTypeFilter, pageSize]);
+
+  useEffect(() => {
+    setSelectedFileIds([]);
+  }, [activeLibraryId, currentFolderId]);
+
+  useEffect(() => {
+    void fileCenterApi.loadTagSuggestions().then(setAvailableTags).catch(() => {
+      setAvailableTags([]);
+    });
+  }, [fileCenterVersion]);
 
   const theme = useMemo(() => resolveThemeMode(persisted.settings), [persisted.settings]);
   const currentLibrary = useMemo(
     () => persisted.libraries.find((item) => item.id === activeLibraryId) ?? persisted.libraries[0],
     [activeLibraryId, persisted.libraries],
   );
-  const currentLibraryNodes = useMemo(
-    () => persisted.fileNodes.filter((node) => node.libraryId === activeLibraryId),
-    [activeLibraryId, persisted.fileNodes],
-  );
-  const breadcrumbs = useMemo(() => {
-    const trail = [{ id: null as string | null, label: currentLibrary.name }];
-    let cursor = currentFolderId ? persisted.fileNodes.find((node) => node.id === currentFolderId) : undefined;
-    const stack: Array<{ id: string; label: string }> = [];
-    while (cursor) {
-      stack.unshift({ id: cursor.id, label: cursor.name });
-      const parentId = cursor.parentId;
-      cursor = parentId ? persisted.fileNodes.find((node) => node.id === parentId) : undefined;
-    }
-    return trail.concat(stack);
-  }, [currentFolderId, currentLibrary.name, persisted.fileNodes]);
+  const breadcrumbs = fileCenterState.breadcrumbs.length > 0
+    ? fileCenterState.breadcrumbs
+    : [{ id: null as string | null, label: currentLibrary.name }];
+  const pageCount = Math.max(1, Math.ceil(fileCenterState.total / pageSize));
 
-  const currentEntries = useMemo(
-    () =>
-      currentLibraryNodes
-        .filter((node) => node.parentId === currentFolderId)
-        .filter((node) => (fileTypeFilter === '全部' ? true : node.fileKind === fileTypeFilter))
-        .filter((node) => {
-          const keyword = deferredSearchText.trim().toLowerCase();
-          return keyword ? `${node.name} ${node.path} ${node.displayType}`.toLowerCase().includes(keyword) : true;
-        })
-        .toSorted((left, right) => {
-          if (fileSort === '名称') return left.name.localeCompare(right.name, 'zh-CN');
-          if (fileSort === '大小') return getSortableSize(right.size) - getSortableSize(left.size);
-          return right.modifiedAt.localeCompare(left.modifiedAt, 'zh-CN');
-        }),
-    [currentFolderId, currentLibraryNodes, deferredSearchText, fileSort, fileTypeFilter],
-  );
-  const paginatedEntries = useMemo(() => {
-    const start = (currentPage - 1) * pageSize;
-    return currentEntries.slice(start, start + pageSize);
-  }, [currentEntries, currentPage, pageSize]);
-  const pageCount = Math.max(1, Math.ceil(currentEntries.length / pageSize));
+  useEffect(() => {
+    if (currentPage > pageCount) {
+      setCurrentPage(pageCount);
+    }
+  }, [currentPage, pageCount]);
+
+  useEffect(() => {
+    let disposed = false;
+    setFileCenterLoading(true);
+
+    void fileCenterApi
+      .loadDirectory({
+        libraryId: activeLibraryId,
+        parentId: currentFolderId,
+        page: currentPage,
+        pageSize,
+        searchText: deferredSearchText,
+        fileTypeFilter,
+        statusFilter: fileStatusFilter,
+        sortValue: fileSort,
+      })
+      .then((result) => {
+        if (disposed) {
+          return;
+        }
+        setFileCenterState(result);
+      })
+      .catch(() => {
+        if (disposed) {
+          return;
+        }
+        setFileCenterState({
+          breadcrumbs: [{ id: null, label: currentLibrary.name }],
+          items: [],
+          total: 0,
+          currentPathChildren: 0,
+        });
+        setFeedback({ message: '加载文件中心失败，请稍后重试', tone: 'critical' });
+      })
+      .finally(() => {
+        if (!disposed) {
+          setFileCenterLoading(false);
+        }
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, [
+    activeLibraryId,
+    currentFolderId,
+    currentLibrary.name,
+    currentPage,
+    deferredSearchText,
+    fileCenterVersion,
+    fileSort,
+    fileStatusFilter,
+    fileTypeFilter,
+    pageSize,
+  ]);
   const selectedBatch = useMemo(
     () => persisted.importBatches.find((batch) => batch.id === selectedImportBatchId) ?? persisted.importBatches[0],
     [persisted.importBatches, selectedImportBatchId],
@@ -210,21 +273,9 @@ export default function App() {
     setLibraryMenuOpen(false);
   };
 
-  const upsertMetadata = (
-    metadata: Array<{ label: string; value: string }>,
-    label: string,
-    value: string,
-  ) => {
-    const exists = metadata.some((item) => item.label === label);
-    if (exists) {
-      return metadata.map((item) => (item.label === label ? { ...item, value } : item));
-    }
-    return [...metadata, { label, value }];
-  };
-
   const createDeleteTasks = (
     current: PersistedState,
-    items: FileNode[],
+    items: FileCenterEntry[],
     mode: 'asset' | 'endpoint',
     endpointName?: string,
   ): PersistedState => {
@@ -252,69 +303,174 @@ export default function App() {
     };
   };
 
-  const markEndpointMissing = (item: FileNode, endpointName: string): FileNode => {
-    const nextEndpoints = item.endpoints.map((endpoint) =>
-      endpoint.name === endpointName ? { ...endpoint, state: '缺失', tone: 'critical' as Severity } : endpoint,
-    );
-    const allMissing = nextEndpoints.every((endpoint) => endpoint.state === '缺失');
-    return {
-      ...item,
-      lifecycleState: allMissing ? 'PENDING_DELETE' : 'ACTIVE',
-      endpoints: nextEndpoints,
-      metadata: upsertMetadata(item.metadata, '生命周期', allMissing ? 'PENDING_DELETE' : 'ACTIVE'),
-    };
-  };
+  const createSyncTasks = (
+    current: PersistedState,
+    item: FileCenterEntry,
+    endpointName: string,
+  ): PersistedState => ({
+    ...current,
+    taskRecords: [
+      {
+        id: createId('task'),
+        kind: 'transfer',
+        title: `同步资产：${item.name}`,
+        type: 'SYNC',
+        status: '等待确认',
+        statusTone: 'warning',
+        libraryId: item.libraryId,
+        source: '统一资产',
+        target: endpointName,
+        progress: 0,
+        speed: '—',
+        eta: '等待执行器接管',
+        fileCount: 1,
+        multiFile: false,
+        updatedAt: '刚刚',
+      },
+      ...current.taskRecords,
+    ],
+  });
 
-  const deleteAssets = (ids: string[]) => {
-    const nodeIds = collectNodeIds(persisted.fileNodes, ids);
-    const targets = persisted.fileNodes.filter((node) => nodeIds.includes(node.id) && node.type === 'file');
+  const getManagedReplicaCount = (item: FileCenterEntry, excludingEndpointName?: string) =>
+    item.endpoints.filter(
+      (endpoint) =>
+        endpoint.endpointType !== 'removable' &&
+        endpoint.name !== excludingEndpointName &&
+        ['已存在', '校验失败'].includes(endpoint.state),
+    ).length;
+
+  const requestDeleteAssets = async (ids: string[]) => {
+    const targets = (await Promise.all(ids.map((id) => fileCenterApi.loadEntryDetail(id)))).filter(
+      (item): item is FileCenterEntry => Boolean(item),
+    );
     if (targets.length === 0) {
       setFeedback({ message: '请先选择要删除的资产', tone: 'info' });
       return;
     }
-
-    commitState(
-      (current) => {
-        const nextFiles = current.fileNodes.map((node) =>
-          nodeIds.includes(node.id) && node.type === 'file'
-            ? {
-                ...node,
-                lifecycleState: 'PENDING_DELETE' as const,
-                endpoints: node.endpoints.map((endpoint) => ({
-                  ...endpoint,
-                  state: '缺失',
-                  tone: 'critical' as Severity,
-                })),
-                metadata: upsertMetadata(node.metadata, '生命周期', 'PENDING_DELETE'),
-              }
-            : node,
-        );
-        return createDeleteTasks({ ...current, fileNodes: nextFiles }, targets, 'asset');
-      },
-      { message: '删除请求已提交，资产进入等待清理', tone: 'warning' },
-    );
-    setSelectedFileIds([]);
-    setFileDetail(null);
+    setPendingAction({ kind: 'delete-asset', items: targets });
   };
 
-  const deleteFromEndpoint = (item: FileNode, endpointName: string) => {
-    const updatedItem = markEndpointMissing(item, endpointName);
-    commitState(
-      (current) => {
-        const nextFiles = current.fileNodes.map((node) =>
-          node.id === item.id && node.type === 'file' ? markEndpointMissing(node, endpointName) : node,
-        );
-        return createDeleteTasks({ ...current, fileNodes: nextFiles }, [item], 'endpoint', endpointName);
-      },
-      { message: '已提交端点删除请求', tone: 'info' },
-    );
-    setFileDetail(updatedItem);
+  const performDeleteAssets = async (items: FileCenterEntry[]) => {
+    const result = await fileCenterApi.deleteAssets(items.map((item) => item.id));
+    commitState((current) => createDeleteTasks(current, items, 'asset'), {
+      message: result.message,
+      tone: 'warning',
+    });
+    setSelectedFileIds([]);
+    setFileDetail(null);
+    setFileCenterVersion((current) => current + 1);
+  };
+
+  const requestDeleteEndpoint = (item: FileCenterEntry, endpointName: string) => {
+    setPendingAction({
+      kind: 'delete-endpoint',
+      item,
+      endpointName,
+      willDeleteAsset: getManagedReplicaCount(item, endpointName) === 0,
+    });
+  };
+
+  const performDeleteFromEndpoint = async (item: FileCenterEntry, endpointName: string) => {
+    const shouldRefreshDetail = fileDetail?.id === item.id;
+    const result = await fileCenterApi.deleteFromEndpoint(item.id, endpointName);
+    const updatedItem = await fileCenterApi.loadEntryDetail(item.id);
+    commitState((current) => createDeleteTasks(current, [item], 'endpoint', endpointName), {
+      message: result.message,
+      tone: 'info',
+    });
+    if (shouldRefreshDetail) {
+      setFileDetail(updatedItem);
+    }
+    setFileCenterVersion((current) => current + 1);
+  };
+
+  const requestSyncToEndpoint = (item: FileCenterEntry, endpointName: string) => {
+    setPendingAction({ kind: 'sync', item, endpointName });
+  };
+
+  const performSyncToEndpoint = async (item: FileCenterEntry, endpointName: string) => {
+    const result = await fileCenterApi.syncToEndpoint(item.id, endpointName);
+    const updatedItem = await fileCenterApi.loadEntryDetail(item.id);
+    commitState((current) => createSyncTasks(current, item, endpointName), {
+      message: result.message,
+      tone: 'info',
+    });
+    if (fileDetail?.id === item.id) {
+      setFileDetail(updatedItem);
+    }
+    setFileCenterVersion((current) => current + 1);
+  };
+
+  const confirmPendingAction = async () => {
+    if (!pendingAction) {
+      return;
+    }
+
+    if (pendingAction.kind === 'sync') {
+      await performSyncToEndpoint(pendingAction.item, pendingAction.endpointName);
+      setPendingAction(null);
+      return;
+    }
+
+    if (pendingAction.kind === 'delete-endpoint') {
+      await performDeleteFromEndpoint(pendingAction.item, pendingAction.endpointName);
+      setPendingAction(null);
+      return;
+    }
+
+    await performDeleteAssets(pendingAction.items);
+    setPendingAction(null);
+  };
+
+  const saveAnnotations = async (input: {
+    id: string;
+    rating: number;
+    colorLabel: FileCenterColorLabel;
+    tags: string[];
+  }) => {
+    const shouldRefreshDetail = fileDetail?.id === input.id;
+    const result = await fileCenterApi.updateAnnotations(input.id, input);
+    const updatedItem = await fileCenterApi.loadEntryDetail(input.id);
+    setFeedback({ message: result.message, tone: 'success' });
+    setAvailableTags(await fileCenterApi.loadTagSuggestions());
+    if (updatedItem && shouldRefreshDetail) {
+      setFileDetail(updatedItem);
+    }
+    setFileCenterVersion((current) => current + 1);
+  };
+
+  const saveTags = async (item: FileCenterEntry, tags: string[]) => {
+    await saveAnnotations({
+      id: item.id,
+      rating: item.rating,
+      colorLabel: item.colorLabel,
+      tags,
+    });
+    setTagEditorState(null);
   };
 
   const validationMessage =
     visibleImportFiles.find((file) => (selectedImportTargets[file.id] ?? []).length === 0) != null
       ? '仍有文件未选择目标端，提交前需要补齐。'
       : null;
+
+  const openEntry = async (item: FileCenterEntry) => {
+    if (item.type === 'folder') {
+      openFolder(item.id);
+      return;
+    }
+    const detail = await fileCenterApi.loadEntryDetail(item.id);
+    if (detail) {
+      setFileDetail(detail);
+    }
+  };
+
+  const openEntryDetail = async (item: FileCenterEntry) => {
+    const detail = await fileCenterApi.loadEntryDetail(item.id);
+    if (detail) {
+      setFileDetail(detail);
+    }
+  };
 
   return (
     <div className={`app-shell theme-${theme}`}>
@@ -410,20 +566,25 @@ export default function App() {
 
         {activeView === 'file-center' ? (
           <FileCenterPage
-            breadcrumbs={breadcrumbs.map((item) => item.label)}
+            breadcrumbs={breadcrumbs}
             canGoBack={historyIndex > 0}
             canGoForward={historyIndex < folderHistory.length - 1}
-            currentEntries={paginatedEntries}
+            currentEntries={fileCenterState.items}
             currentPage={currentPage}
-            currentPathChildren={currentEntries.length}
+            currentPathChildren={fileCenterState.currentPathChildren}
             fileTypeFilter={fileTypeFilter}
+            loading={fileCenterLoading}
             pageCount={pageCount}
             pageSize={pageSize}
             searchText={searchText}
             selectedIds={selectedFileIds}
             sortValue={fileSort}
+            statusFilter={fileStatusFilter}
+            theme={theme}
+            total={fileCenterState.total}
             onChangeSort={setFileSort}
             onCreateFolder={() => setFolderDraft('')}
+            onDeleteAssetDirect={(item) => void requestDeleteAssets([item.id])}
             onGoBack={() => {
               const nextIndex = Math.max(0, historyIndex - 1);
               setHistoryIndex(nextIndex);
@@ -435,21 +596,36 @@ export default function App() {
               setCurrentFolderId(folderHistory[nextIndex] ?? null);
             }}
             onNavigateBreadcrumb={(index) => openFolder(breadcrumbs[index]?.id ?? null)}
-            onOpenItem={(item) => (item.type === 'folder' ? openFolder(item.id) : setFileDetail(item))}
-            onOpenItemDetail={setFileDetail}
-            onDeleteSelected={() => deleteAssets(selectedFileIds)}
-            onRefreshIndex={() => setFeedback({ message: '已发起索引刷新', tone: 'info' })}
+            onOpenItem={(item) => void openEntry(item)}
+            onOpenItemDetail={(item) => void openEntryDetail(item)}
+            onOpenTagEditor={(item) => setTagEditorState({ item })}
+            onDeleteSelected={() => void requestDeleteAssets(selectedFileIds)}
+            onRefreshIndex={() =>
+              void fileCenterApi
+                .refreshIndex()
+                .then((result) => {
+                  setFeedback({ message: result.message, tone: 'info' });
+                  setFileCenterVersion((current) => current + 1);
+                })
+                .catch(() => {
+                  setFeedback({ message: '索引刷新失败，请稍后重试', tone: 'critical' });
+                })
+            }
             onSetCurrentPage={setCurrentPage}
             onSetFileTypeFilter={setFileTypeFilter}
             onSetPageSize={setPageSize}
             onSetSearchText={(value) => startTransition(() => setSearchText(value))}
+            onSetStatusFilter={setFileStatusFilter}
+            onRequestDeleteEndpoint={requestDeleteEndpoint}
+            onRequestSyncEndpoint={requestSyncToEndpoint}
+            onClearSelection={() => setSelectedFileIds([])}
             onToggleSelect={(id) =>
               setSelectedFileIds((current) =>
                 current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
               )
             }
             onToggleSelectVisible={() => {
-              const ids = paginatedEntries.map((item) => item.id);
+              const ids = fileCenterState.items.map((item) => item.id);
               const allSelected = ids.every((id) => selectedFileIds.includes(id));
               setSelectedFileIds((current) =>
                 allSelected ? current.filter((id) => !ids.includes(id)) : Array.from(new Set([...current, ...ids])),
@@ -659,8 +835,16 @@ export default function App() {
         <FileDetailSheet
           item={fileDetail}
           onClose={() => setFileDetail(null)}
-          onDeleteAsset={(item) => deleteAssets([item.id])}
-          onDeleteEndpoint={deleteFromEndpoint}
+          onSaveAnnotations={(input) => void saveAnnotations(input)}
+        />
+      ) : null}
+
+      {tagEditorState ? (
+        <TagEditorDialog
+          availableTags={availableTags}
+          item={tagEditorState.item}
+          onClose={() => setTagEditorState(null)}
+          onSave={(tags) => void saveTags(tagEditorState.item, tags)}
         />
       ) : null}
 
@@ -712,6 +896,14 @@ export default function App() {
         </Sheet>
       ) : null}
 
+      {pendingAction ? (
+        <FileActionDialog
+          action={pendingAction}
+          onCancel={() => setPendingAction(null)}
+          onConfirm={() => void confirmPendingAction()}
+        />
+      ) : null}
+
       {folderDraft !== null ? (
         <Sheet onClose={() => setFolderDraft(null)} title="新建目录">
           <div className="sheet-form">
@@ -729,31 +921,20 @@ export default function App() {
                   setFeedback({ message: '目录名称不能为空', tone: 'warning' });
                   return;
                 }
-                commitState(
-                  (current) => ({
-                    ...current,
-                    fileNodes: [
-                      {
-                        id: createId('folder'),
-                        libraryId: activeLibraryId,
-                        parentId: currentFolderId,
-                        type: 'folder',
-                        lifecycleState: 'ACTIVE',
-                        name: folderDraft.trim(),
-                        fileKind: '文件夹',
-                        displayType: '文件夹',
-                        modifiedAt: '刚刚',
-                        size: '0 项',
-                        path: `${breadcrumbs.map((item) => item.label).join(' / ')} / ${folderDraft.trim()}`,
-                        endpoints: [{ name: '本地NVMe', state: '已创建', tone: 'success' }],
-                        metadata: [{ label: '来源', value: '客户端新建' }],
-                      },
-                      ...current.fileNodes,
-                    ],
-                  }),
-                  { message: '目录已创建', tone: 'success' },
-                );
-                setFolderDraft(null);
+                void fileCenterApi
+                  .createFolder({
+                    libraryId: activeLibraryId,
+                    parentId: currentFolderId,
+                    name: folderDraft.trim(),
+                  })
+                  .then((result) => {
+                    setFeedback({ message: result.message, tone: 'success' });
+                    setFileCenterVersion((current) => current + 1);
+                    setFolderDraft(null);
+                  })
+                  .catch(() => {
+                    setFeedback({ message: '目录创建失败，请稍后重试', tone: 'critical' });
+                  });
               }}
             >
               创建
@@ -761,6 +942,160 @@ export default function App() {
           </div>
         </Sheet>
       ) : null}
+    </div>
+  );
+}
+
+function FileActionDialog({
+  action,
+  onCancel,
+  onConfirm,
+}: {
+  action: FileConfirmAction;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const isDeleteAsset = action.kind === 'delete-asset';
+  const isDeleteEndpoint = action.kind === 'delete-endpoint';
+  const dangerHighlight =
+    isDeleteAsset || (isDeleteEndpoint && action.willDeleteAsset);
+
+  const title =
+    action.kind === 'sync'
+      ? '确认同步'
+      : action.kind === 'delete-endpoint'
+        ? '确认删除副本'
+        : '确认删除资产';
+
+  const description =
+    action.kind === 'sync'
+      ? `是否将“${action.item.name}”同步到 ${action.endpointName}？`
+      : action.kind === 'delete-endpoint'
+        ? `是否删除“${action.item.name}”在 ${action.endpointName} 上的副本？`
+        : action.items.length === 1
+          ? `是否删除资产“${action.items[0].name}”？`
+          : `是否删除这 ${action.items.length} 个资产？`;
+
+  const warningText =
+    action.kind === 'sync'
+      ? null
+      : dangerHighlight
+        ? '该操作会移除最后一个受管副本，资产将被删除。'
+        : '删除后可在任务中心查看执行状态。';
+
+  return (
+    <div className="dialog-backdrop" role="presentation" onClick={onCancel}>
+      <section className="dialog-panel compact-confirm-dialog" role="dialog" aria-label={title} onClick={(event) => event.stopPropagation()}>
+        <div className="sheet-header">
+          <strong>{title}</strong>
+        </div>
+        <div className="dialog-card">
+          <p className="muted-paragraph">{description}</p>
+          {warningText ? (
+            <p className={dangerHighlight ? 'confirm-warning critical' : 'confirm-warning'}>{warningText}</p>
+          ) : null}
+        </div>
+        <div className="sheet-actions right">
+          <ActionButton onClick={onCancel}>取消</ActionButton>
+          <ActionButton tone={action.kind === 'sync' ? 'primary' : 'danger'} onClick={onConfirm}>
+            {action.kind === 'sync' ? '确认同步' : '确认删除'}
+          </ActionButton>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function TagEditorDialog({
+  availableTags,
+  item,
+  onClose,
+  onSave,
+}: {
+  availableTags: FileCenterTagSuggestion[];
+  item: FileCenterEntry;
+  onClose: () => void;
+  onSave: (tags: string[]) => void;
+}) {
+  const [searchText, setSearchText] = useState('');
+  const [selectedTags, setSelectedTags] = useState<string[]>(item.tags);
+
+  useEffect(() => {
+    setSelectedTags(item.tags);
+    setSearchText('');
+  }, [item]);
+
+  const filteredTags = useMemo(() => {
+    const keyword = searchText.trim().toLowerCase();
+    return availableTags.filter((tag) => (keyword ? tag.name.toLowerCase().includes(keyword) : true)).slice(0, 18);
+  }, [availableTags, searchText]);
+
+  function toggleTag(tag: string) {
+    setSelectedTags((current) =>
+      current.includes(tag) ? current.filter((itemTag) => itemTag !== tag) : [...current, tag],
+    );
+  }
+
+  function addCurrentInput() {
+    const next = searchText.trim();
+    if (!next) {
+      return;
+    }
+    setSelectedTags((current) => (current.includes(next) ? current : [...current, next]));
+  }
+
+  return (
+    <div className="dialog-backdrop" role="presentation" onClick={onClose}>
+      <section className="dialog-panel tag-editor-dialog" role="dialog" aria-label="标签编辑" onClick={(event) => event.stopPropagation()}>
+        <div className="sheet-header">
+          <strong>标签</strong>
+        </div>
+        <div className="tag-editor-toolbar">
+          <div className="tag-editor-search">
+            <input
+              aria-label="标签搜索"
+              placeholder="搜索标签"
+              value={searchText}
+              onChange={(event) => setSearchText(event.target.value)}
+            />
+            <ActionButton onClick={() => setSearchText(searchText.trim())}>搜索</ActionButton>
+          </div>
+          <ActionButton tone="primary" onClick={addCurrentInput}>
+            新增标签
+          </ActionButton>
+        </div>
+        <div className="sheet-section">
+          <div className="endpoint-row">
+            {selectedTags.map((tag) => (
+              <button key={tag} className="tag-chip-button" type="button" onClick={() => toggleTag(tag)}>
+                {tag}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="sheet-section">
+          <strong>常用标签</strong>
+          <div className="tag-suggestion-list">
+            {filteredTags.map((tag) => (
+              <button
+                key={tag.name}
+                className={selectedTags.includes(tag.name) ? 'active' : ''}
+                type="button"
+                onClick={() => toggleTag(tag.name)}
+              >
+                {tag.name}
+                <span>{tag.count}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="sheet-actions right">
+          <ActionButton onClick={onClose}>取消</ActionButton>
+          <ActionButton tone="primary" onClick={() => onSave(selectedTags)}>
+            保存标签
+          </ActionButton>
+        </div>
+      </section>
     </div>
   );
 }

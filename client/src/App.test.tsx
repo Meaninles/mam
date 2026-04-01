@@ -2,26 +2,29 @@ import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import App from './App';
+import { resetFileCenterMock } from './lib/fileCenterApi';
 
 describe('MARE 客户端', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     window.localStorage.clear();
+    await resetFileCenterMock();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     cleanup();
+    await resetFileCenterMock();
   });
 
   it('支持进入目录并查看文件详情', async () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.dblClick(screen.getByText('拍摄原片'));
-    expect(screen.getByText('2026-03-29_上海发布会_A-cam_001.RAW')).toBeInTheDocument();
+    await user.dblClick(await screen.findByText('拍摄原片'));
+    expect(await screen.findByText('2026-03-29_上海发布会_A-cam_001.RAW')).toBeInTheDocument();
 
     await user.dblClick(screen.getByText('2026-03-29_上海发布会_A-cam_001.RAW'));
-    expect(screen.getByRole('region', { name: '2026-03-29_上海发布会_A-cam_001.RAW' })).toBeInTheDocument();
-    expect(screen.getByText('Sony A7R V')).toBeInTheDocument();
+    const detailSheet = await screen.findByRole('region', { name: '2026-03-29_上海发布会_A-cam_001.RAW' });
+    expect(within(detailSheet).getAllByText('Sony A7R V').length).toBeGreaterThan(0);
   });
 
   it('支持提交导入批次并生成任务', async () => {
@@ -56,11 +59,15 @@ describe('MARE 客户端', () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.dblClick(screen.getByText('拍摄原片'));
-    await user.dblClick(screen.getByText('2026-03-29_上海发布会_A-cam_001.RAW'));
-    await user.click(screen.getAllByRole('button', { name: '删除资产' }).at(-1)!);
+    await user.dblClick(await screen.findByText('拍摄原片'));
+    await user.dblClick(await screen.findByText('2026-03-29_上海发布会_A-cam_001.RAW'));
+    await user.click(screen.getByRole('button', { name: '更多操作 2026-03-29_上海发布会_A-cam_001.RAW' }));
+    await user.hover(screen.getByRole('button', { name: '删除' }));
+    await user.click(screen.getByRole('button', { name: '删除资产' }));
+    expect(await screen.findByRole('dialog', { name: '确认删除资产' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '确认删除' }));
 
-    expect(screen.getByText('删除请求已提交，资产进入等待清理')).toBeInTheDocument();
+    expect(await screen.findByText('删除请求已提交，资产进入等待清理')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: '任务中心' }));
     await user.click(screen.getByRole('button', { name: '其它任务' }));
@@ -88,13 +95,29 @@ describe('MARE 客户端', () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.dblClick(screen.getByText('拍摄原片'));
-    await user.dblClick(screen.getByText('2026-03-29_上海发布会_A-cam_001.RAW'));
-    await user.click(screen.getByRole('button', { name: '从 115 删除' }));
+    await user.dblClick(await screen.findByText('拍摄原片'));
+    const row = (await screen.findByText('2026-03-29_上海发布会_A-cam_001.RAW')).closest('tr');
+    expect(row).not.toBeNull();
+    await user.click(within(row!).getByRole('button', { name: '更多操作 2026-03-29_上海发布会_A-cam_001.RAW' }));
+    await user.hover(screen.getByRole('button', { name: '删除' }));
+    await user.click(screen.getByRole('button', { name: '影像NAS' }));
+    expect(await screen.findByRole('dialog', { name: '确认删除副本' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '确认删除' }));
+    expect(await screen.findByText('已提交端点删除请求')).toBeInTheDocument();
+  });
 
-    expect(screen.getByText('已提交端点删除请求')).toBeInTheDocument();
-    expect(screen.getByText('缺失')).toBeInTheDocument();
-    expect(screen.getAllByText('2026-03-29_上海发布会_A-cam_001.RAW').length).toBeGreaterThan(0);
+  it('支持点击端点状态发起同步确认', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.dblClick(await screen.findByText('拍摄原片'));
+    const row = (await screen.findByText('2026-03-29_上海发布会_A-cam_001.RAW')).closest('tr');
+    expect(row).not.toBeNull();
+    await user.click(within(row!).getByRole('button', { name: '115 未同步' }));
+    expect(await screen.findByRole('dialog', { name: '确认同步' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '确认同步' }));
+
+    expect(await screen.findByText('已创建同步任务到 115')).toBeInTheDocument();
   });
 
   it('支持进入存储节点页并执行连接测试', async () => {
@@ -103,15 +126,6 @@ describe('MARE 客户端', () => {
 
     await user.click(screen.getByRole('button', { name: '存储节点' }));
 
-<<<<<<< ours
-    expect(await screen.findByLabelText('按类型筛选')).toBeInTheDocument();
-
-    const row = await screen.findByRole('row', { name: /115 云归档/ });
-    await user.click(within(row).getByRole('button', { name: '连接测试 115 云归档' }));
-
-    expect(await screen.findByRole('dialog', { name: '连接测试结果' })).toBeInTheDocument();
-    expect(screen.getByText('当前连接可达，但仍建议先处理风险提示。')).toBeInTheDocument();
-=======
     expect(await screen.findByRole('button', { name: '挂载文件夹管理' })).toBeInTheDocument();
 
     const row = await screen.findByRole('row', { name: /视频工作流 NAS 挂载/ });
@@ -119,7 +133,6 @@ describe('MARE 客户端', () => {
 
     expect(await screen.findByRole('dialog', { name: '连接测试结果' })).toBeInTheDocument();
     expect(screen.getByText('挂载目录可达且当前配置可继续使用。')).toBeInTheDocument();
->>>>>>> theirs
   });
 
   it('支持通知标记已读并清除红点', async () => {

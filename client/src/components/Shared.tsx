@@ -11,7 +11,7 @@ export function IconButton({
   active?: boolean;
   ariaLabel: string;
   children: React.ReactNode;
-  onClick?: () => void;
+  onClick?: React.MouseEventHandler<HTMLButtonElement>;
   tooltip?: string;
 }) {
   return (
