@@ -93,12 +93,14 @@ export function loadPersistedState(): PersistedState {
 export function cloneSettingsRecord(
   settings: Record<SettingsTab, SettingSection[]>,
 ): Record<SettingsTab, SettingSection[]> {
+  const fallback = cloneSettingsContent();
   return {
-    general: structuredClone(settings.general),
-    'file-overview': structuredClone(settings['file-overview']),
-    verification: structuredClone(settings.verification),
-    performance: structuredClone(settings.performance),
-    appearance: structuredClone(settings.appearance),
+    general: structuredClone(settings.general ?? fallback.general),
+    'file-overview': structuredClone(settings['file-overview'] ?? fallback['file-overview']),
+    'tag-management': structuredClone(settings['tag-management'] ?? fallback['tag-management']),
+    verification: structuredClone(settings.verification ?? fallback.verification),
+    performance: structuredClone(settings.performance ?? fallback.performance),
+    appearance: structuredClone(settings.appearance ?? fallback.appearance),
   };
 }
 

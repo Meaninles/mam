@@ -402,6 +402,80 @@ describe('fileCenterApi', () => {
     expect(tags.some((item) => item.name.includes('发布会'))).toBe(true);
   });
 
+  it('支持加载标签管理快照，并返回分组、作用域与使用统计', async () => {
+    const snapshot = await fileCenterApi.loadTagManagementSnapshot();
+
+    expect(snapshot.overview.totalTags).toBeGreaterThan(8);
+    expect(snapshot.groups.some((group) => group.name === '未分组')).toBe(true);
+
+    const publishedTag = snapshot.tags.find((tag) => tag.name === '发布会');
+    expect(publishedTag).toBeDefined();
+    expect(publishedTag?.groupName).toBe('项目语义');
+    expect(publishedTag?.libraryIds).toContain('photo');
+    expect(publishedTag?.usageCount).toBeGreaterThan(0);
+  });
+
+  it('支持创建、改名、置顶、合并与删除标签', async () => {
+    const created = await fileCenterApi.createManagedTag({
+      groupId: 'tag-group-workflow',
+      isPinned: false,
+      libraryIds: ['video'],
+      name: '直播切片',
+    });
+    expect(created.message).toBe('标签已创建');
+
+    let snapshot = await fileCenterApi.loadTagManagementSnapshot();
+    let createdTag = snapshot.tags.find((tag) => tag.name === '直播切片');
+    expect(createdTag).toBeDefined();
+
+    const updated = await fileCenterApi.updateManagedTag(createdTag!.id, {
+      groupId: 'tag-group-project',
+      isPinned: true,
+      libraryIds: ['video', 'photo'],
+      name: '直播精选',
+    });
+    expect(updated.message).toBe('标签已更新');
+
+    snapshot = await fileCenterApi.loadTagManagementSnapshot();
+    createdTag = snapshot.tags.find((tag) => tag.id === createdTag!.id);
+    expect(createdTag?.name).toBe('直播精选');
+    expect(createdTag?.groupName).toBe('项目语义');
+    expect(createdTag?.isPinned).toBe(true);
+
+    const merged = await fileCenterApi.mergeManagedTag('tag-social-candidate', 'tag-client-picked');
+    expect(merged.message).toBe('标签已合并');
+
+    snapshot = await fileCenterApi.loadTagManagementSnapshot();
+    expect(snapshot.tags.some((tag) => tag.id === 'tag-social-candidate')).toBe(false);
+    expect(snapshot.tags.find((tag) => tag.id === 'tag-client-picked')?.usageCount).toBeGreaterThan(1);
+
+    const deleted = await fileCenterApi.deleteManagedTag('tag-review');
+    expect(deleted.message).toBe('标签已删除');
+
+    snapshot = await fileCenterApi.loadTagManagementSnapshot();
+    expect(snapshot.tags.some((tag) => tag.id === 'tag-review')).toBe(false);
+  });
+
+  it('文件中心标签建议会按资产库过滤，并支持快速新建标签落库', async () => {
+    const photoTags = await fileCenterApi.loadTagSuggestions('', 'photo');
+    const videoTags = await fileCenterApi.loadTagSuggestions('', 'video');
+
+    expect(photoTags.some((tag) => tag.name === '发布会')).toBe(true);
+    expect(videoTags.some((tag) => tag.name === '发布会')).toBe(false);
+
+    const result = await fileCenterApi.replaceEntryTagsByNames('video-file-final', ['B-roll', '直播切片']);
+    expect(result.message).toBe('标签已更新');
+
+    const snapshot = await fileCenterApi.loadTagManagementSnapshot();
+    const createdTag = snapshot.tags.find((tag) => tag.name === '直播切片');
+    expect(createdTag).toBeDefined();
+    expect(createdTag?.groupName).toBe('未分组');
+    expect(createdTag?.libraryIds).toEqual(['video']);
+
+    const detail = await fileCenterApi.loadEntryDetail('video-file-final');
+    expect(detail?.tags).toEqual(expect.arrayContaining(['B-roll', '直播切片']));
+  });
+
   it('文件中心 mock 数据总量保持不变，且端点状态仅使用最新枚举', async () => {
     const [photoRoot, photoRaw, photoDelivery, videoRoot] = await Promise.all([
       fileCenterApi.loadDirectory({

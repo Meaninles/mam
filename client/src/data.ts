@@ -11,6 +11,7 @@ export type Severity = 'success' | 'warning' | 'critical' | 'info';
 export type SettingsTab =
   | 'general'
   | 'file-overview'
+  | 'tag-management'
   | 'verification'
   | 'performance'
   | 'appearance';
@@ -700,6 +701,7 @@ export const storageNodes: StorageNode[] = [
 export const settingsTabs: Array<{ id: SettingsTab; label: string }> = [
   { id: 'general', label: '通用' },
   { id: 'file-overview', label: '文件总览' },
+  { id: 'tag-management', label: '标签管理' },
   { id: 'verification', label: '校验恢复' },
   { id: 'performance', label: '性能' },
   { id: 'appearance', label: '外观' },
@@ -756,6 +758,7 @@ export const settingsContent: Record<SettingsTab, SettingSection[]> = {
       ],
     },
   ],
+  'tag-management': [],
   verification: [
     {
       id: 'verify',
@@ -848,6 +851,7 @@ export function cloneSettingsContent(): Record<SettingsTab, SettingSection[]> {
   return {
     general: settingsContent.general.map(cloneSection),
     'file-overview': settingsContent['file-overview'].map(cloneSection),
+    'tag-management': settingsContent['tag-management'].map(cloneSection),
     verification: settingsContent.verification.map(cloneSection),
     performance: settingsContent.performance.map(cloneSection),
     appearance: settingsContent.appearance.map(cloneSection),

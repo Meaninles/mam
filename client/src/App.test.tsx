@@ -329,4 +329,29 @@ describe('MARE 客户端', () => {
     expect(screen.getByText('检测到移动硬盘 SanDisk Extreme 2TB')).toBeInTheDocument();
     expect(document.querySelector('.notification-dot')).toBeFalsy();
   });
+
+  it('支持在设置中进入标签管理并让新标签出现在文件中心标签选择器中', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '设置' }));
+    await user.click(screen.getByRole('button', { name: '标签管理' }));
+    expect(await screen.findByText('标签总数')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '新增标签' }));
+    const createDialog = await screen.findByRole('dialog', { name: '新增标签' });
+    await user.type(within(createDialog).getByLabelText('标签名称'), '直播切片');
+    await user.selectOptions(within(createDialog).getByLabelText('所属分组'), 'tag-group-project');
+    await user.click(within(createDialog).getByLabelText('商业摄影资产库'));
+    await user.click(within(createDialog).getByRole('button', { name: '创建标签' }));
+    expect(await screen.findByText('标签已创建')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '文件中心' }));
+    await user.dblClick(await screen.findByText('拍摄原片'));
+    await user.click(screen.getByRole('button', { name: '更多操作 2026-03-29_上海发布会_A-cam_001.RAW' }));
+    await user.click(screen.getByRole('button', { name: '标签' }));
+
+    const editor = await screen.findByRole('dialog', { name: '标签编辑' });
+    expect(within(editor).getByRole('button', { name: '直播切片 0 次使用' })).toBeInTheDocument();
+  });
 });

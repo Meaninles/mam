@@ -50,6 +50,7 @@ import { ImportCenterPage } from './pages/ImportCenterPage';
 import { IssuesPage } from './pages/IssuesPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { StorageNodesPage } from './pages/StorageNodesPage';
+import { TagManagementPage } from './pages/TagManagementPage';
 import { TaskCenterPage, TaskDetailSheet } from './pages/TaskCenterPage';
 
 export type PageSize = 10 | 20 | 50 | 100;
@@ -195,10 +196,10 @@ export default function App() {
   }, [fileCenterState.items, fileCenterVersion, selectedFileIds]);
 
   useEffect(() => {
-    void fileCenterApi.loadTagSuggestions().then(setAvailableTags).catch(() => {
+    void fileCenterApi.loadTagSuggestions('', activeLibraryId).then(setAvailableTags).catch(() => {
       setAvailableTags([]);
     });
-  }, [fileCenterVersion]);
+  }, [activeLibraryId, fileCenterVersion]);
 
   const theme = useMemo(() => resolveThemeMode(persisted.settings), [persisted.settings]);
   const currentLibrary = useMemo(
@@ -605,7 +606,7 @@ export default function App() {
     const result = await fileCenterApi.updateAnnotations(input.id, input);
     const updatedItem = await fileCenterApi.loadEntryDetail(input.id);
     setFeedback({ message: result.message, tone: 'success' });
-    setAvailableTags(await fileCenterApi.loadTagSuggestions());
+    setAvailableTags(await fileCenterApi.loadTagSuggestions('', activeLibraryId));
     if (updatedItem && shouldRefreshDetail) {
       setFileDetail(updatedItem);
     }
@@ -649,7 +650,7 @@ export default function App() {
     const shouldRefreshDetail = batchAnnotationState.items.some((item) => item.id === fileDetail?.id);
     const updatedItem = shouldRefreshDetail && fileDetail ? await fileCenterApi.loadEntryDetail(fileDetail.id) : null;
     setFeedback({ message: `已更新 ${batchAnnotationState.items.length} 项资产的标记`, tone: 'success' });
-    setAvailableTags(await fileCenterApi.loadTagSuggestions());
+    setAvailableTags(await fileCenterApi.loadTagSuggestions('', activeLibraryId));
     if (updatedItem) {
       setFileDetail(updatedItem);
     }
@@ -1059,6 +1060,12 @@ export default function App() {
 
         {activeView === 'settings' ? (
           <SettingsPage
+            customContent={
+              <TagManagementPage
+                libraries={persisted.libraries}
+                onFeedback={setFeedback}
+              />
+            }
             sections={settingsDraft[settingsTab]}
             settingsTab={settingsTab}
             setSettingsTab={setSettingsTab}
@@ -1439,13 +1446,14 @@ function TagEditorDialog({
           <div className="tag-suggestion-list">
             {filteredTags.map((tag) => (
               <button
+                aria-label={`${tag.name} ${tag.count} 次使用`}
                 key={tag.name}
                 className={selectedTags.includes(tag.name) ? 'active' : ''}
                 type="button"
                 onClick={() => toggleTag(tag.name)}
               >
-                {tag.name}
-                <span>{tag.count}</span>
+                <span>{tag.name}</span>
+                <span>{tag.count} 次使用</span>
               </button>
             ))}
           </div>
