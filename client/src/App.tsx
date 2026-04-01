@@ -7,6 +7,7 @@ import {
   FolderOpen,
   HardDrive,
   Settings2,
+  Star,
 } from 'lucide-react';
 import type {
   FileTypeFilter,
@@ -31,10 +32,13 @@ import {
   type PersistedState,
 } from './lib/clientState';
 import {
+  canSyncFileCenterEndpoint,
+  canDeleteFileCenterEndpoint,
   fileCenterApi,
   type FileCenterColorLabel,
   type FileCenterDirectoryResult,
   type FileCenterEntry,
+  type FileCenterSortDirection,
   type FileCenterSortValue,
   type FileCenterStatusFilter,
   type FileCenterTagSuggestion,
@@ -57,12 +61,25 @@ export type ContextMenuTarget =
 
 type FeedbackState = { message: string; tone: Severity } | null;
 type FileConfirmAction =
-  | { kind: 'sync'; item: FileCenterEntry; endpointName: string }
+  | { kind: 'sync'; items: FileCenterEntry[]; endpointName: string; totalSelected: number }
   | { kind: 'delete-asset'; items: FileCenterEntry[] }
-  | { kind: 'delete-endpoint'; item: FileCenterEntry; endpointName: string; willDeleteAsset: boolean };
+  | {
+      kind: 'delete-endpoint';
+      items: FileCenterEntry[];
+      endpointName: string;
+      totalSelected: number;
+      willDeleteAssetCount: number;
+    };
 type TagEditorState = {
   item: FileCenterEntry;
 } | null;
+type BatchAnnotationState = {
+  items: FileCenterEntry[];
+} | null;
+type BatchEndpointAction = {
+  endpointName: string;
+  enabled: boolean;
+};
 
 export default function App() {
   const [persisted, setPersisted] = useState<PersistedState>(loadPersistedState);
@@ -72,10 +89,12 @@ export default function App() {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('general');
   const [fileTypeFilter, setFileTypeFilter] = useState<FileTypeFilter>('全部');
   const [fileStatusFilter, setFileStatusFilter] = useState<FileCenterStatusFilter>('全部');
+  const [partialSyncEndpointNames, setPartialSyncEndpointNames] = useState<string[]>([]);
   const [taskStatusFilter, setTaskStatusFilter] = useState('全部');
   const [issueTypeFilter, setIssueTypeFilter] = useState('全部');
   const [searchText, setSearchText] = useState('');
   const [fileSort, setFileSort] = useState<FileCenterSortValue>('修改时间');
+  const [fileSortDirection, setFileSortDirection] = useState<FileCenterSortDirection>('desc');
   const deferredSearchText = useDeferredValue(searchText);
   const [pageSize, setPageSize] = useState<PageSize>(() => getDefaultPageSize(persisted.settings));
   const [currentPage, setCurrentPage] = useState(1);
@@ -105,6 +124,8 @@ export default function App() {
   const [availableTags, setAvailableTags] = useState<FileCenterTagSuggestion[]>([]);
   const [pendingAction, setPendingAction] = useState<FileConfirmAction | null>(null);
   const [tagEditorState, setTagEditorState] = useState<TagEditorState>(null);
+  const [batchAnnotationState, setBatchAnnotationState] = useState<BatchAnnotationState>(null);
+  const [selectedFileEntries, setSelectedFileEntries] = useState<FileCenterEntry[]>([]);
   const [folderDraft, setFolderDraft] = useState<string | null>(null);
   const unreadNotificationCount = useMemo(
     () => persisted.notifications.filter((item) => item.read === false).length,
@@ -131,11 +152,47 @@ export default function App() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [currentFolderId, deferredSearchText, fileSort, fileStatusFilter, fileTypeFilter, pageSize]);
+  }, [currentFolderId, deferredSearchText, fileSort, fileStatusFilter, fileTypeFilter, pageSize, partialSyncEndpointNames]);
 
   useEffect(() => {
     setSelectedFileIds([]);
   }, [activeLibraryId, currentFolderId]);
+
+  useEffect(() => {
+    setPartialSyncEndpointNames([]);
+  }, [activeLibraryId]);
+
+  useEffect(() => {
+    if (selectedFileIds.length === 0) {
+      setSelectedFileEntries([]);
+      return;
+    }
+
+    let disposed = false;
+    const visibleMap = new Map(
+      fileCenterState.items
+        .filter((item) => selectedFileIds.includes(item.id))
+        .map((item) => [item.id, item]),
+    );
+
+    setSelectedFileEntries((current) => {
+      const next = selectedFileIds
+        .map((id) => visibleMap.get(id) ?? current.find((item) => item.id === id))
+        .filter((item): item is FileCenterEntry => Boolean(item));
+      return next;
+    });
+
+    void Promise.all(selectedFileIds.map((id) => fileCenterApi.loadEntryDetail(id))).then((items) => {
+      if (disposed) {
+        return;
+      }
+      setSelectedFileEntries(items.filter((item): item is FileCenterEntry => Boolean(item)));
+    });
+
+    return () => {
+      disposed = true;
+    };
+  }, [fileCenterState.items, fileCenterVersion, selectedFileIds]);
 
   useEffect(() => {
     void fileCenterApi.loadTagSuggestions().then(setAvailableTags).catch(() => {
@@ -147,6 +204,10 @@ export default function App() {
   const currentLibrary = useMemo(
     () => persisted.libraries.find((item) => item.id === activeLibraryId) ?? persisted.libraries[0],
     [activeLibraryId, persisted.libraries],
+  );
+  const statusFilterEndpointNames = useMemo(
+    () => fileCenterApi.listLibraryEndpointNames(activeLibraryId),
+    [activeLibraryId],
   );
   const breadcrumbs = fileCenterState.breadcrumbs.length > 0
     ? fileCenterState.breadcrumbs
@@ -173,6 +234,8 @@ export default function App() {
         fileTypeFilter,
         statusFilter: fileStatusFilter,
         sortValue: fileSort,
+        sortDirection: fileSortDirection,
+        partialSyncEndpointNames,
       })
       .then((result) => {
         if (disposed) {
@@ -209,10 +272,34 @@ export default function App() {
     deferredSearchText,
     fileCenterVersion,
     fileSort,
+    fileSortDirection,
     fileStatusFilter,
     fileTypeFilter,
+    partialSyncEndpointNames,
     pageSize,
   ]);
+
+  useEffect(() => {
+    let disposed = false;
+    const unsubscribe = fileCenterApi.subscribe(() => {
+      setFileCenterVersion((current) => current + 1);
+
+      if (!fileDetail?.id) {
+        return;
+      }
+
+      void fileCenterApi.loadEntryDetail(fileDetail.id).then((detail) => {
+        if (!disposed) {
+          setFileDetail(detail);
+        }
+      });
+    });
+    
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, [fileDetail?.id]);
   const selectedBatch = useMemo(
     () => persisted.importBatches.find((batch) => batch.id === selectedImportBatchId) ?? persisted.importBatches[0],
     [persisted.importBatches, selectedImportBatchId],
@@ -305,12 +392,12 @@ export default function App() {
 
   const createSyncTasks = (
     current: PersistedState,
-    item: FileCenterEntry,
+    items: FileCenterEntry[],
     endpointName: string,
   ): PersistedState => ({
     ...current,
     taskRecords: [
-      {
+      ...items.map((item): TaskRecord => ({
         id: createId('task'),
         kind: 'transfer',
         title: `同步资产：${item.name}`,
@@ -326,7 +413,7 @@ export default function App() {
         fileCount: 1,
         multiFile: false,
         updatedAt: '刚刚',
-      },
+      })),
       ...current.taskRecords,
     ],
   });
@@ -336,8 +423,48 @@ export default function App() {
       (endpoint) =>
         endpoint.endpointType !== 'removable' &&
         endpoint.name !== excludingEndpointName &&
-        ['已存在', '校验失败'].includes(endpoint.state),
+        canDeleteFileCenterEndpoint(endpoint),
     ).length;
+
+  const batchEndpointActions = useMemo(() => {
+    const sourceItems = selectedFileEntries.length > 0
+      ? selectedFileEntries
+      : fileCenterState.items.filter((item) => selectedFileIds.includes(item.id));
+    const endpointNames = Array.from(
+      new Set(sourceItems.flatMap((item) => item.endpoints.map((endpoint) => endpoint.name))),
+    );
+
+    const syncActions: BatchEndpointAction[] = endpointNames.map((endpointName) => ({
+      endpointName,
+      enabled: sourceItems.some((item) =>
+        item.endpoints.some(
+          (endpoint) => endpoint.name === endpointName && canSyncFileCenterEndpoint(endpoint),
+        ),
+      ),
+    }));
+
+    const deleteActions: BatchEndpointAction[] = endpointNames.map((endpointName) => ({
+      endpointName,
+      enabled: sourceItems.some((item) =>
+        item.endpoints.some(
+          (endpoint) => endpoint.name === endpointName && canDeleteFileCenterEndpoint(endpoint),
+        ),
+      ),
+    }));
+
+    return {
+      syncActions,
+      deleteActions,
+    };
+  }, [fileCenterState.items, selectedFileEntries, selectedFileIds]);
+
+  const selectedActionItems = useMemo(
+    () =>
+      selectedFileEntries.length > 0
+        ? selectedFileEntries
+        : fileCenterState.items.filter((item) => selectedFileIds.includes(item.id)),
+    [fileCenterState.items, selectedFileEntries, selectedFileIds],
+  );
 
   const requestDeleteAssets = async (ids: string[]) => {
     const targets = (await Promise.all(ids.map((id) => fileCenterApi.loadEntryDetail(id)))).filter(
@@ -362,40 +489,86 @@ export default function App() {
   };
 
   const requestDeleteEndpoint = (item: FileCenterEntry, endpointName: string) => {
+    requestBatchDeleteEndpoint(endpointName, [item]);
+  };
+
+  const requestBatchDeleteEndpoint = (endpointName: string, sourceItems = selectedActionItems) => {
+    const eligibleItems = sourceItems.filter((item) =>
+      item.endpoints.some(
+        (endpoint) => endpoint.name === endpointName && canDeleteFileCenterEndpoint(endpoint),
+      ),
+    );
+
+    if (eligibleItems.length === 0) {
+      setFeedback({ message: `当前所选资产在 ${endpointName} 上没有可删除的副本`, tone: 'info' });
+      return;
+    }
+
     setPendingAction({
       kind: 'delete-endpoint',
-      item,
       endpointName,
-      willDeleteAsset: getManagedReplicaCount(item, endpointName) === 0,
+      items: eligibleItems,
+      totalSelected: sourceItems.length,
+      willDeleteAssetCount: eligibleItems.filter((item) => getManagedReplicaCount(item, endpointName) === 0).length,
     });
   };
 
-  const performDeleteFromEndpoint = async (item: FileCenterEntry, endpointName: string) => {
-    const shouldRefreshDetail = fileDetail?.id === item.id;
-    const result = await fileCenterApi.deleteFromEndpoint(item.id, endpointName);
-    const updatedItem = await fileCenterApi.loadEntryDetail(item.id);
-    commitState((current) => createDeleteTasks(current, [item], 'endpoint', endpointName), {
-      message: result.message,
+  const performDeleteFromEndpoint = async (items: FileCenterEntry[], endpointName: string) => {
+    const shouldRefreshDetail = items.some((item) => item.id === fileDetail?.id);
+    const results = await Promise.all(items.map((item) => fileCenterApi.deleteFromEndpoint(item.id, endpointName)));
+    const deletedCount = results.filter((result) => result.deleted).length;
+    const deletedIds = items.filter((_, index) => results[index]?.deleted).map((item) => item.id);
+    const updatedItem = shouldRefreshDetail && fileDetail ? await fileCenterApi.loadEntryDetail(fileDetail.id) : null;
+    commitState((current) => createDeleteTasks(current, items, 'endpoint', endpointName), {
+      message:
+        deletedCount === 0
+          ? items.length === 1
+            ? '已提交端点删除请求'
+            : `已提交 ${items.length} 项资产的端点删除请求`
+          : deletedCount === items.length
+            ? items.length === 1
+              ? '资产已因无剩余副本自动删除'
+              : `${items.length} 项资产已因无剩余副本自动删除`
+            : `已提交端点删除请求，其中 ${deletedCount} 项资产因无剩余副本自动删除`,
       tone: 'info',
     });
-    if (shouldRefreshDetail) {
+    setSelectedFileIds((current) => current.filter((id) => !deletedIds.includes(id)));
+    if (updatedItem) {
       setFileDetail(updatedItem);
+    } else if (shouldRefreshDetail) {
+      setFileDetail(null);
     }
     setFileCenterVersion((current) => current + 1);
   };
 
   const requestSyncToEndpoint = (item: FileCenterEntry, endpointName: string) => {
-    setPendingAction({ kind: 'sync', item, endpointName });
+    requestBatchSyncEndpoint(endpointName, [item]);
   };
 
-  const performSyncToEndpoint = async (item: FileCenterEntry, endpointName: string) => {
-    const result = await fileCenterApi.syncToEndpoint(item.id, endpointName);
-    const updatedItem = await fileCenterApi.loadEntryDetail(item.id);
-    commitState((current) => createSyncTasks(current, item, endpointName), {
-      message: result.message,
+  const requestBatchSyncEndpoint = (endpointName: string, sourceItems = selectedActionItems) => {
+    const eligibleItems = sourceItems.filter((item) =>
+      item.endpoints.some(
+        (endpoint) => endpoint.name === endpointName && canSyncFileCenterEndpoint(endpoint),
+      ),
+    );
+
+    if (eligibleItems.length === 0) {
+      setFeedback({ message: `当前所选资产在 ${endpointName} 上没有可同步的副本`, tone: 'info' });
+      return;
+    }
+
+    setPendingAction({ kind: 'sync', items: eligibleItems, endpointName, totalSelected: sourceItems.length });
+  };
+
+  const performSyncToEndpoint = async (items: FileCenterEntry[], endpointName: string) => {
+    const shouldRefreshDetail = items.some((item) => item.id === fileDetail?.id);
+    await Promise.all(items.map((item) => fileCenterApi.syncToEndpoint(item.id, endpointName)));
+    const updatedItem = shouldRefreshDetail && fileDetail ? await fileCenterApi.loadEntryDetail(fileDetail.id) : null;
+    commitState((current) => createSyncTasks(current, items, endpointName), {
+      message: items.length === 1 ? `已创建同步任务到 ${endpointName}` : `已为 ${items.length} 项资产创建同步任务到 ${endpointName}`,
       tone: 'info',
     });
-    if (fileDetail?.id === item.id) {
+    if (updatedItem) {
       setFileDetail(updatedItem);
     }
     setFileCenterVersion((current) => current + 1);
@@ -407,13 +580,13 @@ export default function App() {
     }
 
     if (pendingAction.kind === 'sync') {
-      await performSyncToEndpoint(pendingAction.item, pendingAction.endpointName);
+      await performSyncToEndpoint(pendingAction.items, pendingAction.endpointName);
       setPendingAction(null);
       return;
     }
 
     if (pendingAction.kind === 'delete-endpoint') {
-      await performDeleteFromEndpoint(pendingAction.item, pendingAction.endpointName);
+      await performDeleteFromEndpoint(pendingAction.items, pendingAction.endpointName);
       setPendingAction(null);
       return;
     }
@@ -447,6 +620,59 @@ export default function App() {
       tags,
     });
     setTagEditorState(null);
+  };
+
+  const saveBatchAnnotations = async (input: {
+    rating: number | null;
+    colorLabel: FileCenterColorLabel | null;
+  }) => {
+    if (!batchAnnotationState || batchAnnotationState.items.length === 0) {
+      setFeedback({ message: '请先选择要批量标记的资产', tone: 'info' });
+      return;
+    }
+
+    if (input.rating === null && input.colorLabel === null) {
+      setFeedback({ message: '请至少选择一种要更新的标记', tone: 'warning' });
+      return;
+    }
+
+    await Promise.all(
+      batchAnnotationState.items.map((item) =>
+        fileCenterApi.updateAnnotations(item.id, {
+          rating: input.rating ?? item.rating,
+          colorLabel: input.colorLabel ?? item.colorLabel,
+          tags: item.tags,
+        }),
+      ),
+    );
+
+    const shouldRefreshDetail = batchAnnotationState.items.some((item) => item.id === fileDetail?.id);
+    const updatedItem = shouldRefreshDetail && fileDetail ? await fileCenterApi.loadEntryDetail(fileDetail.id) : null;
+    setFeedback({ message: `已更新 ${batchAnnotationState.items.length} 项资产的标记`, tone: 'success' });
+    setAvailableTags(await fileCenterApi.loadTagSuggestions());
+    if (updatedItem) {
+      setFileDetail(updatedItem);
+    }
+    setBatchAnnotationState(null);
+    setFileCenterVersion((current) => current + 1);
+  };
+
+  const handleUploadSelection = async (mode: 'files' | 'folder', files: File[]) => {
+    const result = await fileCenterApi.uploadSelection({
+      libraryId: activeLibraryId,
+      parentId: currentFolderId,
+      mode,
+      items: files.map((file) => ({
+        name: file.name,
+        size: file.size,
+        relativePath:
+          mode === 'folder'
+            ? ((file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name)
+            : file.name,
+      })),
+    });
+    setFeedback({ message: result.message, tone: 'success' });
+    setFileCenterVersion((current) => current + 1);
   };
 
   const validationMessage =
@@ -576,13 +802,21 @@ export default function App() {
             loading={fileCenterLoading}
             pageCount={pageCount}
             pageSize={pageSize}
+            partialSyncEndpointNames={partialSyncEndpointNames}
             searchText={searchText}
             selectedIds={selectedFileIds}
             sortValue={fileSort}
+            sortDirection={fileSortDirection}
+            statusFilterEndpointNames={statusFilterEndpointNames}
             statusFilter={fileStatusFilter}
             theme={theme}
             total={fileCenterState.total}
             onChangeSort={setFileSort}
+            onToggleSortDirection={() =>
+              setFileSortDirection((current) => (current === 'desc' ? 'asc' : 'desc'))
+            }
+            batchDeleteEndpointActions={batchEndpointActions.deleteActions}
+            batchSyncEndpointActions={batchEndpointActions.syncActions}
             onCreateFolder={() => setFolderDraft('')}
             onDeleteAssetDirect={(item) => void requestDeleteAssets([item.id])}
             onGoBack={() => {
@@ -598,6 +832,7 @@ export default function App() {
             onNavigateBreadcrumb={(index) => openFolder(breadcrumbs[index]?.id ?? null)}
             onOpenItem={(item) => void openEntry(item)}
             onOpenItemDetail={(item) => void openEntryDetail(item)}
+            onOpenBatchAnnotationEditor={() => setBatchAnnotationState({ items: selectedActionItems })}
             onOpenTagEditor={(item) => setTagEditorState({ item })}
             onDeleteSelected={() => void requestDeleteAssets(selectedFileIds)}
             onRefreshIndex={() =>
@@ -615,7 +850,24 @@ export default function App() {
             onSetFileTypeFilter={setFileTypeFilter}
             onSetPageSize={setPageSize}
             onSetSearchText={(value) => startTransition(() => setSearchText(value))}
-            onSetStatusFilter={setFileStatusFilter}
+            onSetStatusFilter={(value) => {
+              setFileStatusFilter(value);
+              if (value !== '部分同步') {
+                setPartialSyncEndpointNames([]);
+              }
+            }}
+            onClearPartialSyncEndpoints={() => setPartialSyncEndpointNames([])}
+            onTogglePartialSyncEndpoint={(endpointName) =>
+              setPartialSyncEndpointNames((current) =>
+                current.includes(endpointName)
+                  ? current.filter((item) => item !== endpointName)
+                  : [...current, endpointName],
+              )
+            }
+            onUploadFiles={(files) => void handleUploadSelection('files', files)}
+            onUploadFolder={(files) => void handleUploadSelection('folder', files)}
+            onRequestBatchDeleteEndpoint={requestBatchDeleteEndpoint}
+            onRequestBatchSyncEndpoint={requestBatchSyncEndpoint}
             onRequestDeleteEndpoint={requestDeleteEndpoint}
             onRequestSyncEndpoint={requestSyncToEndpoint}
             onClearSelection={() => setSelectedFileIds([])}
@@ -835,7 +1087,7 @@ export default function App() {
         <FileDetailSheet
           item={fileDetail}
           onClose={() => setFileDetail(null)}
-          onSaveAnnotations={(input) => void saveAnnotations(input)}
+          onSaveAnnotations={saveAnnotations}
         />
       ) : null}
 
@@ -845,6 +1097,14 @@ export default function App() {
           item={tagEditorState.item}
           onClose={() => setTagEditorState(null)}
           onSave={(tags) => void saveTags(tagEditorState.item, tags)}
+        />
+      ) : null}
+
+      {batchAnnotationState ? (
+        <BatchAnnotationDialog
+          count={batchAnnotationState.items.length}
+          onClose={() => setBatchAnnotationState(null)}
+          onSave={(input) => void saveBatchAnnotations(input)}
         />
       ) : null}
 
@@ -956,9 +1216,7 @@ function FileActionDialog({
   onConfirm: () => void;
 }) {
   const isDeleteAsset = action.kind === 'delete-asset';
-  const isDeleteEndpoint = action.kind === 'delete-endpoint';
-  const dangerHighlight =
-    isDeleteAsset || (isDeleteEndpoint && action.willDeleteAsset);
+  const skippedCount = action.kind === 'delete-asset' ? 0 : action.totalSelected - action.items.length;
 
   const title =
     action.kind === 'sync'
@@ -969,19 +1227,37 @@ function FileActionDialog({
 
   const description =
     action.kind === 'sync'
-      ? `是否将“${action.item.name}”同步到 ${action.endpointName}？`
+      ? action.totalSelected === 1
+        ? `是否将“${action.items[0].name}”同步到 ${action.endpointName}？`
+        : `是否将选中的 ${action.totalSelected} 项资产同步到 ${action.endpointName}？`
       : action.kind === 'delete-endpoint'
-        ? `是否删除“${action.item.name}”在 ${action.endpointName} 上的副本？`
+        ? action.totalSelected === 1
+          ? `是否删除“${action.items[0].name}”在 ${action.endpointName} 上的副本？`
+          : `是否删除选中的 ${action.totalSelected} 项资产在 ${action.endpointName} 上的副本？`
         : action.items.length === 1
           ? `是否删除资产“${action.items[0].name}”？`
           : `是否删除这 ${action.items.length} 个资产？`;
 
-  const warningText =
-    action.kind === 'sync'
-      ? null
-      : dangerHighlight
-        ? '该操作会移除最后一个受管副本，资产将被删除。'
-        : '删除后可在任务中心查看执行状态。';
+  const notes: Array<{ text: string; critical?: boolean }> = [];
+
+  if (action.kind === 'sync' && skippedCount > 0) {
+    notes.push({ text: `其中 ${skippedCount} 项在该端点上已同步，将自动跳过。` });
+  }
+
+  if (action.kind === 'delete-endpoint') {
+    if (skippedCount > 0) {
+      notes.push({ text: `其中 ${skippedCount} 项在该端点上已不可删除，将自动跳过。` });
+    }
+    if (action.willDeleteAssetCount > 0) {
+      notes.push({ text: `其中 ${action.willDeleteAssetCount} 项会移除最后一个受管副本，资产将被删除。`, critical: true });
+    } else {
+      notes.push({ text: '删除后可在任务中心查看执行状态。' });
+    }
+  }
+
+  if (isDeleteAsset) {
+    notes.push({ text: '删除后可在任务中心查看执行状态。', critical: true });
+  }
 
   return (
     <div className="dialog-backdrop" role="presentation" onClick={onCancel}>
@@ -991,14 +1267,99 @@ function FileActionDialog({
         </div>
         <div className="dialog-card">
           <p className="muted-paragraph">{description}</p>
-          {warningText ? (
-            <p className={dangerHighlight ? 'confirm-warning critical' : 'confirm-warning'}>{warningText}</p>
-          ) : null}
+          {notes.map((note) => (
+            <p key={note.text} className={note.critical ? 'confirm-warning critical' : 'confirm-warning'}>
+              {note.text}
+            </p>
+          ))}
         </div>
         <div className="sheet-actions right">
           <ActionButton onClick={onCancel}>取消</ActionButton>
           <ActionButton tone={action.kind === 'sync' ? 'primary' : 'danger'} onClick={onConfirm}>
             {action.kind === 'sync' ? '确认同步' : '确认删除'}
+          </ActionButton>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function BatchAnnotationDialog({
+  count,
+  onClose,
+  onSave,
+}: {
+  count: number;
+  onClose: () => void;
+  onSave: (input: { rating: number | null; colorLabel: FileCenterColorLabel | null }) => void;
+}) {
+  const [rating, setRating] = useState<number | null>(null);
+  const [colorLabel, setColorLabel] = useState<FileCenterColorLabel | null>(null);
+
+  return (
+    <div className="dialog-backdrop" role="presentation" onClick={onClose}>
+      <section className="dialog-panel batch-annotation-dialog" role="dialog" aria-label="批量标记" onClick={(event) => event.stopPropagation()}>
+        <div className="sheet-header">
+          <strong>批量标记</strong>
+        </div>
+        <div className="dialog-card batch-annotation-card">
+          <p className="muted-paragraph">将为选中的 {count} 项资产统一设置星级和色标。未选择的项会保持原值。</p>
+
+          <div className="annotation-choice-group">
+            <strong>星级</strong>
+            <div className="annotation-choice-grid" role="group" aria-label="批量星级">
+              <button className={rating === null ? 'active' : ''} type="button" onClick={() => setRating(null)}>
+                保持不变
+              </button>
+              <button className={rating === 0 ? 'active' : ''} type="button" onClick={() => setRating(0)}>
+                无评级
+              </button>
+              {Array.from({ length: 5 }, (_, index) => {
+                const value = index + 1;
+                return (
+                  <button
+                    key={value}
+                    aria-label={`${value} 星`}
+                    className={rating === value ? 'active' : ''}
+                    type="button"
+                    onClick={() => setRating(value)}
+                  >
+                    <span className="file-rating">
+                      {Array.from({ length: value }, (_, starIndex) => (
+                        <Star key={`${value}-${starIndex}`} size={12} fill="currentColor" />
+                      ))}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="annotation-choice-group">
+            <strong>色标</strong>
+            <div className="annotation-choice-grid" role="group" aria-label="批量色标">
+              <button className={colorLabel === null ? 'active' : ''} type="button" onClick={() => setColorLabel(null)}>
+                保持不变
+              </button>
+              {(['无', '红标', '黄标', '绿标', '蓝标', '紫标'] as FileCenterColorLabel[]).map((option) => (
+                <button
+                  key={option}
+                  aria-label={option}
+                  className={colorLabel === option ? 'active' : ''}
+                  type="button"
+                  onClick={() => setColorLabel(option)}
+                >
+                  <span className={`color-label-dot ${resolveBatchColorClass(option)}`} />
+                  <span>{option}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="sheet-actions right">
+          <ActionButton onClick={onClose}>取消</ActionButton>
+          <ActionButton tone="primary" onClick={() => onSave({ rating, colorLabel })}>
+            保存标记
           </ActionButton>
         </div>
       </section>
@@ -1098,6 +1459,15 @@ function TagEditorDialog({
       </section>
     </div>
   );
+}
+
+function resolveBatchColorClass(colorLabel: FileCenterColorLabel) {
+  if (colorLabel === '红标') return 'red';
+  if (colorLabel === '黄标') return 'yellow';
+  if (colorLabel === '绿标') return 'green';
+  if (colorLabel === '蓝标') return 'blue';
+  if (colorLabel === '紫标') return 'purple';
+  return 'none';
 }
 
 const navIcons: Record<Exclude<MainView, 'import-center'>, React.ReactNode> = {

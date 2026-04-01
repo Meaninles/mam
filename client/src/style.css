@@ -1187,6 +1187,132 @@ button {
   gap: 12px;
 }
 
+.selection-action-anchor {
+  position: relative;
+}
+
+.upload-action-anchor {
+  position: relative;
+}
+
+.status-filter-anchor {
+  position: relative;
+}
+
+.status-filter-trigger {
+  justify-content: space-between;
+  width: 170px;
+  color: var(--text-main);
+}
+
+.status-filter-trigger span {
+  flex: 1;
+  text-align: left;
+}
+
+.status-filter-caret {
+  transform: rotate(90deg);
+  opacity: 0.72;
+}
+
+.status-filter-menu {
+  min-width: 170px;
+  z-index: 260;
+}
+
+.status-filter-menu button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.status-filter-menu .active-filter {
+  color: var(--text-main);
+  background: var(--accent-soft);
+}
+
+.status-filter-submenu {
+  min-width: 190px;
+}
+
+.status-filter-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 0.58rem 0.72rem;
+  border-radius: 10px;
+  color: var(--text-main);
+}
+
+.status-filter-check input {
+  width: 14px;
+  height: 14px;
+}
+
+.status-filter-check.checked {
+  background: rgba(91, 165, 255, 0.08);
+}
+
+.selection-action-menu {
+  min-width: 160px;
+  z-index: 260;
+}
+
+.selection-action-menu button.is-disabled,
+.selection-action-menu button:disabled {
+  color: #97a1af;
+  background: rgba(148, 163, 184, 0.14);
+  cursor: not-allowed;
+  opacity: 1;
+}
+
+.sort-direction-toggle {
+  width: auto;
+  min-width: 48px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 10px;
+  border-radius: 14px;
+}
+
+.sort-direction-half {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  min-height: 14px;
+  transition: color 140ms ease;
+}
+
+.sort-direction-half.active {
+  color: var(--text-main);
+}
+
+.sort-direction-half.inactive {
+  color: var(--text-tertiary);
+}
+
+.sort-direction-half svg {
+  display: block;
+}
+
+.visually-hidden-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .storage-table-card {
   padding: 10px 14px 14px;
   overflow: visible;
@@ -1350,6 +1476,29 @@ button {
   min-width: 150px;
 }
 
+.file-center-more-menu .submenu-menu button.is-disabled,
+.file-center-more-menu .submenu-menu button:disabled {
+  color: #97a1af;
+  background: rgba(148, 163, 184, 0.14);
+  cursor: not-allowed;
+  opacity: 1;
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.18);
+}
+
+.theme-dark .file-center-more-menu .submenu-menu button.is-disabled,
+.context-menu.theme-dark-popup.file-center-more-menu .submenu-menu button.is-disabled,
+.theme-dark .file-center-more-menu .submenu-menu button:disabled,
+.context-menu.theme-dark-popup.file-center-more-menu .submenu-menu button:disabled {
+  color: #7f8b9b;
+  background: rgba(120, 133, 150, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(120, 133, 150, 0.22);
+}
+
+.file-center-more-menu .submenu-menu button.is-disabled:hover,
+.file-center-more-menu .submenu-menu button:disabled:hover {
+  background: rgba(148, 163, 184, 0.14);
+}
+
 .context-menu .is-disabled {
   color: var(--text-tertiary);
   cursor: default;
@@ -1501,6 +1650,45 @@ button {
 
 .tag-editor-dialog {
   width: min(640px, 100%);
+}
+
+.batch-annotation-dialog {
+  width: min(680px, 100%);
+}
+
+.batch-annotation-card {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.annotation-choice-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.annotation-choice-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.annotation-choice-grid button {
+  min-height: 38px;
+  padding: 0 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-main);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.annotation-choice-grid button.active {
+  border-color: rgba(91, 165, 255, 0.5);
+  background: rgba(91, 165, 255, 0.14);
 }
 
 .tag-editor-toolbar {

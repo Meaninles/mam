@@ -20,7 +20,7 @@ export function FileDetailSheet({
     rating: number;
     colorLabel: FileCenterColorLabel;
     tags: string[];
-  }) => void;
+  }) => Promise<void> | void;
 }) {
   const [rating, setRating] = useState(item.rating);
   const [colorLabel, setColorLabel] = useState<FileCenterColorLabel>(item.colorLabel);
@@ -33,6 +33,16 @@ export function FileDetailSheet({
   const hasChanged =
     rating !== item.rating ||
     colorLabel !== item.colorLabel;
+
+  const handleSaveAnnotations = async () => {
+    await onSaveAnnotations({
+      id: item.id,
+      rating,
+      colorLabel,
+      tags: item.tags,
+    });
+    onClose();
+  };
 
   return (
     <Sheet onClose={onClose} title={item.name}>
@@ -118,14 +128,7 @@ export function FileDetailSheet({
         <div className="sheet-actions right">
           <ActionButton
             tone="primary"
-            onClick={() =>
-              onSaveAnnotations({
-                id: item.id,
-                rating,
-                colorLabel,
-                tags: item.tags,
-              })
-            }
+            onClick={() => void handleSaveAnnotations()}
           >
             {hasChanged ? '保存标记' : '已保存'}
           </ActionButton>

@@ -74,6 +74,121 @@ describe('MARE 客户端', () => {
     expect(screen.getAllByText('删除资产：2026-03-29_上海发布会_A-cam_001.RAW').length).toBeGreaterThan(0);
   });
 
+  it('支持多选后批量设置星级和色标', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.dblClick(await screen.findByText('拍摄原片'));
+    await user.click(screen.getByLabelText('选择 2026-03-29_上海发布会_A-cam_001.RAW'));
+    await user.click(screen.getByLabelText('选择 2026-03-29_上海发布会_B-cam_018.RAW'));
+
+    await user.click(screen.getByRole('button', { name: '批量标记' }));
+    expect(await screen.findByRole('dialog', { name: '批量标记' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '5 星' }));
+    await user.click(screen.getByRole('button', { name: '蓝标' }));
+    await user.click(screen.getByRole('button', { name: '保存标记' }));
+
+    expect(await screen.findByText('已更新 2 项资产的标记')).toBeInTheDocument();
+
+    const row = (await screen.findByText('2026-03-29_上海发布会_B-cam_018.RAW')).closest('tr');
+    expect(row).not.toBeNull();
+    expect(within(row!).getByLabelText('5 星')).toBeInTheDocument();
+    expect(within(row!).getByLabelText('蓝标')).toBeInTheDocument();
+  });
+
+  it('支持通过上传菜单选择文件并开始上传', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.dblClick(await screen.findByText('拍摄原片'));
+    await user.click(screen.getByRole('button', { name: '上传' }));
+    expect(await screen.findByRole('button', { name: '上传文件' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '上传文件夹' })).toBeInTheDocument();
+
+    const input = screen.getByLabelText('上传文件选择');
+    const file = new File(['image-binary'], '客户logo.png', { type: 'image/png' });
+    await user.upload(input, file);
+
+    expect(await screen.findByText('已开始上传 1 个文件')).toBeInTheDocument();
+    const row = (await screen.findByText('客户logo.png')).closest('tr');
+    expect(row).not.toBeNull();
+    expect(within(row!).getByText(/^今天 \d{2}:\d{2}$/)).toBeInTheDocument();
+    expect(within(row!).getByRole('button', { name: '本地NVMe 已同步' })).toBeInTheDocument();
+    expect(within(row!).getByRole('button', { name: '影像NAS 未同步' })).toBeInTheDocument();
+    expect(within(row!).getByRole('button', { name: '115 未同步' })).toBeInTheDocument();
+  });
+
+  it('支持多选后批量同步到指定端点', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.dblClick(await screen.findByText('拍摄原片'));
+    await user.click(screen.getByLabelText('选择 2026-03-29_上海发布会_A-cam_001.RAW'));
+    await user.click(screen.getByLabelText('选择 2026-03-29_上海发布会_B-cam_018.RAW'));
+
+    await user.click(screen.getByRole('button', { name: '同步' }));
+    await user.click(screen.getByRole('button', { name: '115' }));
+    expect(await screen.findByRole('dialog', { name: '确认同步' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '确认同步' }));
+
+    expect(await screen.findByText('已为 2 项资产创建同步任务到 115')).toBeInTheDocument();
+  });
+
+  it('支持点击文件夹存储状态递归同步文件夹内容', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const folderRow = (await screen.findByText('拍摄原片')).closest('tr');
+    expect(folderRow).not.toBeNull();
+    await user.click(within(folderRow!).getByRole('button', { name: '115 部分同步' }));
+    expect(await screen.findByRole('dialog', { name: '确认同步' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '确认同步' }));
+
+    await user.dblClick(screen.getByText('拍摄原片'));
+    const childRow = (await screen.findByText('2026-03-29_上海发布会_A-cam_001.RAW')).closest('tr');
+    expect(childRow).not.toBeNull();
+    expect(within(childRow!).getByRole('button', { name: '115 同步中' })).toBeInTheDocument();
+  });
+
+  it('支持多选后按端批量删除副本', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.dblClick(await screen.findByText('拍摄原片'));
+    await user.click(screen.getByLabelText('选择 2026-03-29_上海发布会_A-cam_047.RAW'));
+    await user.click(screen.getByLabelText('选择 2026-03-29_上海发布会_A-cam_046.RAW'));
+
+    await user.click(screen.getByRole('button', { name: '删除副本' }));
+    await user.click(screen.getByRole('button', { name: '115' }));
+    expect(await screen.findByRole('dialog', { name: '确认删除副本' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '确认删除' }));
+
+    expect(await screen.findByText('已提交 2 项资产的端点删除请求')).toBeInTheDocument();
+
+    const row047 = (await screen.findByText('2026-03-29_上海发布会_A-cam_047.RAW')).closest('tr');
+    const row046 = (await screen.findByText('2026-03-29_上海发布会_A-cam_046.RAW')).closest('tr');
+    expect(row047).not.toBeNull();
+    expect(row046).not.toBeNull();
+    expect(within(row047!).getByRole('button', { name: '115 未同步' })).toBeInTheDocument();
+    expect(within(row046!).getByRole('button', { name: '115 未同步' })).toBeInTheDocument();
+  });
+
+  it('支持多选文件夹后批量同步文件夹内容', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByLabelText('选择 拍摄原片'));
+    await user.click(screen.getByRole('button', { name: '同步' }));
+    await user.click(screen.getByRole('button', { name: '115' }));
+    expect(await screen.findByRole('dialog', { name: '确认同步' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '确认同步' }));
+
+    await user.dblClick(screen.getByText('拍摄原片'));
+    const childRow = (await screen.findByText('2026-03-29_上海发布会_A-cam_001.RAW')).closest('tr');
+    expect(childRow).not.toBeNull();
+    expect(within(childRow!).getByRole('button', { name: '115 同步中' })).toBeInTheDocument();
+  });
+
   it('支持保存外观设置并持久化主题', async () => {
     const user = userEvent.setup();
     const { container, unmount } = render(<App />);
@@ -106,6 +221,50 @@ describe('MARE 客户端', () => {
     expect(await screen.findByText('已提交端点删除请求')).toBeInTheDocument();
   });
 
+  it('支持通过文件夹更多操作递归删除文件夹内容的端点副本', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const folderRow = (await screen.findByText('精选交付')).closest('tr');
+    expect(folderRow).not.toBeNull();
+    await user.click(within(folderRow!).getByRole('button', { name: '更多操作 精选交付' }));
+    await user.hover(screen.getByRole('button', { name: '删除' }));
+    await user.click(screen.getByRole('button', { name: '115' }));
+    expect(await screen.findByRole('dialog', { name: '确认删除副本' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '确认删除' }));
+
+    await user.dblClick(screen.getByText('精选交付'));
+    const childRow = (await screen.findByText('上海发布会_精选封面.jpg')).closest('tr');
+    expect(childRow).not.toBeNull();
+    expect(within(childRow!).getByRole('button', { name: '115 未同步' })).toBeInTheDocument();
+  });
+
+  it('当各端都没有副本后会自动从文件中心移除资产', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.dblClick(await screen.findByText('拍摄原片'));
+    const fileName = '2026-03-29_上海发布会_A-cam_001.RAW';
+    let row = (await screen.findByText(fileName)).closest('tr');
+    expect(row).not.toBeNull();
+
+    await user.click(within(row!).getByRole('button', { name: `更多操作 ${fileName}` }));
+    await user.hover(screen.getByRole('button', { name: '删除' }));
+    await user.click(screen.getByRole('button', { name: '本地NVMe' }));
+    await user.click(await screen.findByRole('button', { name: '确认删除' }));
+    expect(await screen.findByText('已提交端点删除请求')).toBeInTheDocument();
+
+    row = (await screen.findByText(fileName)).closest('tr');
+    expect(row).not.toBeNull();
+    await user.click(within(row!).getByRole('button', { name: `更多操作 ${fileName}` }));
+    await user.hover(screen.getByRole('button', { name: '删除' }));
+    await user.click(screen.getByRole('button', { name: '影像NAS' }));
+    await user.click(await screen.findByRole('button', { name: '确认删除' }));
+
+    expect(await screen.findByText('资产已因无剩余副本自动删除')).toBeInTheDocument();
+    expect(screen.queryByText(fileName)).toBeNull();
+  });
+
   it('支持点击端点状态发起同步确认', async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -119,6 +278,26 @@ describe('MARE 客户端', () => {
 
     expect(await screen.findByText('已创建同步任务到 115')).toBeInTheDocument();
   });
+
+  it(
+    '文件同步后会在 5 秒后自动刷新为已同步',
+    async () => {
+      const user = userEvent.setup();
+      render(<App />);
+
+      await user.dblClick(await screen.findByText('拍摄原片'));
+      const row = (await screen.findByText('2026-03-29_上海发布会_A-cam_001.RAW')).closest('tr');
+      expect(row).not.toBeNull();
+
+      await user.click(within(row!).getByRole('button', { name: '115 未同步' }));
+      expect(await screen.findByRole('dialog', { name: '确认同步' })).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: '确认同步' }));
+
+      expect(await screen.findByText('已创建同步任务到 115')).toBeInTheDocument();
+      expect(await within(row!).findByRole('button', { name: '115 已同步' }, { timeout: 7000 })).toBeInTheDocument();
+    },
+    12000,
+  );
 
   it('支持进入存储节点页并执行连接测试', async () => {
     const user = userEvent.setup();

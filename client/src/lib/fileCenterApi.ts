@@ -2,14 +2,16 @@ import initSqlJs from 'sql.js/dist/sql-wasm-browser.js';
 import sqlWasmUrl from 'sql.js/dist/sql-wasm.wasm?url';
 import type { AssetLifecycleState, FileTypeFilter, Severity } from '../data';
 
-export type FileCenterStatusFilter = '全部' | '待同步' | '有异常' | '多端齐全' | '待清理';
-export type FileCenterSortValue = '修改时间' | '名称' | '大小';
+export type FileCenterStatusFilter = '全部' | '完全同步' | '部分同步' | '未同步';
+export type FileCenterSortValue = '修改时间' | '名称' | '大小' | '星级';
+export type FileCenterSortDirection = 'asc' | 'desc';
 export type FileCenterEndpointType = 'local' | 'nas' | 'cloud' | 'removable';
+export type FileCenterEndpointState = '已同步' | '未同步' | '同步中' | '部分同步';
 export type FileCenterColorLabel = '无' | '红标' | '黄标' | '绿标' | '蓝标' | '紫标';
 
 export type FileCenterEndpoint = {
   name: string;
-  state: string;
+  state: FileCenterEndpointState;
   tone: Severity;
   lastSyncAt: string;
   endpointType: FileCenterEndpointType;
@@ -58,6 +60,12 @@ export type FileCenterDirectoryResult = {
   currentPathChildren: number;
 };
 
+export type FileCenterUploadItem = {
+  name: string;
+  size: number;
+  relativePath?: string;
+};
+
 export type FileCenterLoadParams = {
   libraryId: string;
   parentId: string | null;
@@ -67,6 +75,8 @@ export type FileCenterLoadParams = {
   fileTypeFilter: FileTypeFilter;
   statusFilter: FileCenterStatusFilter;
   sortValue: FileCenterSortValue;
+  sortDirection?: FileCenterSortDirection;
+  partialSyncEndpointNames?: string[];
 };
 
 type SqlJsModule = Awaited<ReturnType<typeof initSqlJs>>;
@@ -119,11 +129,25 @@ type TagRow = {
   kind: 'badge' | 'risk' | 'tag';
 };
 
-const FILE_CENTER_DB_KEY = 'mare-file-center-sqlite-v3';
+const FILE_CENTER_DB_KEY = 'mare-file-center-sqlite-v4';
 let sqlModulePromise: Promise<SqlJsModule> | null = null;
 let databasePromise: Promise<SqlDatabase> | null = null;
+const fileCenterListeners = new Set<() => void>();
+const pendingSyncTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const fileNameCollator = new Intl.Collator('zh-CN-u-co-pinyin', { numeric: true, sensitivity: 'base' });
 
 export const fileCenterApi = {
+  listLibraryEndpointNames(libraryId: string) {
+    return getLibraryEndpointTemplates(libraryId).map((endpoint) => endpoint.name);
+  },
+
+  subscribe(listener: () => void) {
+    fileCenterListeners.add(listener);
+    return () => {
+      fileCenterListeners.delete(listener);
+    };
+  },
+
   async loadDirectory(params: FileCenterLoadParams): Promise<FileCenterDirectoryResult> {
     const db = await getDatabase();
     const library = querySingle<{ id: string; name: string }>(
@@ -147,13 +171,6 @@ export const fileCenterApi = {
       )?.total ?? 0;
 
     const filter = buildEntryFilter(params);
-    const total =
-      querySingle<{ total: number }>(
-        db,
-        `SELECT COUNT(*) AS total FROM entries WHERE ${filter.whereClause}`,
-        filter.parameters,
-      )?.total ?? 0;
-
     const offset = Math.max(0, (params.page - 1) * params.pageSize);
     const rows = queryAll<EntryRow>(
       db,
@@ -179,16 +196,23 @@ export const fileCenterApi = {
         rating,
         color_label
       FROM entries
-      WHERE ${filter.whereClause}
-      ORDER BY ${buildOrderClause(params.sortValue)}
-      LIMIT $limit OFFSET $offset`,
-      { ...filter.parameters, $limit: params.pageSize, $offset: offset },
+      WHERE ${filter.whereClause}`,
+      filter.parameters,
     );
+    const normalizedRows = applyDerivedFolderCounts(db, rows);
+    const sortedRows = sortEntryRows(normalizedRows, params.sortValue, params.sortDirection ?? 'desc');
+    const hydratedItems = hydrateEntries(db, sortedRows);
+    const filteredItems = filterEntriesByStatus(
+      hydratedItems,
+      params.statusFilter,
+      params.partialSyncEndpointNames ?? [],
+    );
+    const pagedItems = filteredItems.slice(offset, offset + params.pageSize);
 
     return {
       breadcrumbs,
-      items: hydrateEntries(db, rows),
-      total,
+      items: pagedItems,
+      total: filteredItems.length,
       currentPathChildren,
     };
   },
@@ -272,7 +296,7 @@ export const fileCenterApi = {
       '目录已创建',
       'success',
     );
-    insertDefaultEndpoints(db, id, input.libraryId);
+    insertLocalOnlyEndpoints(db, id, input.libraryId);
     insertMetadataRows(db, id, [
       { label: '来源', value: '客户端新建' },
       { label: '路径', value: path },
@@ -287,6 +311,164 @@ export const fileCenterApi = {
       throw new Error('目录创建成功，但读取结果失败');
     }
     return { message: '目录已创建', item };
+  },
+
+  async uploadSelection(input: {
+    libraryId: string;
+    parentId: string | null;
+    mode: 'files' | 'folder';
+    items: FileCenterUploadItem[];
+  }): Promise<{ message: string; createdCount: number }> {
+    const db = await getDatabase();
+    const library = querySingle<{ name: string }>(db, 'SELECT name FROM libraries WHERE id = $libraryId', {
+      $libraryId: input.libraryId,
+    });
+    if (!library) {
+      throw new Error('未找到指定资产库');
+    }
+    if (input.items.length === 0) {
+      return { message: '未选择任何上传内容', createdCount: 0 };
+    }
+
+    const parent = input.parentId
+      ? querySingle<{ id: string; path: string }>(db, 'SELECT id, path FROM entries WHERE id = $id', { $id: input.parentId })
+      : null;
+    const basePath = parent ? parent.path : library.name;
+    const folderIdMap = new Map<string, string>();
+    let createdCount = 0;
+    let sequence = 0;
+
+    const getFolderId = (relativeFolderPath: string) => {
+      const cached = folderIdMap.get(relativeFolderPath);
+      if (cached) {
+        return cached;
+      }
+
+      const segments = relativeFolderPath.split('/').filter(Boolean);
+      let currentParentId = input.parentId;
+      let currentRelativePath = '';
+      let currentPath = basePath;
+      let currentId = input.parentId;
+
+      segments.forEach((segment) => {
+        currentRelativePath = currentRelativePath ? `${currentRelativePath}/${segment}` : segment;
+        const existingId = folderIdMap.get(currentRelativePath);
+        if (existingId) {
+          currentId = existingId;
+          currentParentId = existingId;
+          currentPath = `${currentPath} / ${segment}`;
+          return;
+        }
+
+        currentPath = `${currentPath} / ${segment}`;
+        const id = `upload-folder-${Math.random().toString(36).slice(2, 10)}`;
+        const now = Date.now() + sequence;
+        const timeLabel = formatRecentTimeLabel(now);
+        const detailedTime = formatDetailedTimestamp(now);
+        sequence += 1;
+        insertEntry(
+          db,
+          createEntryRow({
+            id,
+            libraryId: input.libraryId,
+            parentId: currentParentId,
+            type: 'folder',
+            name: segment,
+            fileKind: '文件夹',
+            displayType: '文件夹',
+            modifiedAt: timeLabel,
+            modifiedAtSort: now,
+            createdAt: detailedTime,
+            sizeLabel: '0 项',
+            sizeBytes: 0,
+            path: currentPath,
+            sourceLabel: '本地上传',
+            notes: '',
+          }),
+          '本地上传完成，待同步到其它端点',
+          'warning',
+        );
+        insertLocalOnlyEndpoints(db, id, input.libraryId);
+        insertMetadataRows(db, id, [
+          { label: '来源', value: '本地上传' },
+          { label: '路径', value: currentPath },
+          { label: '上传方式', value: '上传文件夹' },
+          { label: '生命周期', value: 'ACTIVE' },
+        ]);
+        insertTagRows(db, id, [{ kind: 'badge', value: '上传目录' }]);
+        folderIdMap.set(currentRelativePath, id);
+        currentId = id;
+        currentParentId = id;
+        createdCount += 1;
+      });
+
+      if (!currentId) {
+        throw new Error('目录创建失败');
+      }
+      return currentId;
+    };
+
+    input.items.forEach((item) => {
+      const normalizedRelativePath = item.relativePath?.replace(/\\/g, '/').trim() ?? item.name;
+      const pathSegments = normalizedRelativePath.split('/').filter(Boolean);
+      const fileName = pathSegments[pathSegments.length - 1] ?? item.name;
+      const folderRelativePath = pathSegments.slice(0, -1).join('/');
+      const parentId = folderRelativePath ? getFolderId(folderRelativePath) : input.parentId;
+      const parentPath = folderRelativePath ? `${basePath} / ${folderRelativePath.split('/').join(' / ')}` : basePath;
+      const id = `upload-file-${Math.random().toString(36).slice(2, 10)}`;
+      const now = Date.now() + sequence;
+      const timeLabel = formatRecentTimeLabel(now);
+      const detailedTime = formatDetailedTimestamp(now);
+      sequence += 1;
+      const fileKind = inferFileKindFromName(fileName);
+      const displayType = inferDisplayTypeFromName(fileName, fileKind);
+      const fullPath = `${parentPath} / ${fileName}`;
+
+      insertEntry(
+        db,
+        createEntryRow({
+          id,
+          libraryId: input.libraryId,
+          parentId,
+          type: 'file',
+          name: fileName,
+          fileKind,
+          displayType,
+          modifiedAt: timeLabel,
+          modifiedAtSort: now,
+          createdAt: detailedTime,
+          sizeLabel: formatUploadSize(item.size),
+          sizeBytes: item.size,
+          path: fullPath,
+          sourceLabel: '本地上传',
+          notes: '',
+        }),
+        '本地上传完成，待同步到其它端点',
+        'warning',
+      );
+      insertLocalOnlyEndpoints(db, id, input.libraryId);
+      insertMetadataRows(db, id, [
+        { label: '来源', value: '本地上传' },
+        { label: '路径', value: fullPath },
+        { label: '文件类型', value: displayType },
+        { label: '生命周期', value: 'ACTIVE' },
+      ]);
+      insertTagRows(db, id, [
+        { kind: 'badge', value: input.mode === 'folder' ? '文件夹上传' : '本地上传' },
+      ]);
+      createdCount += 1;
+    });
+
+    persistDatabase(db);
+    emitFileCenterUpdate();
+
+    return {
+      message:
+        input.mode === 'folder'
+          ? `已开始上传文件夹，共新增 ${createdCount} 项`
+          : `已开始上传 ${input.items.length} 个文件`,
+      createdCount,
+    };
   },
 
   async deleteAssets(ids: string[]): Promise<{ message: string }> {
@@ -314,54 +496,50 @@ export const fileCenterApi = {
     return { message: '删除请求已提交，资产进入等待清理' };
   },
 
-  async deleteFromEndpoint(id: string, endpointName: string): Promise<{ message: string }> {
+  async deleteFromEndpoint(id: string, endpointName: string): Promise<{ message: string; deleted: boolean; deletedCount: number }> {
     const db = await getDatabase();
-    db.run(
-      `UPDATE entry_endpoints
-       SET state = '未同步', tone = 'critical', last_sync_at = '刚刚'
-       WHERE entry_id = $id AND name = $endpointName`,
-      { $id: id, $endpointName: endpointName },
-    );
+    const targetIds = collectEndpointActionableFileIds(db, id, endpointName, 'delete');
+    if (targetIds.length === 0) {
+      return { message: '当前目录下没有可删除副本', deleted: false, deletedCount: 0 };
+    }
 
-    const remaining = querySingle<{ total: number }>(
-      db,
-      "SELECT COUNT(*) AS total FROM entry_endpoints WHERE entry_id = $id AND state = '已同步'",
-      { $id: id },
-    )?.total ?? 0;
-    const lifecycleState: AssetLifecycleState = remaining > 0 ? 'ACTIVE' : 'PENDING_DELETE';
-
-    db.run(
-      `UPDATE entries
-       SET lifecycle_state = $lifecycleState, last_task_text = $lastTaskText, last_task_tone = $lastTaskTone
-       WHERE id = $id`,
-      {
-        $id: id,
-        $lifecycleState: lifecycleState,
-        $lastTaskText: remaining > 0 ? '已提交端点删除请求' : '等待后台清理',
-        $lastTaskTone: remaining > 0 ? 'info' : 'warning',
-      },
-    );
-
-    syncLifecycleMetadata(db, [id], lifecycleState);
+    let deletedCount = 0;
+    targetIds.forEach((targetId) => {
+      if (deleteFileFromEndpoint(db, targetId, endpointName)) {
+        deletedCount += 1;
+      }
+    });
     persistDatabase(db);
-    return { message: '已提交端点删除请求' };
+    return {
+      message: deletedCount > 0 && deletedCount === targetIds.length ? '资产已因无剩余副本自动删除' : '已提交端点删除请求',
+      deleted: deletedCount > 0,
+      deletedCount,
+    };
   },
 
   async syncToEndpoint(id: string, endpointName: string): Promise<{ message: string }> {
     const db = await getDatabase();
-    db.run(
-      `UPDATE entry_endpoints
-       SET state = '同步中', tone = 'warning', last_sync_at = '刚刚'
-       WHERE entry_id = $id AND name = $endpointName`,
-      { $id: id, $endpointName: endpointName },
-    );
-    db.run(
-      `UPDATE entries
-       SET last_task_text = $lastTaskText, last_task_tone = 'warning'
-       WHERE id = $id`,
-      { $id: id, $lastTaskText: `已创建同步任务到 ${endpointName}` },
-    );
+    const targetIds = collectEndpointActionableFileIds(db, id, endpointName, 'sync');
+    if (targetIds.length === 0) {
+      return { message: '当前目录下没有可同步内容' };
+    }
+
+    targetIds.forEach((targetId) => {
+      db.run(
+        `UPDATE entry_endpoints
+         SET state = '同步中', tone = 'warning', last_sync_at = '刚刚'
+         WHERE entry_id = $id AND name = $endpointName`,
+        { $id: targetId, $endpointName: endpointName },
+      );
+      db.run(
+        `UPDATE entries
+         SET last_task_text = $lastTaskText, last_task_tone = 'warning'
+         WHERE id = $id`,
+        { $id: targetId, $lastTaskText: `已创建同步任务到 ${endpointName}` },
+      );
+    });
     persistDatabase(db);
+    targetIds.forEach((targetId) => scheduleMockSyncCompletion(targetId, endpointName));
     return { message: `已创建同步任务到 ${endpointName}` };
   },
 
@@ -425,6 +603,8 @@ export const fileCenterApi = {
 };
 
 export async function resetFileCenterMock() {
+  pendingSyncTimers.forEach((timer) => clearTimeout(timer));
+  pendingSyncTimers.clear();
   databasePromise = null;
   if (typeof window !== 'undefined') {
     window.localStorage.removeItem(FILE_CENTER_DB_KEY);
@@ -460,11 +640,16 @@ async function initializeDatabase() {
   const SQL = await getSqlModule();
   const stored = readStoredDatabase();
   if (stored) {
-    return new SQL.Database(stored);
+    const db = new SQL.Database(stored);
+    if (migrateFileCenterDatabase(db)) {
+      persistDatabase(db);
+    }
+    return db;
   }
   const db = new SQL.Database();
   createSchema(db);
   seedDatabase(db);
+  migrateFileCenterDatabase(db);
   persistDatabase(db);
   return db;
 }
@@ -491,6 +676,10 @@ function persistDatabase(db: SqlDatabase) {
   }
   const payload = db.export();
   window.localStorage.setItem(FILE_CENTER_DB_KEY, encodeBase64(payload));
+}
+
+function emitFileCenterUpdate() {
+  fileCenterListeners.forEach((listener) => listener());
 }
 
 function createSchema(db: SqlDatabase) {
@@ -555,6 +744,230 @@ function createSchema(db: SqlDatabase) {
     CREATE INDEX idx_entry_endpoints_entry ON entry_endpoints(entry_id, order_index);
     CREATE INDEX idx_entry_tags_entry ON entry_tags(entry_id, order_index);
   `);
+}
+
+export function normalizeFileCenterEndpointState(state: string): FileCenterEndpointState {
+  if (state === '已同步' || state === '已存在') {
+    return '已同步';
+  }
+  if (state === '部分同步') {
+    return '部分同步';
+  }
+  if (state === '同步中') {
+    return '同步中';
+  }
+  return '未同步';
+}
+
+export function resolveFileCenterEndpointTone(state: string): Severity {
+  const normalizedState = normalizeFileCenterEndpointState(state);
+  if (normalizedState === '已同步') {
+    return 'success';
+  }
+  if (normalizedState === '部分同步') {
+    return 'warning';
+  }
+  if (normalizedState === '同步中') {
+    return 'warning';
+  }
+  return 'critical';
+}
+
+export function canSyncFileCenterEndpoint(endpoint: Pick<FileCenterEndpoint, 'state'> | string) {
+  const state = typeof endpoint === 'string' ? endpoint : endpoint.state;
+  return ['未同步', '部分同步'].includes(normalizeFileCenterEndpointState(state));
+}
+
+export function canDeleteFileCenterEndpoint(endpoint: Pick<FileCenterEndpoint, 'state'> | string) {
+  const state = typeof endpoint === 'string' ? endpoint : endpoint.state;
+  return ['已同步', '部分同步'].includes(normalizeFileCenterEndpointState(state));
+}
+
+function migrateFileCenterDatabase(db: SqlDatabase) {
+  const rows = queryAll<{ entry_id: string; name: string; state: string; tone: Severity }>(
+    db,
+    'SELECT entry_id, name, state, tone FROM entry_endpoints',
+    {},
+  );
+  let changed = false;
+
+  rows.forEach((row) => {
+    const normalizedState = normalizeFileCenterEndpointState(row.state);
+    const normalizedTone = resolveFileCenterEndpointTone(row.state);
+    if (row.state === normalizedState && row.tone === normalizedTone) {
+      return;
+    }
+
+    db.run(
+      `UPDATE entry_endpoints
+       SET state = $state, tone = $tone
+       WHERE entry_id = $entryId AND name = $name`,
+      {
+        $entryId: row.entry_id,
+        $name: row.name,
+        $state: normalizedState,
+        $tone: normalizedTone,
+      },
+    );
+    changed = true;
+  });
+
+  return changed;
+}
+
+function scheduleMockSyncCompletion(id: string, endpointName: string) {
+  const timerKey = `${id}:${endpointName}`;
+  const existingTimer = pendingSyncTimers.get(timerKey);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+  }
+
+  const timer = setTimeout(() => {
+    void finalizeMockSync(id, endpointName);
+  }, 5000);
+
+  pendingSyncTimers.set(timerKey, timer);
+}
+
+function clearPendingSyncTimersForEntries(ids: string[]) {
+  ids.forEach((id) => {
+    Array.from(pendingSyncTimers.keys())
+      .filter((key) => key.startsWith(`${id}:`))
+      .forEach((key) => {
+        const timer = pendingSyncTimers.get(key);
+        if (timer) {
+          clearTimeout(timer);
+        }
+        pendingSyncTimers.delete(key);
+      });
+  });
+}
+
+function deleteEntriesPermanently(db: SqlDatabase, ids: string[]) {
+  const allIds = collectEntryIds(db, ids);
+  if (allIds.length === 0) {
+    return;
+  }
+
+  clearPendingSyncTimersForEntries(allIds);
+  const placeholders = createPlaceholders(allIds, 'deleteId');
+  db.run(`DELETE FROM entry_endpoints WHERE entry_id IN (${placeholders.sql})`, placeholders.parameters);
+  db.run(`DELETE FROM entry_metadata WHERE entry_id IN (${placeholders.sql})`, placeholders.parameters);
+  db.run(`DELETE FROM entry_tags WHERE entry_id IN (${placeholders.sql})`, placeholders.parameters);
+  db.run(`DELETE FROM entries WHERE id IN (${placeholders.sql})`, placeholders.parameters);
+}
+
+function collectEndpointActionableFileIds(
+  db: SqlDatabase,
+  id: string,
+  endpointName: string,
+  action: 'sync' | 'delete',
+) {
+  const target = querySingle<{ id: string; type: 'folder' | 'file' }>(
+    db,
+    'SELECT id, type FROM entries WHERE id = $id',
+    { $id: id },
+  );
+  if (!target) {
+    return [];
+  }
+
+  const descendantIds =
+    target.type === 'folder'
+      ? collectEntryIds(db, [id]).filter((entryId) => entryId !== id)
+      : [id];
+
+  const fileRows = queryAll<{ id: string }>(
+    db,
+    descendantIds.length > 0
+      ? `SELECT id
+         FROM entries
+         WHERE id IN (${createPlaceholders(descendantIds, 'actionEntry').sql}) AND type = 'file'`
+      : 'SELECT id FROM entries WHERE 1 = 0',
+    descendantIds.length > 0 ? createPlaceholders(descendantIds, 'actionEntry').parameters : {},
+  );
+
+  return fileRows
+    .map((row) => row.id)
+    .filter((entryId) => {
+      const endpoint = querySingle<{ state: string }>(
+        db,
+        'SELECT state FROM entry_endpoints WHERE entry_id = $id AND name = $endpointName',
+        { $id: entryId, $endpointName: endpointName },
+      );
+      if (!endpoint) {
+        return false;
+      }
+      return action === 'sync'
+        ? canSyncFileCenterEndpoint(endpoint.state)
+        : canDeleteFileCenterEndpoint(endpoint.state);
+    });
+}
+
+function deleteFileFromEndpoint(db: SqlDatabase, id: string, endpointName: string) {
+  db.run(
+    `UPDATE entry_endpoints
+     SET state = '未同步', tone = 'critical', last_sync_at = '刚刚'
+     WHERE entry_id = $id AND name = $endpointName`,
+    { $id: id, $endpointName: endpointName },
+  );
+
+  const remaining = querySingle<{ total: number }>(
+    db,
+    "SELECT COUNT(*) AS total FROM entry_endpoints WHERE entry_id = $id AND state = '已同步'",
+    { $id: id },
+  )?.total ?? 0;
+
+  if (remaining === 0) {
+    deleteEntriesPermanently(db, [id]);
+    return true;
+  }
+
+  db.run(
+    `UPDATE entries
+     SET lifecycle_state = 'ACTIVE', last_task_text = $lastTaskText, last_task_tone = 'info'
+     WHERE id = $id`,
+    {
+      $id: id,
+      $lastTaskText: '已提交端点删除请求',
+    },
+  );
+  syncLifecycleMetadata(db, [id], 'ACTIVE');
+  return false;
+}
+
+async function finalizeMockSync(id: string, endpointName: string) {
+  const timerKey = `${id}:${endpointName}`;
+  pendingSyncTimers.delete(timerKey);
+
+  const db = await getDatabase();
+  db.run(
+    `UPDATE entry_endpoints
+     SET state = '已同步', tone = 'success', last_sync_at = '刚刚'
+     WHERE entry_id = $id AND name = $endpointName`,
+    { $id: id, $endpointName: endpointName },
+  );
+
+  const remainingPendingCount =
+    querySingle<{ total: number }>(
+      db,
+      "SELECT COUNT(*) AS total FROM entry_endpoints WHERE entry_id = $id AND state IN ('未同步', '同步中')",
+      { $id: id },
+    )?.total ?? 0;
+
+  db.run(
+    `UPDATE entries
+     SET last_task_text = $lastTaskText, last_task_tone = $lastTaskTone
+     WHERE id = $id`,
+    {
+      $id: id,
+      $lastTaskText: remainingPendingCount === 0 ? '已同步到全部端点' : `已同步到 ${endpointName}`,
+      $lastTaskTone: remainingPendingCount === 0 ? 'success' : 'info',
+    },
+  );
+
+  persistDatabase(db);
+  emitFileCenterUpdate();
 }
 
 function createEntryRow(input: {
@@ -707,29 +1120,51 @@ function insertTagRows(
   });
 }
 
-function getDefaultEndpoints(libraryId: string): FileCenterEndpoint[] {
+function createSeedEndpoint(
+  name: string,
+  state: FileCenterEndpointState,
+  lastSyncAt: string,
+  endpointType: FileCenterEndpointType,
+): FileCenterEndpoint {
+  return {
+    name,
+    state,
+    tone: resolveFileCenterEndpointTone(state),
+    lastSyncAt,
+    endpointType,
+  };
+}
+
+function getLibraryEndpointTemplates(libraryId: string): Array<Pick<FileCenterEndpoint, 'name' | 'endpointType'>> {
+  return getLocalOnlyEndpoints(libraryId).map((endpoint) => ({
+    name: endpoint.name,
+    endpointType: endpoint.endpointType,
+  }));
+}
+
+function getLocalOnlyEndpoints(libraryId: string): FileCenterEndpoint[] {
   if (libraryId === 'video') {
     return [
-      { name: '本地NVMe', state: '已同步', tone: 'success', lastSyncAt: '刚刚', endpointType: 'local' },
-      { name: '影像NAS', state: '未同步', tone: 'critical', lastSyncAt: '尚未开始', endpointType: 'nas' },
+      createSeedEndpoint('本地NVMe', '已同步', '刚刚', 'local'),
+      createSeedEndpoint('影像NAS', '未同步', '尚未开始', 'nas'),
     ];
   }
   if (libraryId === 'family') {
     return [
-      { name: '本地NVMe', state: '已同步', tone: 'success', lastSyncAt: '刚刚', endpointType: 'local' },
-      { name: '影像NAS', state: '已同步', tone: 'success', lastSyncAt: '刚刚', endpointType: 'nas' },
-      { name: '115', state: '已同步', tone: 'success', lastSyncAt: '刚刚', endpointType: 'cloud' },
+      createSeedEndpoint('本地NVMe', '已同步', '刚刚', 'local'),
+      createSeedEndpoint('影像NAS', '未同步', '尚未开始', 'nas'),
+      createSeedEndpoint('115', '未同步', '尚未开始', 'cloud'),
     ];
   }
   return [
-    { name: '本地NVMe', state: '已同步', tone: 'success', lastSyncAt: '刚刚', endpointType: 'local' },
-    { name: '影像NAS', state: '已同步', tone: 'success', lastSyncAt: '刚刚', endpointType: 'nas' },
-    { name: '115', state: '未同步', tone: 'critical', lastSyncAt: '尚未开始', endpointType: 'cloud' },
+    createSeedEndpoint('本地NVMe', '已同步', '刚刚', 'local'),
+    createSeedEndpoint('影像NAS', '未同步', '尚未开始', 'nas'),
+    createSeedEndpoint('115', '未同步', '尚未开始', 'cloud'),
   ];
 }
 
-function insertDefaultEndpoints(db: SqlDatabase, entryId: string, libraryId: string) {
-  getDefaultEndpoints(libraryId).forEach((endpoint, orderIndex) => {
+function insertLocalOnlyEndpoints(db: SqlDatabase, entryId: string, libraryId: string) {
+  getLocalOnlyEndpoints(libraryId).forEach((endpoint, orderIndex) => {
     db.run(
       `INSERT INTO entry_endpoints (entry_id, order_index, name, state, tone, last_sync_at, endpoint_type)
        VALUES ($entryId, $orderIndex, $name, $state, $tone, $lastSyncAt, $endpointType)`,
@@ -835,31 +1270,113 @@ function seedDatabase(db: SqlDatabase) {
 
   for (let index = 1; index <= 42; index += 1) {
     const id = `photo-root-extra-${index}`;
+    const isDocument = index % 4 === 0;
+    const folderName = ['客户归档', '品牌分组', '待交付素材', '修图返修', '历史项目', '社媒素材'][index % 6];
+    const documentName = ['拍摄计划', '报价单', '授权清单', '交付确认'][index % 4];
+    const itemName = isDocument ? `${documentName}_${String(index).padStart(2, '0')}.pdf` : `${folderName} ${String(index).padStart(2, '0')}`;
+    const taskText = isDocument
+      ? index % 6 === 0
+        ? '等待补齐到 115'
+        : index % 5 === 0
+          ? '影像NAS 同步中'
+          : '文档索引已更新'
+      : index % 7 === 0
+        ? '目录待复核'
+        : '目录已索引';
+    const taskTone = isDocument
+      ? index % 6 === 0
+        ? 'warning'
+        : index % 5 === 0
+          ? 'warning'
+          : 'success'
+      : index % 7 === 0
+        ? 'info'
+        : 'success';
+
     insertEntry(
       db,
       createEntryRow({
         id,
         libraryId: 'photo',
         parentId: null,
-        type: index % 4 === 0 ? 'file' : 'folder',
-        name: index % 4 === 0 ? `拍摄计划_${String(index).padStart(2, '0')}.pdf` : `归档分组 ${String(index).padStart(2, '0')}`,
-        fileKind: index % 4 === 0 ? '文档' : '文件夹',
-        displayType: index % 4 === 0 ? 'PDF 文档' : '文件夹',
+        type: isDocument ? 'file' : 'folder',
+        name: itemName,
+        fileKind: isDocument ? '文档' : '文件夹',
+        displayType: isDocument ? 'PDF 文档' : '文件夹',
         modifiedAt: `2026-03-${String((index % 9) + 20).padStart(2, '0')} 1${index % 10}:00`,
         modifiedAtSort: Number(`202603${String((index % 9) + 20).padStart(2, '0')}1${index % 10}00`),
         createdAt: `2026-03-${String((index % 9) + 12).padStart(2, '0')} 09:00`,
-        sizeLabel: index % 4 === 0 ? `${(index * 1.4 + 2).toFixed(1)} MB` : `${index * 7 + 12} 项`,
-        sizeBytes: index % 4 === 0 ? Math.round((index * 1.4 + 2) * 1024 * 1024) : index * 7 + 12,
+        sizeLabel: isDocument ? `${(index * 1.4 + 2).toFixed(1)} MB` : `${index * 7 + 12} 项`,
+        sizeBytes: isDocument ? Math.round((index * 1.4 + 2) * 1024 * 1024) : index * 7 + 12,
         path:
-          index % 4 === 0
-            ? `商业摄影资产库 / 合同文档 / 拍摄计划_${String(index).padStart(2, '0')}.pdf`
-            : `商业摄影资产库 / 归档分组 ${String(index).padStart(2, '0')}`,
-        sourceLabel: index % 4 === 0 ? '文档录入' : '自动归档',
+          isDocument
+            ? `商业摄影资产库 / 合同文档 / ${itemName}`
+            : `商业摄影资产库 / ${itemName}`,
+        sourceLabel: isDocument ? '商务资料' : '自动归档',
         notes: '',
       }),
-      index % 5 === 0 ? '等待补齐到 115' : '目录已索引',
-      index % 5 === 0 ? 'warning' : 'success',
+      taskText,
+      taskTone,
     );
+
+    if (isDocument) {
+      const endpoints = [
+        createSeedEndpoint('本地NVMe', '已同步', '今天 08:40', 'local'),
+        createSeedEndpoint(
+          '影像NAS',
+          index % 5 === 0 ? '同步中' : '已同步',
+          index % 5 === 0 ? '刚刚' : '今天 08:48',
+          'nas',
+        ),
+        createSeedEndpoint(
+          '115',
+          index % 6 === 0 ? '未同步' : '已同步',
+          index % 6 === 0 ? '尚未开始' : '昨天 22:16',
+          'cloud',
+        ),
+      ];
+
+      endpoints.forEach((endpoint, orderIndex) => {
+        db.run(
+          `INSERT INTO entry_endpoints (entry_id, order_index, name, state, tone, last_sync_at, endpoint_type)
+           VALUES ($entryId, $orderIndex, $name, $state, $tone, $lastSyncAt, $endpointType)`,
+          {
+            $entryId: id,
+            $orderIndex: orderIndex,
+            $name: endpoint.name,
+            $state: endpoint.state,
+            $tone: endpoint.tone,
+            $lastSyncAt: endpoint.lastSyncAt,
+            $endpointType: endpoint.endpointType,
+          },
+        );
+      });
+
+      insertMetadataRows(db, id, [
+        { label: '文档类型', value: documentName },
+        { label: '归档分组', value: folderName },
+        { label: '项目', value: index % 2 === 0 ? '上海发布会' : '品牌棚拍' },
+        { label: '生命周期', value: 'ACTIVE' },
+      ]);
+      insertTagRows(db, id, [
+        { kind: 'badge', value: documentName },
+        { kind: 'tag', value: index % 2 === 0 ? '商务资料' : '归档资料' },
+        ...(index % 6 === 0 ? [{ kind: 'risk' as const, value: '待同步' }] : []),
+      ]);
+      continue;
+    }
+
+    insertMetadataRows(db, id, [
+      { label: '分组类型', value: folderName },
+      { label: '来源', value: '自动归档' },
+      { label: '项目数', value: String(index * 7 + 12) },
+      { label: '生命周期', value: 'ACTIVE' },
+    ]);
+    insertTagRows(db, id, [
+      { kind: 'badge', value: '归档目录' },
+      { kind: 'tag', value: index % 3 === 0 ? '待整理' : '已归档' },
+      ...(index % 7 === 0 ? [{ kind: 'risk' as const, value: '待复核' }] : []),
+    ]);
   }
 
   insertSeedDetails(db);
@@ -897,9 +1414,9 @@ function insertSeedDetails(db: SqlDatabase) {
       taskText: '等待补齐到 115',
       taskTone: 'warning',
       endpoints: [
-        { name: '本地NVMe', state: '已同步', tone: 'success', lastSyncAt: '今天 09:18', endpointType: 'local' },
-        { name: '影像NAS', state: '已同步', tone: 'success', lastSyncAt: '今天 09:18', endpointType: 'nas' },
-        { name: '115', state: '未同步', tone: 'critical', lastSyncAt: '尚未开始', endpointType: 'cloud' },
+        createSeedEndpoint('本地NVMe', '已同步', '今天 09:18', 'local'),
+        createSeedEndpoint('影像NAS', '已同步', '今天 09:18', 'nas'),
+        createSeedEndpoint('115', '未同步', '尚未开始', 'cloud'),
       ],
       metadata: [
         { label: '设备', value: 'Sony A7R V' },
@@ -912,6 +1429,7 @@ function insertSeedDetails(db: SqlDatabase) {
         { kind: 'badge', value: 'RAW' },
         { kind: 'badge', value: '主机位' },
         { kind: 'tag', value: '发布会' },
+        { kind: 'tag', value: '社媒候选' },
       ],
     },
     {
@@ -936,9 +1454,9 @@ function insertSeedDetails(db: SqlDatabase) {
       taskText: 'NAS 补齐进行中',
       taskTone: 'warning',
       endpoints: [
-        { name: '本地NVMe', state: '已同步', tone: 'success', lastSyncAt: '今天 09:18', endpointType: 'local' },
-        { name: '影像NAS', state: '同步中', tone: 'warning', lastSyncAt: '刚刚', endpointType: 'nas' },
-        { name: '115', state: '未同步', tone: 'critical', lastSyncAt: '尚未开始', endpointType: 'cloud' },
+        createSeedEndpoint('本地NVMe', '已同步', '今天 09:18', 'local'),
+        createSeedEndpoint('影像NAS', '同步中', '刚刚', 'nas'),
+        createSeedEndpoint('115', '未同步', '尚未开始', 'cloud'),
       ],
       metadata: [
         { label: '设备', value: 'Sony A7 IV' },
@@ -951,6 +1469,7 @@ function insertSeedDetails(db: SqlDatabase) {
         { kind: 'badge', value: 'RAW' },
         { kind: 'risk', value: '待同步' },
         { kind: 'tag', value: '发布会' },
+        { kind: 'tag', value: '待修图' },
       ],
     },
     {
@@ -976,9 +1495,9 @@ function insertSeedDetails(db: SqlDatabase) {
       taskText: '已同步到全部端点',
       taskTone: 'success',
       endpoints: [
-        { name: '本地NVMe', state: '已同步', tone: 'success', lastSyncAt: '昨天 22:18', endpointType: 'local' },
-        { name: '影像NAS', state: '已同步', tone: 'success', lastSyncAt: '昨天 22:20', endpointType: 'nas' },
-        { name: '115', state: '已同步', tone: 'success', lastSyncAt: '昨天 22:28', endpointType: 'cloud' },
+        createSeedEndpoint('本地NVMe', '已同步', '昨天 22:18', 'local'),
+        createSeedEndpoint('影像NAS', '已同步', '昨天 22:20', 'nas'),
+        createSeedEndpoint('115', '已同步', '昨天 22:28', 'cloud'),
       ],
       metadata: [
         { label: '设备', value: 'Sony A7R V' },
@@ -990,6 +1509,7 @@ function insertSeedDetails(db: SqlDatabase) {
       tags: [
         { kind: 'badge', value: '精选交付' },
         { kind: 'tag', value: '封面图' },
+        { kind: 'tag', value: '客户精选' },
       ],
     },
     {
@@ -1015,9 +1535,9 @@ function insertSeedDetails(db: SqlDatabase) {
       taskText: '等待补齐到 115',
       taskTone: 'warning',
       endpoints: [
-        { name: '本地NVMe', state: '已同步', tone: 'success', lastSyncAt: '今天 10:02', endpointType: 'local' },
-        { name: '影像NAS', state: '同步中', tone: 'warning', lastSyncAt: '刚刚', endpointType: 'nas' },
-        { name: '115', state: '未同步', tone: 'critical', lastSyncAt: '尚未开始', endpointType: 'cloud' },
+        createSeedEndpoint('本地NVMe', '已同步', '今天 10:02', 'local'),
+        createSeedEndpoint('影像NAS', '同步中', '刚刚', 'nas'),
+        createSeedEndpoint('115', '未同步', '尚未开始', 'cloud'),
       ],
       metadata: [
         { label: '分辨率', value: '3840 × 2160' },
@@ -1029,6 +1549,7 @@ function insertSeedDetails(db: SqlDatabase) {
       tags: [
         { kind: 'risk', value: '待同步' },
         { kind: 'badge', value: '母版' },
+        { kind: 'tag', value: '访谈项目' },
       ],
     },
     {
@@ -1051,12 +1572,12 @@ function insertSeedDetails(db: SqlDatabase) {
         rating: 2,
         colorLabel: '绿标',
       }),
-      taskText: '校验失败待处理',
+      taskText: 'NAS 复核待处理',
       taskTone: 'critical',
       endpoints: [
-        { name: '本地NVMe', state: '已同步', tone: 'success', lastSyncAt: '2026-03-28 10:06', endpointType: 'local' },
-        { name: '影像NAS', state: '未同步', tone: 'critical', lastSyncAt: '2026-03-28 10:12', endpointType: 'nas' },
-        { name: '115', state: '已同步', tone: 'success', lastSyncAt: '2026-03-28 10:20', endpointType: 'cloud' },
+        createSeedEndpoint('本地NVMe', '已同步', '2026-03-28 10:06', 'local'),
+        createSeedEndpoint('影像NAS', '未同步', '2026-03-28 10:12', 'nas'),
+        createSeedEndpoint('115', '已同步', '2026-03-28 10:20', 'cloud'),
       ],
       metadata: [
         { label: '采样率', value: '48 kHz' },
@@ -1066,8 +1587,9 @@ function insertSeedDetails(db: SqlDatabase) {
         { label: '生命周期', value: 'ACTIVE' },
       ],
       tags: [
-        { kind: 'risk', value: '校验失败' },
+        { kind: 'risk', value: '待复核' },
         { kind: 'badge', value: '音频母版' },
+        { kind: 'tag', value: '访谈项目' },
       ],
     },
   ];
@@ -1096,6 +1618,12 @@ function insertSeedDetails(db: SqlDatabase) {
   for (let index = 3; index <= 64; index += 1) {
     const id = `photo-file-raw-${String(index).padStart(3, '0')}`;
     const camera = index % 2 === 0 ? 'Sony A7R V' : 'Sony A7 IV';
+    const isNasSyncing = index % 7 === 0;
+    const isCloudPending = index % 6 === 0;
+    const isClientSelect = index % 10 === 0;
+    const needsRetouch = index % 7 === 0;
+    const exposure = index % 2 === 0 ? '1/250 · f/2.8 · ISO 640' : '1/200 · f/2.8 · ISO 800';
+
     insertEntry(
       db,
       createEntryRow({
@@ -1124,35 +1652,44 @@ function insertSeedDetails(db: SqlDatabase) {
                 ? '黄标'
                 : '无',
       }),
-      index % 6 === 0 ? '等待补齐到 115' : '索引已更新',
-      index % 6 === 0 ? 'warning' : 'success',
+      isNasSyncing ? '影像NAS 补齐进行中' : isCloudPending ? '等待补齐到 115' : '索引已更新',
+      isNasSyncing || isCloudPending ? 'warning' : 'success',
     );
-    db.run(
-      `INSERT INTO entry_endpoints (entry_id, order_index, name, state, tone, last_sync_at, endpoint_type) VALUES
-        ($id, 0, '本地NVMe', '已同步', 'success', '今天 09:18', 'local'),
-        ($id, 1, '影像NAS', $nasState, $nasTone, $nasTime, 'nas'),
-        ($id, 2, '115', $cloudState, $cloudTone, $cloudTime, 'cloud')`,
-      {
-        $id: id,
-        $nasState: index % 7 === 0 ? '同步中' : '已同步',
-        $nasTone: index % 7 === 0 ? 'warning' : 'success',
-        $nasTime: index % 7 === 0 ? '刚刚' : '今天 09:20',
-        $cloudState: index % 6 === 0 ? '未同步' : '已同步',
-        $cloudTone: index % 6 === 0 ? 'critical' : 'success',
-        $cloudTime: index % 6 === 0 ? '尚未开始' : '昨天 23:12',
-      },
-    );
+    [
+      createSeedEndpoint('本地NVMe', '已同步', '今天 09:18', 'local'),
+      createSeedEndpoint('影像NAS', isNasSyncing ? '同步中' : '已同步', isNasSyncing ? '刚刚' : '今天 09:20', 'nas'),
+      createSeedEndpoint('115', isCloudPending ? '未同步' : '已同步', isCloudPending ? '尚未开始' : '昨天 23:12', 'cloud'),
+    ].forEach((endpoint, orderIndex) => {
+      db.run(
+        `INSERT INTO entry_endpoints (entry_id, order_index, name, state, tone, last_sync_at, endpoint_type)
+         VALUES ($entryId, $orderIndex, $name, $state, $tone, $lastSyncAt, $endpointType)`,
+        {
+          $entryId: id,
+          $orderIndex: orderIndex,
+          $name: endpoint.name,
+          $state: endpoint.state,
+          $tone: endpoint.tone,
+          $lastSyncAt: endpoint.lastSyncAt,
+          $endpointType: endpoint.endpointType,
+        },
+      );
+    });
     insertMetadataRows(db, id, [
       { label: '设备', value: camera },
       { label: '镜头', value: index % 2 === 0 ? '24-70mm F2.8 GM II' : '70-200mm F2.8 GM II' },
       { label: '分辨率', value: index % 2 === 0 ? '9504 × 6336' : '7008 × 4672' },
+      { label: '曝光', value: exposure },
       { label: '生命周期', value: 'ACTIVE' },
     ]);
     insertTagRows(db, id, [
       { kind: 'badge', value: 'RAW' },
-      ...(index % 10 === 0 ? [{ kind: 'tag' as const, value: '客户精选' }] : []),
-      ...(index % 7 === 0 ? [{ kind: 'tag' as const, value: '待修图' }] : []),
-      ...(index % 6 === 0 ? [{ kind: 'risk' as const, value: '待同步' }] : []),
+      ...(index % 2 === 0 ? [{ kind: 'badge' as const, value: '主机位' }] : [{ kind: 'badge' as const, value: '副机位' }]),
+      { kind: 'tag', value: '发布会' },
+      ...(isClientSelect ? [{ kind: 'tag' as const, value: '客户精选' }] : []),
+      ...(needsRetouch ? [{ kind: 'tag' as const, value: '待修图' }] : []),
+      ...(index % 8 === 0 ? [{ kind: 'tag' as const, value: '社媒候选' }] : []),
+      ...(isNasSyncing ? [{ kind: 'risk' as const, value: '同步中' }] : []),
+      ...(isCloudPending ? [{ kind: 'risk' as const, value: '待同步' }] : []),
     ]);
   }
 }
@@ -1185,41 +1722,10 @@ function buildEntryFilter(params: FileCenterLoadParams) {
     }
   }
 
-  if (params.statusFilter === '待同步') {
-    where.push("id IN (SELECT entry_id FROM entry_endpoints WHERE state IN ('未同步', '同步中'))");
-  }
-  if (params.statusFilter === '有异常') {
-    where.push(
-      "(id IN (SELECT entry_id FROM entry_endpoints WHERE tone IN ('warning', 'critical')) OR id IN (SELECT entry_id FROM entry_tags WHERE kind = 'risk'))",
-    );
-  }
-  if (params.statusFilter === '多端齐全') {
-    where.push(`id IN (
-      SELECT entry_id
-      FROM entry_endpoints
-      GROUP BY entry_id
-      HAVING COUNT(*) >= 2
-        AND SUM(CASE WHEN state <> '已同步' OR tone IN ('warning', 'critical') THEN 1 ELSE 0 END) = 0
-    )`);
-  }
-  if (params.statusFilter === '待清理') {
-    where.push("lifecycle_state = 'PENDING_DELETE'");
-  }
-
   return {
     whereClause: where.join(' AND '),
     parameters,
   };
-}
-
-function buildOrderClause(sortValue: FileCenterSortValue) {
-  if (sortValue === '名称') {
-    return "CASE WHEN type = 'folder' THEN 0 ELSE 1 END, name COLLATE NOCASE ASC";
-  }
-  if (sortValue === '大小') {
-    return "CASE WHEN type = 'folder' THEN 0 ELSE 1 END, size_bytes DESC, modified_at_sort DESC";
-  }
-  return "CASE WHEN type = 'folder' THEN 0 ELSE 1 END, modified_at_sort DESC, name COLLATE NOCASE ASC";
 }
 
 function buildBreadcrumbs(
@@ -1284,9 +1790,20 @@ function hydrateEntries(db: SqlDatabase, rows: EntryRow[]): FileCenterEntry[] {
   const endpointMap = groupBy(endpointRows, (row) => row.entry_id);
   const metadataMap = groupBy(metadataRows, (row) => row.entry_id);
   const tagMap = groupBy(tagRows, (row) => row.entry_id);
+  const folderEndpointStateCache = new Map<string, FileCenterEndpointState>();
 
   return rows.map((row) => {
     const tags = tagMap.get(row.id) ?? [];
+    const endpoints =
+      row.type === 'folder'
+        ? deriveFolderEndpoints(db, row.id, row.library_id, folderEndpointStateCache)
+        : (endpointMap.get(row.id) ?? []).map((item) => ({
+            name: item.name,
+            state: normalizeFileCenterEndpointState(item.state),
+            tone: resolveFileCenterEndpointTone(item.state),
+            lastSyncAt: item.last_sync_at,
+            endpointType: item.endpoint_type,
+          }));
     return {
       id: row.id,
       libraryId: row.library_id,
@@ -1309,18 +1826,197 @@ function hydrateEntries(db: SqlDatabase, rows: EntryRow[]): FileCenterEntry[] {
       badges: tags.filter((item) => item.kind === 'badge').map((item) => item.tag),
       riskTags: tags.filter((item) => item.kind === 'risk').map((item) => item.tag),
       tags: tags.filter((item) => item.kind === 'tag').map((item) => item.tag),
-      endpoints: (endpointMap.get(row.id) ?? []).map((item) => ({
-        name: item.name,
-        state: item.state,
-        tone: item.tone,
-        lastSyncAt: item.last_sync_at,
-        endpointType: item.endpoint_type,
-      })),
+      endpoints,
       metadata: (metadataMap.get(row.id) ?? []).map((item) => ({
         label: item.label,
         value: item.value,
       })),
     };
+  });
+}
+
+function deriveFolderEndpoints(
+  db: SqlDatabase,
+  folderId: string,
+  libraryId: string,
+  cache: Map<string, FileCenterEndpointState>,
+): FileCenterEndpoint[] {
+  return getLibraryEndpointTemplates(libraryId).map((endpoint) => {
+    const state = deriveFolderEndpointState(db, folderId, endpoint.name, libraryId, cache);
+    return {
+      name: endpoint.name,
+      state,
+      tone: resolveFileCenterEndpointTone(state),
+      lastSyncAt: '按内容派生',
+      endpointType: endpoint.endpointType,
+    };
+  });
+}
+
+function deriveFolderEndpointState(
+  db: SqlDatabase,
+  folderId: string,
+  endpointName: string,
+  libraryId: string,
+  cache: Map<string, FileCenterEndpointState>,
+): FileCenterEndpointState {
+  const cacheKey = `${folderId}:${endpointName}`;
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const children = queryAll<{ id: string; type: 'folder' | 'file' }>(
+    db,
+    'SELECT id, type FROM entries WHERE parent_id = $parentId ORDER BY type ASC, id ASC',
+    { $parentId: folderId },
+  );
+
+  if (children.length === 0) {
+    cache.set(cacheKey, '未同步');
+    return '未同步';
+  }
+
+  const childStates = children.map((child) => {
+    if (child.type === 'folder') {
+      return deriveFolderEndpointState(db, child.id, endpointName, libraryId, cache);
+    }
+
+    const endpoint = querySingle<{ state: string }>(
+      db,
+      'SELECT state FROM entry_endpoints WHERE entry_id = $id AND name = $endpointName',
+      { $id: child.id, $endpointName: endpointName },
+    );
+    return normalizeFileCenterEndpointState(endpoint?.state ?? '未同步');
+  });
+
+  let state: FileCenterEndpointState;
+  if (childStates.some((childState) => childState === '同步中')) {
+    state = '未同步';
+  } else if (childStates.every((childState) => childState === '已同步')) {
+    state = '已同步';
+  } else if (childStates.some((childState) => childState === '已同步' || childState === '部分同步')) {
+    state = '部分同步';
+  } else {
+    state = '未同步';
+  }
+
+  cache.set(cacheKey, state);
+  return state;
+}
+
+function applyDerivedFolderCounts(db: SqlDatabase, rows: EntryRow[]) {
+  const folderIds = rows.filter((row) => row.type === 'folder').map((row) => row.id);
+  if (folderIds.length === 0) {
+    return rows;
+  }
+
+  const placeholders = createPlaceholders(folderIds, 'folderId');
+  const childCounts = queryAll<{ parent_id: string; total: number }>(
+    db,
+    `SELECT parent_id, COUNT(*) AS total
+     FROM entries
+     WHERE parent_id IN (${placeholders.sql})
+     GROUP BY parent_id`,
+    placeholders.parameters,
+  );
+  const childCountMap = new Map(childCounts.map((row) => [row.parent_id, Number(row.total)]));
+
+  return rows.map((row) =>
+    row.type === 'folder'
+      ? {
+          ...row,
+          size_label: `${childCountMap.get(row.id) ?? 0} 项`,
+          size_bytes: childCountMap.get(row.id) ?? 0,
+        }
+      : row,
+  );
+}
+
+function sortEntryRows(
+  rows: EntryRow[],
+  sortValue: FileCenterSortValue,
+  sortDirection: FileCenterSortDirection,
+) {
+  const direction = sortDirection === 'asc' ? 1 : -1;
+
+  return [...rows].sort((left, right) => {
+    if (left.type !== right.type) {
+      return left.type === 'folder' ? -1 : 1;
+    }
+
+    if (sortValue === '名称') {
+      const compared = fileNameCollator.compare(left.name, right.name) * direction;
+      if (compared !== 0) {
+        return compared;
+      }
+      return right.modified_at_sort - left.modified_at_sort;
+    }
+
+    if (sortValue === '大小') {
+      const compared = (left.size_bytes - right.size_bytes) * direction;
+      if (compared !== 0) {
+        return compared;
+      }
+      return right.modified_at_sort - left.modified_at_sort;
+    }
+
+    if (sortValue === '星级') {
+      const compared = (left.rating - right.rating) * direction;
+      if (compared !== 0) {
+        return compared;
+      }
+      return right.modified_at_sort - left.modified_at_sort;
+    }
+
+    const compared = (left.modified_at_sort - right.modified_at_sort) * direction;
+    if (compared !== 0) {
+      return compared;
+    }
+    return fileNameCollator.compare(left.name, right.name);
+  });
+}
+
+function filterEntriesByStatus(
+  entries: FileCenterEntry[],
+  statusFilter: FileCenterStatusFilter,
+  partialSyncEndpointNames: string[],
+) {
+  if (statusFilter === '全部') {
+    return entries;
+  }
+
+  return entries.filter((entry) => {
+    const normalizedStates = entry.endpoints.map((endpoint) => normalizeFileCenterEndpointState(endpoint.state));
+    const partialEndpointNames = entry.endpoints
+      .filter((endpoint) => normalizeFileCenterEndpointState(endpoint.state) === '部分同步')
+      .map((endpoint) => endpoint.name);
+    const syncedEndpointNames = entry.endpoints
+      .filter((endpoint) => normalizeFileCenterEndpointState(endpoint.state) === '已同步')
+      .map((endpoint) => endpoint.name);
+    const isFullySynced = normalizedStates.length > 0 && normalizedStates.every((state) => state === '已同步');
+    const isPartiallySynced =
+      partialEndpointNames.length > 0 &&
+      !isFullySynced;
+    const isUnsynced = syncedEndpointNames.length === 0;
+
+    if (statusFilter === '完全同步') {
+      return isFullySynced;
+    }
+
+    if (statusFilter === '未同步') {
+      return isUnsynced;
+    }
+
+    if (!isPartiallySynced) {
+      return false;
+    }
+
+    if (partialSyncEndpointNames.length === 0) {
+      return true;
+    }
+
+    return partialSyncEndpointNames.every((endpointName) => partialEndpointNames.includes(endpointName));
   });
 }
 
@@ -1429,4 +2125,70 @@ function decodeBase64(base64: string) {
     bytes[index] = binary.charCodeAt(index);
   }
   return bytes;
+}
+
+function inferFileKindFromName(name: string): FileTypeFilter {
+  const extension = name.toLowerCase().split('.').pop() ?? '';
+  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'raw', 'arw', 'cr2', 'dng'].includes(extension)) {
+    return '图片';
+  }
+  if (['mp4', 'mov', 'mkv', 'avi', 'mxf'].includes(extension)) {
+    return '视频';
+  }
+  if (['wav', 'mp3', 'aac', 'flac', 'm4a'].includes(extension)) {
+    return '音频';
+  }
+  return '文档';
+}
+
+function inferDisplayTypeFromName(name: string, fileKind: FileTypeFilter) {
+  const extension = name.toLowerCase().split('.').pop() ?? '';
+  if (fileKind === '图片') {
+    if (['raw', 'arw', 'cr2', 'dng'].includes(extension)) {
+      return 'RAW 图像';
+    }
+    return `${extension.toUpperCase() || '图片'} 图像`;
+  }
+  if (fileKind === '视频') {
+    return `${extension.toUpperCase() || '视频'} 视频`;
+  }
+  if (fileKind === '音频') {
+    return `${extension.toUpperCase() || '音频'} 音频`;
+  }
+  return `${extension.toUpperCase() || '文档'} 文档`;
+}
+
+function formatUploadSize(size: number) {
+  if (size >= 1024 * 1024 * 1024) {
+    return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  }
+  if (size >= 1024 * 1024) {
+    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  if (size >= 1024) {
+    return `${Math.max(1, Math.round(size / 1024))} KB`;
+  }
+  return `${size} B`;
+}
+
+function formatRecentTimeLabel(timestamp: number) {
+  const date = new Date(timestamp);
+  const now = new Date();
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+
+  if (
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+  ) {
+    return `今天 ${hh}:${mm}`;
+  }
+
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${hh}:${mm}`;
+}
+
+function formatDetailedTimestamp(timestamp: number) {
+  const date = new Date(timestamp);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}`;
 }

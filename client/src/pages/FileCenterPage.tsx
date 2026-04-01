@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { createPortal } from 'react-dom';
 import {
+  ArrowUpFromLine,
+  Check,
   ChevronLeft,
   ChevronRight,
   ChevronRight as SubmenuArrow,
@@ -19,12 +21,21 @@ import {
   Server,
   Star,
   Trash2,
+  ChevronUp,
+  ChevronDown,
 } from 'lucide-react';
-import type { FileTypeFilter, Severity, ThemeMode } from '../data';
+import type { FileTypeFilter, ThemeMode } from '../data';
+import {
+  canDeleteFileCenterEndpoint,
+  canSyncFileCenterEndpoint,
+  normalizeFileCenterEndpointState,
+  resolveFileCenterEndpointTone,
+} from '../lib/fileCenterApi';
 import type {
   FileCenterColorLabel,
   FileCenterEndpoint,
   FileCenterEntry,
+  FileCenterSortDirection,
   FileCenterSortValue,
   FileCenterStatusFilter,
 } from '../lib/fileCenterApi';
@@ -32,9 +43,12 @@ import type { PageSize } from '../App';
 import { ActionButton, EmptyState, IconButton, SelectPill, TonePill } from '../components/Shared';
 
 const FILE_TYPE_OPTIONS: FileTypeFilter[] = ['全部', '文件夹', '图片', '视频', '音频', '文档'];
-const STATUS_OPTIONS: FileCenterStatusFilter[] = ['全部', '待同步', '有异常', '多端齐全', '待清理'];
-const SORT_OPTIONS: FileCenterSortValue[] = ['修改时间', '名称', '大小'];
+const STATUS_OPTIONS: FileCenterStatusFilter[] = ['全部', '完全同步', '部分同步', '未同步'];
+const SORT_OPTIONS: FileCenterSortValue[] = ['修改时间', '名称', '大小', '星级'];
 const PAGE_SIZE_OPTIONS: PageSize[] = [10, 20, 50, 100];
+const VIEWPORT_EDGE_PADDING = 12;
+const FLOATING_MENU_OFFSET = 8;
+const ROW_MENU_ESTIMATED_HEIGHT = 220;
 
 type MenuState = {
   id: string;
@@ -43,7 +57,21 @@ type MenuState = {
   right: number;
 } | null;
 
+type SelectionMenuState = {
+  type: 'sync' | 'delete';
+  top: number;
+  right: number;
+} | null;
+
+type StatusMenuState = {
+  top: number;
+  right: number;
+  submenu: 'partial' | null;
+} | null;
+
 export function FileCenterPage(props: {
+  batchDeleteEndpointActions: Array<{ endpointName: string; enabled: boolean }>;
+  batchSyncEndpointActions: Array<{ endpointName: string; enabled: boolean }>;
   breadcrumbs: Array<{ id: string | null; label: string }>;
   canGoBack: boolean;
   canGoForward: boolean;
@@ -54,9 +82,12 @@ export function FileCenterPage(props: {
   loading: boolean;
   pageCount: number;
   pageSize: PageSize;
+  partialSyncEndpointNames: string[];
   searchText: string;
   selectedIds: string[];
+  sortDirection: FileCenterSortDirection;
   sortValue: FileCenterSortValue;
+  statusFilterEndpointNames: string[];
   statusFilter: FileCenterStatusFilter;
   theme: ThemeMode;
   total: number;
@@ -69,9 +100,14 @@ export function FileCenterPage(props: {
   onGoForward: () => void;
   onNavigateBreadcrumb: (index: number) => void;
   onOpenItem: (item: FileCenterEntry) => void;
+  onOpenBatchAnnotationEditor: () => void;
   onOpenItemDetail: (item: FileCenterEntry) => void;
   onOpenTagEditor: (item: FileCenterEntry) => void;
   onRefreshIndex: () => void;
+  onUploadFiles: (files: File[]) => void;
+  onUploadFolder: (files: File[]) => void;
+  onRequestBatchDeleteEndpoint: (endpointName: string) => void;
+  onRequestBatchSyncEndpoint: (endpointName: string) => void;
   onRequestDeleteEndpoint: (item: FileCenterEntry, endpointName: string) => void;
   onRequestSyncEndpoint: (item: FileCenterEntry, endpointName: string) => void;
   onSetCurrentPage: (value: number) => void;
@@ -79,11 +115,16 @@ export function FileCenterPage(props: {
   onSetPageSize: (value: PageSize) => void;
   onSetSearchText: (value: string) => void;
   onSetStatusFilter: (value: FileCenterStatusFilter) => void;
+  onClearPartialSyncEndpoints: () => void;
+  onTogglePartialSyncEndpoint: (endpointName: string) => void;
+  onToggleSortDirection: () => void;
   onToggleSelect: (id: string) => void;
   onToggleSelectVisible: () => void;
 }) {
   const {
     breadcrumbs,
+    batchDeleteEndpointActions,
+    batchSyncEndpointActions,
     canGoBack,
     canGoForward,
     currentEntries,
@@ -93,9 +134,12 @@ export function FileCenterPage(props: {
     loading,
     pageCount,
     pageSize,
+    partialSyncEndpointNames,
     searchText,
     selectedIds,
+    sortDirection,
     sortValue,
+    statusFilterEndpointNames,
     statusFilter,
     theme,
     total,
@@ -108,9 +152,14 @@ export function FileCenterPage(props: {
     onGoForward,
     onNavigateBreadcrumb,
     onOpenItem,
+    onOpenBatchAnnotationEditor,
     onOpenItemDetail,
     onOpenTagEditor,
     onRefreshIndex,
+    onUploadFiles,
+    onUploadFolder,
+    onRequestBatchDeleteEndpoint,
+    onRequestBatchSyncEndpoint,
     onRequestDeleteEndpoint,
     onRequestSyncEndpoint,
     onSetCurrentPage,
@@ -118,14 +167,30 @@ export function FileCenterPage(props: {
     onSetPageSize,
     onSetSearchText,
     onSetStatusFilter,
+    onClearPartialSyncEndpoints,
+    onTogglePartialSyncEndpoint,
+    onToggleSortDirection,
     onToggleSelect,
     onToggleSelectVisible,
   } = props;
 
   const [menuState, setMenuState] = useState<MenuState>(null);
+  const [selectionMenuState, setSelectionMenuState] = useState<SelectionMenuState>(null);
+  const [statusMenuState, setStatusMenuState] = useState<StatusMenuState>(null);
+  const [uploadMenuState, setUploadMenuState] = useState<{ top: number; right: number } | null>(null);
+  const uploadFileInputRef = useRef<HTMLInputElement | null>(null);
+  const uploadFolderInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    if (!menuState) {
+    if (!uploadFolderInputRef.current) {
+      return;
+    }
+    uploadFolderInputRef.current.setAttribute('webkitdirectory', '');
+    uploadFolderInputRef.current.setAttribute('directory', '');
+  }, []);
+
+  useEffect(() => {
+    if (!menuState && !selectionMenuState && !statusMenuState && !uploadMenuState) {
       return;
     }
 
@@ -133,13 +198,19 @@ export function FileCenterPage(props: {
       const target = event.target as HTMLElement | null;
       if (!target) return;
       if (target.closest('.file-row-menu-anchor')) return;
+      if (target.closest('.selection-action-anchor')) return;
+      if (target.closest('.status-filter-anchor')) return;
+      if (target.closest('.upload-action-anchor')) return;
       if (target.closest('.context-menu')) return;
       setMenuState(null);
+      setSelectionMenuState(null);
+      setStatusMenuState(null);
+      setUploadMenuState(null);
     };
 
     document.addEventListener('mousedown', handlePointerDown);
     return () => document.removeEventListener('mousedown', handlePointerDown);
-  }, [menuState]);
+  }, [menuState, selectionMenuState, statusMenuState, uploadMenuState]);
 
   const allVisibleSelected =
     currentEntries.length > 0 && currentEntries.every((item) => selectedIds.includes(item.id));
@@ -150,6 +221,11 @@ export function FileCenterPage(props: {
     }
     return `当前目录 ${currentPathChildren} 项，匹配 ${total} 项`;
   }, [currentPathChildren, loading, total]);
+
+  const statusFilterLabel =
+    statusFilter === '部分同步' && partialSyncEndpointNames.length > 0
+      ? `部分同步（${partialSyncEndpointNames.length}）`
+      : statusFilter;
 
   return (
     <section className="page-stack file-center-page">
@@ -190,24 +266,160 @@ export function FileCenterPage(props: {
             value={fileTypeFilter}
             onChange={(value) => onSetFileTypeFilter(value as FileTypeFilter)}
           />
-          <SelectPill
-            ariaLabel="状态筛选"
-            options={STATUS_OPTIONS}
-            value={statusFilter}
-            onChange={(value) => onSetStatusFilter(value as FileCenterStatusFilter)}
-          />
+          <div className="status-filter-anchor">
+            <button
+              aria-label="状态筛选"
+              className="select-pill status-filter-trigger"
+              type="button"
+              onClick={(event) => {
+                const rect = event.currentTarget.getBoundingClientRect();
+                setStatusMenuState((current) =>
+                  current
+                    ? null
+                    : {
+                        top: rect.bottom + 8,
+                        right: Math.max(12, window.innerWidth - rect.right),
+                        submenu: null,
+                      },
+                );
+              }}
+            >
+              <span>{statusFilterLabel}</span>
+              <ChevronRight size={14} className="status-filter-caret" />
+            </button>
+          </div>
           <SelectPill
             ariaLabel="排序方式"
             options={SORT_OPTIONS}
             value={sortValue}
             onChange={(value) => onChangeSort(value as FileCenterSortValue)}
           />
+          <button
+            aria-label={`当前${sortDirection === 'desc' ? '逆序' : '正序'}，切换排序方向`}
+            className="icon-button has-tooltip sort-direction-toggle"
+            data-tooltip={sortDirection === 'desc' ? '逆序' : '正序'}
+            type="button"
+            onClick={onToggleSortDirection}
+          >
+            <span className={`sort-direction-half ${sortDirection === 'asc' ? 'active' : 'inactive'}`}>
+              <ChevronUp size={14} />
+            </span>
+            <span className={`sort-direction-half ${sortDirection === 'desc' ? 'active' : 'inactive'}`}>
+              <ChevronDown size={14} />
+            </span>
+          </button>
         </div>
+        {statusMenuState
+          ? createPortal(
+              <div
+                className={`context-menu status-filter-menu theme-${theme}-popup`}
+                style={{ position: 'fixed', top: statusMenuState.top, right: statusMenuState.right }}
+              >
+                {STATUS_OPTIONS.map((option) => (
+                  <button
+                    key={option}
+                    className={statusFilter === option ? 'active-filter' : ''}
+                    type="button"
+                    onClick={() => {
+                      if (option !== '部分同步') {
+                        onClearPartialSyncEndpoints();
+                      }
+                      onSetStatusFilter(option);
+                      if (option === '全部' || option !== '部分同步') {
+                        setStatusMenuState(null);
+                      }
+                    }}
+                    onMouseEnter={() => {
+                      if (option === '部分同步') {
+                        setStatusMenuState((current) => (current ? { ...current, submenu: 'partial' } : current));
+                      } else {
+                        setStatusMenuState((current) => (current ? { ...current, submenu: null } : current));
+                      }
+                    }}
+                  >
+                    <span>{option}</span>
+                    {statusFilter === option ? <Check size={14} /> : null}
+                    {option === '部分同步' ? <SubmenuArrow size={14} /> : null}
+                  </button>
+                ))}
+                {statusMenuState.submenu === 'partial' ? (
+                  <div className="context-menu submenu-menu status-filter-submenu">
+                    {statusFilterEndpointNames.map((endpointName) => {
+                      const checked = partialSyncEndpointNames.includes(endpointName);
+                      return (
+                        <label key={endpointName} className={`status-filter-check${checked ? ' checked' : ''}`}>
+                          <input
+                            checked={checked}
+                            type="checkbox"
+                            onChange={() => {
+                              onSetStatusFilter('部分同步');
+                              onTogglePartialSyncEndpoint(endpointName);
+                            }}
+                          />
+                          <span>{endpointName}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>,
+              document.body,
+            )
+          : null}
         <div className="toolbar-group wrap">
           <ActionButton onClick={onCreateFolder}>
             <FolderPlus size={14} />
             新建目录
           </ActionButton>
+          <div className="upload-action-anchor">
+            <button
+              aria-label="上传"
+              className="action-button default"
+              type="button"
+              onClick={(event) => {
+                const rect = event.currentTarget.getBoundingClientRect();
+                setUploadMenuState((current) =>
+                  current
+                    ? null
+                    : {
+                        top: rect.bottom + 8,
+                        right: Math.max(12, window.innerWidth - rect.right),
+                      },
+                );
+              }}
+            >
+              <ArrowUpFromLine size={14} />
+              上传
+            </button>
+            <input
+              ref={uploadFileInputRef}
+              aria-label="上传文件选择"
+              className="visually-hidden-input"
+              multiple
+              type="file"
+              onChange={(event) => {
+                const files = Array.from(event.target.files ?? []);
+                if (files.length > 0) {
+                  onUploadFiles(files);
+                }
+                event.currentTarget.value = '';
+              }}
+            />
+            <input
+              ref={uploadFolderInputRef}
+              aria-label="上传文件夹选择"
+              className="visually-hidden-input"
+              multiple
+              type="file"
+              onChange={(event) => {
+                const files = Array.from(event.target.files ?? []);
+                if (files.length > 0) {
+                  onUploadFolder(files);
+                }
+                event.currentTarget.value = '';
+              }}
+            />
+          </div>
           <ActionButton onClick={onRefreshIndex}>
             <RefreshCw size={14} />
             刷新索引
@@ -219,6 +431,53 @@ export function FileCenterPage(props: {
         <div className="toolbar-card selection-toolbar">
           <span className="selection-caption">已选择 {selectedIds.length} 项</span>
           <div className="toolbar-group wrap">
+            <ActionButton ariaLabel="批量标记" onClick={onOpenBatchAnnotationEditor}>
+              批量标记
+            </ActionButton>
+            <div className="selection-action-anchor">
+              <button
+                aria-label="同步"
+                className="action-button default"
+                type="button"
+                onClick={(event) => {
+                  const target = event.currentTarget;
+                  const rect = target.getBoundingClientRect();
+                  setSelectionMenuState((current) =>
+                    current?.type === 'sync'
+                      ? null
+                      : {
+                          type: 'sync',
+                          top: rect.bottom + 8,
+                          right: Math.max(12, window.innerWidth - rect.right),
+                        },
+                  );
+                }}
+              >
+                同步
+              </button>
+            </div>
+            <div className="selection-action-anchor">
+              <button
+                aria-label="删除副本"
+                className="action-button default"
+                type="button"
+                onClick={(event) => {
+                  const target = event.currentTarget;
+                  const rect = target.getBoundingClientRect();
+                  setSelectionMenuState((current) =>
+                    current?.type === 'delete'
+                      ? null
+                      : {
+                          type: 'delete',
+                          top: rect.bottom + 8,
+                          right: Math.max(12, window.innerWidth - rect.right),
+                        },
+                  );
+                }}
+              >
+                删除副本
+              </button>
+            </div>
             <ActionButton ariaLabel="删除资产" tone="danger" onClick={onDeleteSelected}>
               <Trash2 size={14} />
               删除资产
@@ -227,8 +486,71 @@ export function FileCenterPage(props: {
               清空选择
             </ActionButton>
           </div>
+          {selectionMenuState
+            ? createPortal(
+                <div
+                  className={`context-menu selection-action-menu theme-${theme}-popup`}
+                  style={{ position: 'fixed', top: selectionMenuState.top, right: selectionMenuState.right }}
+                >
+                  {(selectionMenuState.type === 'sync' ? batchSyncEndpointActions : batchDeleteEndpointActions).map((action) => (
+                    <button
+                      key={`${selectionMenuState.type}-${action.endpointName}`}
+                      className={
+                        action.enabled
+                          ? selectionMenuState.type === 'delete'
+                            ? 'danger-text'
+                            : ''
+                          : 'is-disabled'
+                      }
+                      disabled={!action.enabled}
+                      type="button"
+                      onClick={() => {
+                        if (!action.enabled) return;
+                        setSelectionMenuState(null);
+                        if (selectionMenuState.type === 'sync') {
+                          onRequestBatchSyncEndpoint(action.endpointName);
+                          return;
+                        }
+                        onRequestBatchDeleteEndpoint(action.endpointName);
+                      }}
+                    >
+                      {action.endpointName}
+                    </button>
+                  ))}
+                </div>,
+                document.body,
+              )
+            : null}
         </div>
       ) : null}
+      {uploadMenuState
+        ? createPortal(
+            <div
+              className={`context-menu selection-action-menu theme-${theme}-popup`}
+              style={{ position: 'fixed', top: uploadMenuState.top, right: uploadMenuState.right }}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  setUploadMenuState(null);
+                  uploadFileInputRef.current?.click();
+                }}
+              >
+                上传文件
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setUploadMenuState(null);
+                  uploadFolderInputRef.current?.click();
+                }}
+              >
+                上传文件夹
+              </button>
+            </div>,
+            document.body,
+          )
+        : null}
 
       <div className="workspace-card storage-table-card file-center-table-card">
         {loading ? (
@@ -318,19 +640,21 @@ export function FileCenterPage(props: {
                       <td>
                         <div className="file-endpoint-statuses">
                           {item.endpoints.map((endpoint) => {
-                            const syncAvailable = canSyncEndpoint(endpoint);
-                            const toneClass = resolveEndpointStateClass(endpoint.state);
+                            const endpointState = normalizeFileCenterEndpointState(endpoint.state);
+                            const syncAvailable = canSyncFileCenterEndpoint(endpointState);
+                            const toneClass = resolveFileCenterEndpointTone(endpointState);
                             return (
                               <button
                                 key={`${item.id}-${endpoint.name}`}
-                                aria-label={`${endpoint.name} ${endpoint.state}`}
+                                aria-label={`${endpoint.name} ${endpointState}`}
                                 className={`endpoint-status-button ${toneClass}${syncAvailable ? '' : ' disabled'}`}
+                                disabled={!syncAvailable}
                                 type="button"
                                 onClick={() => syncAvailable && onRequestSyncEndpoint(item, endpoint.name)}
                               >
                                 <EndpointGlyph endpoint={endpoint} />
                                 <span>{endpoint.name}</span>
-                                <strong>{endpoint.state}</strong>
+                                <strong>{endpointState}</strong>
                               </button>
                             );
                           })}
@@ -357,7 +681,7 @@ export function FileCenterPage(props: {
                                     : {
                                         id: item.id,
                                         submenu: null,
-                                        top: rect.bottom + 8,
+                                        top: resolveFloatingMenuTop(rect, ROW_MENU_ESTIMATED_HEIGHT),
                                         right: Math.max(12, window.innerWidth - rect.right),
                                       },
                                 );
@@ -414,7 +738,7 @@ export function FileCenterPage(props: {
                                 {menuState.submenu === 'sync' ? (
                                   <div className="context-menu submenu-menu">
                                     {item.endpoints.map((endpoint) => {
-                                      const syncAvailable = canSyncEndpoint(endpoint);
+                                      const syncAvailable = canSyncFileCenterEndpoint(endpoint);
                                       return (
                                         <button
                                           key={`${item.id}-sync-${endpoint.name}`}
@@ -436,7 +760,7 @@ export function FileCenterPage(props: {
                                 {menuState.submenu === 'delete' ? (
                                   <div className="context-menu submenu-menu">
                                     {item.endpoints.map((endpoint) => {
-                                      const deleteAvailable = canDeleteReplica(endpoint);
+                                      const deleteAvailable = canDeleteFileCenterEndpoint(endpoint);
                                       return (
                                         <button
                                           key={`${item.id}-delete-${endpoint.name}`}
@@ -569,17 +893,13 @@ function ColorFlagBadge({ colorLabel }: { colorLabel: FileCenterColorLabel }) {
   );
 }
 
-function canSyncEndpoint(endpoint: FileCenterEndpoint) {
-  return endpoint.state === '未同步';
-}
+function resolveFloatingMenuTop(rect: DOMRect, menuHeight: number) {
+  const preferredTop = rect.bottom + FLOATING_MENU_OFFSET;
+  const maxTop = Math.max(VIEWPORT_EDGE_PADDING, window.innerHeight - menuHeight - VIEWPORT_EDGE_PADDING);
+  if (preferredTop <= maxTop) {
+    return preferredTop;
+  }
 
-function canDeleteReplica(endpoint: FileCenterEndpoint) {
-  return endpoint.state === '已同步';
-}
-
-function resolveEndpointStateClass(state: string): Severity {
-  if (state === '已同步') return 'success';
-  if (state === '同步中') return 'warning';
-  if (state === '未同步') return 'critical';
-  return 'info';
+  const flippedTop = rect.top - menuHeight - FLOATING_MENU_OFFSET;
+  return Math.max(VIEWPORT_EDGE_PADDING, flippedTop);
 }
