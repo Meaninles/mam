@@ -22,28 +22,33 @@ export function ContextMenu({
 
   return (
     <div className="context-menu" style={{ left: menu.x, top: menu.y }}>
-      {menu.type === 'file' && menu.item.type === 'folder' && (
-        <button
-          type="button"
-          onClick={() => {
-            onOpenFolder(menu.item);
-            onClose();
-          }}
-        >
-          进入
-        </button>
-      )}
-
-      {menu.type === 'file' && menu.item.type === 'file' && (
-        <button
-          type="button"
-          onClick={() => {
-            onOpenFileDetail(menu.item);
-            onClose();
-          }}
-        >
-          详情
-        </button>
+      {menu.type === 'file' && (
+        <>
+          <button
+            type="button"
+            onClick={() => {
+              if (menu.item.type === 'folder') {
+                onOpenFolder(menu.item);
+              } else {
+                onOpenFileDetail(menu.item);
+              }
+              onClose();
+            }}
+          >
+            {menu.item.type === 'folder' ? '进入目录' : '查看详情'}
+          </button>
+          {menu.item.type === 'file' ? (
+            <button
+              type="button"
+              onClick={() => {
+                onOpenFileDetail(menu.item);
+                onClose();
+              }}
+            >
+              查看元数据
+            </button>
+          ) : null}
+        </>
       )}
 
       {menu.type === 'task' && (
@@ -54,7 +59,7 @@ export function ContextMenu({
             onClose();
           }}
         >
-          进入
+          查看任务详情
         </button>
       )}
 
@@ -66,7 +71,7 @@ export function ContextMenu({
             onClose();
           }}
         >
-          管理
+          编辑节点
         </button>
       )}
     </div>

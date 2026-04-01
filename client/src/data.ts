@@ -2,7 +2,6 @@ export type MainView =
   | 'file-center'
   | 'task-center'
   | 'issues'
-  | 'recycle'
   | 'storage-nodes'
   | 'settings'
   | 'import-center';
@@ -18,6 +17,8 @@ export type SettingsTab =
 export type TaskTab = 'transfer' | 'other';
 export type FileTypeFilter = '全部' | '文件夹' | '图片' | '视频' | '音频' | '文档';
 export type StorageTypeFilter = '全部' | '本机磁盘' | '移动硬盘' | 'NAS/SMB' | '115网盘';
+export type SettingControlType = 'toggle' | 'select' | 'input' | 'segmented';
+export type AssetLifecycleState = 'ACTIVE' | 'PENDING_DELETE';
 
 export interface NavigationItem {
   id: Exclude<MainView, 'import-center'>;
@@ -45,6 +46,7 @@ export interface FileNode {
   libraryId: string;
   parentId: string | null;
   type: 'folder' | 'file';
+  lifecycleState: AssetLifecycleState;
   name: string;
   fileKind: FileTypeFilter;
   displayType: string;
@@ -74,11 +76,12 @@ export interface ImportBatch {
   fileCount: string;
   targetCandidates: string[];
   status: string;
+  lastScannedAt: string;
 }
 
 export interface TaskRecord {
   id: string;
-  kind: 'transfer' | 'other';
+  kind: TaskTab;
   title: string;
   type: string;
   status: string;
@@ -91,6 +94,7 @@ export interface TaskRecord {
   eta: string;
   fileCount: number;
   multiFile: boolean;
+  updatedAt: string;
 }
 
 export interface TaskItemRecord {
@@ -111,17 +115,8 @@ export interface IssueRecord {
   severity: Severity;
   asset: string;
   action: string;
+  detail: string;
   status: string;
-}
-
-export interface RecycleRecord {
-  id: string;
-  name: string;
-  fileType: FileTypeFilter;
-  endpoint: string;
-  deletedAt: string;
-  size: string;
-  originalPath: string;
 }
 
 export interface StorageNode {
@@ -133,22 +128,28 @@ export interface StorageNode {
   status: string;
   freeSpace: string;
   lastCheck: string;
+  capacityPercent: number;
+}
+
+export interface SettingRow {
+  id: string;
+  label: string;
+  value: string;
+  control: SettingControlType;
+  options?: string[];
+  description?: string;
 }
 
 export interface SettingSection {
+  id: string;
   title: string;
-  rows: Array<{
-    label: string;
-    value: string;
-    control: 'toggle' | 'select' | 'input' | 'segmented';
-  }>;
+  rows: SettingRow[];
 }
 
 export const navigationItems: NavigationItem[] = [
   { id: 'file-center', label: '文件中心' },
   { id: 'task-center', label: '任务中心', badge: '14' },
   { id: 'issues', label: '异常中心', badge: '5' },
-  { id: 'recycle', label: '回收站', badge: '31' },
   { id: 'storage-nodes', label: '存储节点', badge: '4' },
   { id: 'settings', label: '设置' },
 ];
@@ -186,6 +187,7 @@ export const fileNodes: FileNode[] = [
     libraryId: 'photo',
     parentId: null,
     type: 'folder',
+    lifecycleState: 'ACTIVE',
     name: '拍摄原片',
     fileKind: '文件夹',
     displayType: '文件夹',
@@ -208,6 +210,7 @@ export const fileNodes: FileNode[] = [
     libraryId: 'photo',
     parentId: null,
     type: 'folder',
+    lifecycleState: 'ACTIVE',
     name: '精选交付',
     fileKind: '文件夹',
     displayType: '文件夹',
@@ -231,6 +234,7 @@ export const fileNodes: FileNode[] = [
     libraryId: 'photo',
     parentId: 'photo-root-raw',
     type: 'file',
+    lifecycleState: 'ACTIVE',
     name: '2026-03-29_上海发布会_A-cam_001.RAW',
     fileKind: '图片',
     displayType: 'RAW 图像',
@@ -254,6 +258,7 @@ export const fileNodes: FileNode[] = [
     libraryId: 'photo',
     parentId: 'photo-root-raw',
     type: 'file',
+    lifecycleState: 'ACTIVE',
     name: '2026-03-29_上海发布会_B-cam_018.RAW',
     fileKind: '图片',
     displayType: 'RAW 图像',
@@ -277,6 +282,7 @@ export const fileNodes: FileNode[] = [
     libraryId: 'photo',
     parentId: 'photo-root-delivery',
     type: 'file',
+    lifecycleState: 'ACTIVE',
     name: '上海发布会_精选封面.jpg',
     fileKind: '图片',
     displayType: 'JPEG 图像',
@@ -300,6 +306,7 @@ export const fileNodes: FileNode[] = [
     libraryId: 'video',
     parentId: null,
     type: 'folder',
+    lifecycleState: 'ACTIVE',
     name: '成片交付',
     fileKind: '文件夹',
     displayType: '文件夹',
@@ -322,6 +329,7 @@ export const fileNodes: FileNode[] = [
     libraryId: 'video',
     parentId: 'video-root-final',
     type: 'file',
+    lifecycleState: 'ACTIVE',
     name: '客户访谈_第一机位_精编版.mov',
     fileKind: '视频',
     displayType: 'ProRes 视频',
@@ -345,6 +353,7 @@ export const fileNodes: FileNode[] = [
     libraryId: 'video',
     parentId: null,
     type: 'file',
+    lifecycleState: 'ACTIVE',
     name: '片头配乐_v4_master.wav',
     fileKind: '音频',
     displayType: 'WAV 音频',
@@ -374,6 +383,7 @@ export const importBatches: ImportBatch[] = [
     fileCount: '1,824 项 / 2.1 TB',
     targetCandidates: ['本地NVMe', '影像NAS', '115'],
     status: '待分发',
+    lastScannedAt: '今天 10:08',
   },
   {
     id: 'import-audio',
@@ -383,6 +393,7 @@ export const importBatches: ImportBatch[] = [
     fileCount: '94 项 / 18.4 GB',
     targetCandidates: ['本地NVMe', '影像NAS'],
     status: '待分发',
+    lastScannedAt: '今天 08:34',
   },
 ];
 
@@ -445,6 +456,7 @@ export const taskRecords: TaskRecord[] = [
     eta: '12 分钟',
     fileCount: 124,
     multiFile: true,
+    updatedAt: '刚刚',
   },
   {
     id: 'task-transfer-2',
@@ -461,6 +473,7 @@ export const taskRecords: TaskRecord[] = [
     eta: '24 分钟',
     fileCount: 1824,
     multiFile: true,
+    updatedAt: '3 分钟前',
   },
   {
     id: 'task-transfer-3',
@@ -477,6 +490,7 @@ export const taskRecords: TaskRecord[] = [
     eta: '7 分钟',
     fileCount: 1,
     multiFile: false,
+    updatedAt: '1 分钟前',
   },
   {
     id: 'task-other-1',
@@ -491,6 +505,7 @@ export const taskRecords: TaskRecord[] = [
     eta: '今晚 22:00 继续',
     fileCount: 6400,
     multiFile: true,
+    updatedAt: '12 分钟前',
   },
   {
     id: 'task-other-2',
@@ -505,6 +520,7 @@ export const taskRecords: TaskRecord[] = [
     eta: '已结束',
     fileCount: 1,
     multiFile: false,
+    updatedAt: '28 分钟前',
   },
 ];
 
@@ -588,7 +604,8 @@ export const issueRecords: IssueRecord[] = [
     type: '路径冲突',
     severity: 'critical',
     asset: '客户访谈_第一机位_精编版.mov',
-    action: '重命名旧版母带或移入回收站',
+    action: '重命名旧版母带或执行删除资产',
+    detail: '目标目录已有同名母带，继续同步会覆盖已交付版本。',
     status: '待处理',
   },
   {
@@ -598,6 +615,7 @@ export const issueRecords: IssueRecord[] = [
     severity: 'critical',
     asset: '片头配乐_v4_master.wav',
     action: '从本地副本重新同步到 NAS',
+    detail: '影像 NAS 返回的校验值与本地源文件不一致。',
     status: '待处理',
   },
   {
@@ -607,6 +625,7 @@ export const issueRecords: IssueRecord[] = [
     severity: 'warning',
     asset: '115 云归档',
     action: '刷新令牌并重新检测容量',
+    detail: '距离令牌过期不足 48 小时，继续归档存在中断风险。',
     status: '待确认',
   },
   {
@@ -615,7 +634,8 @@ export const issueRecords: IssueRecord[] = [
     type: '历史临时文件',
     severity: 'info',
     asset: 'cache_export.tmp',
-    action: '忽略或移入回收站',
+    action: '忽略或执行删除资产',
+    detail: '缓存导出临时文件已 14 天未访问。',
     status: '待处理',
   },
   {
@@ -625,37 +645,8 @@ export const issueRecords: IssueRecord[] = [
     severity: 'warning',
     asset: '影像NAS',
     action: '清理旧副本或切换目标端',
+    detail: '预计 3 天内达到容量阈值，导入任务可能被阻塞。',
     status: '待处理',
-  },
-];
-
-export const recycleRecords: RecycleRecord[] = [
-  {
-    id: 'bin-1',
-    name: '旧版口播脚本_v2.docx',
-    fileType: '文档',
-    endpoint: '本地NVMe',
-    deletedAt: '2026-03-31 18:42',
-    size: '4.8 MB',
-    originalPath: '/2026/Interview/docs',
-  },
-  {
-    id: 'bin-2',
-    name: '采访废片_B-cam_003.mov',
-    fileType: '视频',
-    endpoint: '影像NAS',
-    deletedAt: '2026-03-31 12:17',
-    size: '1.8 GB',
-    originalPath: '/2026/Interview/raw',
-  },
-  {
-    id: 'bin-3',
-    name: '历史样片封面.jpg',
-    fileType: '图片',
-    endpoint: '115',
-    deletedAt: '2026-03-30 09:20',
-    size: '18.2 MB',
-    originalPath: '/Archive/Sample',
   },
 ];
 
@@ -669,6 +660,7 @@ export const storageNodes: StorageNode[] = [
     status: '在线',
     freeSpace: '3.4 TB 可用',
     lastCheck: '刚刚',
+    capacityPercent: 64,
   },
   {
     id: 'node-2',
@@ -679,6 +671,7 @@ export const storageNodes: StorageNode[] = [
     status: '在线',
     freeSpace: '18.9 TB 可用',
     lastCheck: '1 分钟前',
+    capacityPercent: 48,
   },
   {
     id: 'node-3',
@@ -689,6 +682,7 @@ export const storageNodes: StorageNode[] = [
     status: '已挂载',
     freeSpace: '1.2 TB 可用',
     lastCheck: '13 分钟前',
+    capacityPercent: 82,
   },
   {
     id: 'node-4',
@@ -699,6 +693,7 @@ export const storageNodes: StorageNode[] = [
     status: '鉴权正常',
     freeSpace: '远端容量正常',
     lastCheck: '6 分钟前',
+    capacityPercent: 37,
   },
 ];
 
@@ -713,52 +708,158 @@ export const settingsTabs: Array<{ id: SettingsTab; label: string }> = [
 export const settingsContent: Record<SettingsTab, SettingSection[]> = {
   general: [
     {
+      id: 'library',
       title: '资产库',
       rows: [
-        { label: '默认打开资产库', value: '上次使用', control: 'select' },
-        { label: '删除默认动作', value: '先进入回收站', control: 'segmented' },
-        { label: '新建目录命名规则', value: 'yyyy-MM-dd 项目名', control: 'input' },
+        {
+          id: 'default-library',
+          label: '默认打开资产库',
+          value: '上次使用',
+          control: 'select',
+          options: ['上次使用', '商业摄影资产库', '视频工作流资产库', '家庭照片资产库'],
+        },
+        {
+          id: 'folder-pattern',
+          label: '新建目录命名规则',
+          value: 'yyyy-MM-dd 项目名',
+          control: 'input',
+        },
       ],
     },
   ],
   'file-overview': [
     {
+      id: 'overview',
       title: '文件总览',
       rows: [
-        { label: '默认列集', value: '名称 / 修改日期 / 类型 / 大小 / 多端状态', control: 'select' },
-        { label: '默认排序', value: '修改日期降序', control: 'select' },
-        { label: '每页默认数量', value: '20', control: 'segmented' },
+        {
+          id: 'default-columns',
+          label: '默认列集',
+          value: '名称 / 修改日期 / 类型 / 大小 / 多端状态',
+          control: 'select',
+          options: ['名称 / 修改日期 / 类型 / 大小 / 多端状态', '名称 / 路径 / 类型 / 大小', '名称 / 评分 / 标签 / 同步状态'],
+        },
+        {
+          id: 'default-sort',
+          label: '默认排序',
+          value: '修改日期降序',
+          control: 'select',
+          options: ['修改日期降序', '修改日期升序', '名称升序', '大小降序'],
+        },
+        {
+          id: 'default-page-size',
+          label: '每页默认数量',
+          value: '20',
+          control: 'segmented',
+          options: ['10', '20', '50', '100'],
+        },
       ],
     },
   ],
   verification: [
     {
+      id: 'verify',
       title: '校验与恢复',
       rows: [
-        { label: '默认校验', value: '大小 + 修改时间', control: 'segmented' },
-        { label: '强校验窗口', value: '22:00 - 06:00', control: 'input' },
-        { label: '失败自动重试', value: '2 次', control: 'select' },
+        {
+          id: 'verify-mode',
+          label: '默认校验',
+          value: '大小 + 修改时间',
+          control: 'segmented',
+          options: ['大小 + 修改时间', '强校验', '快速校验'],
+        },
+        {
+          id: 'verify-window',
+          label: '强校验窗口',
+          value: '22:00 - 06:00',
+          control: 'input',
+        },
+        {
+          id: 'retry-count',
+          label: '失败自动重试',
+          value: '2 次',
+          control: 'select',
+          options: ['不重试', '1 次', '2 次', '3 次'],
+        },
       ],
     },
   ],
   performance: [
     {
+      id: 'perf',
       title: '性能',
       rows: [
-        { label: '列表分页', value: '每页 200 项', control: 'select' },
-        { label: '并行任务', value: '4 个任务 / 12 个子项', control: 'select' },
-        { label: '元数据解析', value: '异步批处理', control: 'toggle' },
+        {
+          id: 'list-page-size',
+          label: '列表分页',
+          value: '每页 200 项',
+          control: 'select',
+          options: ['每页 100 项', '每页 200 项', '每页 500 项'],
+        },
+        {
+          id: 'parallel-jobs',
+          label: '并行任务',
+          value: '4 个任务 / 12 个子项',
+          control: 'select',
+          options: ['2 个任务 / 6 个子项', '4 个任务 / 12 个子项', '6 个任务 / 20 个子项'],
+        },
+        {
+          id: 'metadata-parse',
+          label: '元数据解析',
+          value: '开启',
+          control: 'toggle',
+          options: ['关闭', '开启'],
+        },
       ],
     },
   ],
   appearance: [
     {
+      id: 'appearance',
       title: '外观',
       rows: [
-        { label: '主题', value: '跟随系统', control: 'segmented' },
-        { label: '侧栏紧凑模式', value: '关闭', control: 'toggle' },
-        { label: '字号', value: '中', control: 'segmented' },
+        {
+          id: 'theme',
+          label: '主题',
+          value: '深色主题',
+          control: 'segmented',
+          options: ['跟随系统', '浅色主题', '深色主题'],
+        },
+        {
+          id: 'compact-sidebar',
+          label: '侧栏紧凑模式',
+          value: '关闭',
+          control: 'toggle',
+          options: ['关闭', '开启'],
+        },
+        {
+          id: 'font-size',
+          label: '字号',
+          value: '中',
+          control: 'segmented',
+          options: ['小', '中', '大'],
+        },
       ],
     },
   ],
 };
+
+export function cloneSettingsContent(): Record<SettingsTab, SettingSection[]> {
+  return {
+    general: settingsContent.general.map(cloneSection),
+    'file-overview': settingsContent['file-overview'].map(cloneSection),
+    verification: settingsContent.verification.map(cloneSection),
+    performance: settingsContent.performance.map(cloneSection),
+    appearance: settingsContent.appearance.map(cloneSection),
+  };
+}
+
+function cloneSection(section: SettingSection): SettingSection {
+  return {
+    ...section,
+    rows: section.rows.map((row) => ({
+      ...row,
+      options: row.options ? [...row.options] : undefined,
+    })),
+  };
+}

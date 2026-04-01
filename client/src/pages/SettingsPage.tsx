@@ -1,42 +1,65 @@
-import type { SettingsTab } from '../data';
-import { settingsContent, settingsTabs } from '../data';
-import { SettingControl } from '../components/Shared';
+import type { SettingSection, SettingsTab } from '../data';
+import { ActionButton, InlineSettingControl } from '../components/Shared';
+import { settingsTabs } from '../data';
 
 export function SettingsPage({
+  sections,
   settingsTab,
   setSettingsTab,
+  onChangeSetting,
+  onResetSettings,
+  onSaveSettings,
 }: {
+  sections: SettingSection[];
   settingsTab: SettingsTab;
   setSettingsTab: (value: SettingsTab) => void;
+  onChangeSetting: (sectionId: string, rowId: string, value: string) => void;
+  onResetSettings: () => void;
+  onSaveSettings: () => void;
 }) {
-  const sections = settingsContent[settingsTab];
-
   return (
     <section className="page-stack">
-      <div className="settings-tabs">
-        {settingsTabs.map((tab) => (
-          <button
-            key={tab.id}
-            className={`settings-tab${tab.id === settingsTab ? ' active' : ''}`}
-            type="button"
-            onClick={() => setSettingsTab(tab.id)}
-          >
-            {tab.label}
-          </button>
-        ))}
+      <div className="settings-header">
+        <div className="settings-tabs">
+          {settingsTabs.map((tab) => (
+            <button
+              key={tab.id}
+              className={`settings-tab${tab.id === settingsTab ? ' active' : ''}`}
+              type="button"
+              onClick={() => setSettingsTab(tab.id)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        <div className="toolbar-group wrap">
+          <ActionButton onClick={onResetSettings}>恢复默认</ActionButton>
+          <ActionButton tone="primary" onClick={onSaveSettings}>
+            保存设置
+          </ActionButton>
+        </div>
       </div>
 
       <div className="settings-layout single-column">
         {sections.map((section) => (
-          <section className="content-card" key={section.title}>
+          <section className="content-card" key={section.id}>
             <header className="section-header">
               <strong>{section.title}</strong>
             </header>
             <div className="setting-list">
               {section.rows.map((row) => (
-                <div className="setting-row" key={row.label}>
-                  <span>{row.label}</span>
-                  <SettingControl control={row.control} value={row.value} />
+                <div className="setting-row editable" key={row.id}>
+                  <div className="setting-copy">
+                    <span>{row.label}</span>
+                    {row.description ? <small>{row.description}</small> : null}
+                  </div>
+                  <InlineSettingControl
+                    control={row.control}
+                    label={row.label}
+                    options={row.options}
+                    value={row.value}
+                    onChange={(value) => onChangeSetting(section.id, row.id, value)}
+                  />
                 </div>
               ))}
             </div>
