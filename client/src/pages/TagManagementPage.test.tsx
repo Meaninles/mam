@@ -51,6 +51,9 @@ describe('TagManagementPage', () => {
     render(<TagManagementPage libraries={libraries} onFeedback={onFeedback} />);
 
     expect(await screen.findByText('标签总数')).toBeInTheDocument();
+    expect(screen.getByText('使用中标签')).toBeInTheDocument();
+    expect(screen.getByText('未分组标签')).toBeInTheDocument();
+    expect(screen.getByText('跨库标签')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: '新增标签' }));
     const dialog = await screen.findByRole('dialog', { name: '新增标签' });
@@ -84,6 +87,8 @@ describe('TagManagementPage', () => {
 
     await user.click(screen.getByRole('button', { name: '社媒候选' }));
     const detail = await screen.findByRole('region', { name: '标签详情' });
+    expect(within(detail).getByText('合并标签（危险操作）')).toBeInTheDocument();
+    expect(within(detail).getByText('合并标签需二次确认，请确认范围。')).toBeInTheDocument();
     await user.selectOptions(within(detail).getByLabelText('合并到目标标签'), '客户精选');
     await user.click(within(detail).getByRole('button', { name: '合并标签' }));
 

@@ -13,7 +13,7 @@ import {
   X,
 } from 'lucide-react';
 import type { Library, Severity } from '../data';
-import { ActionButton, EmptyState, IconButton, StatCard, TonePill } from '../components/Shared';
+import { ActionButton, EmptyState, IconButton, TonePill } from '../components/Shared';
 import { fileCenterApi, type ManagedTag, type TagManagementSnapshot } from '../lib/fileCenterApi';
 
 type FeedbackState = { message: string; tone: Severity } | null;
@@ -270,10 +270,10 @@ export function TagManagementPage({
   return (
     <section className="page-stack tag-management-page">
       <div className="tag-management-stats">
-        <StatCard label="标签总数" value={String(snapshot?.overview.totalTags ?? 0)} />
-        <StatCard label="使用中标签" tone="success" value={String(snapshot?.overview.usedTagCount ?? 0)} />
-        <StatCard label="未分组标签" tone="warning" value={String(snapshot?.overview.ungroupedTagCount ?? 0)} />
-        <StatCard label="跨库标签" tone="info" value={String(snapshot?.overview.crossLibraryTagCount ?? 0)} />
+        <TagSummaryBadge label="标签总数" value={String(snapshot?.overview.totalTags ?? 0)} />
+        <TagSummaryBadge label="使用中标签" tone="success" value={String(snapshot?.overview.usedTagCount ?? 0)} />
+        <TagSummaryBadge label="未分组标签" tone="warning" value={String(snapshot?.overview.ungroupedTagCount ?? 0)} />
+        <TagSummaryBadge label="跨库标签" tone="info" value={String(snapshot?.overview.crossLibraryTagCount ?? 0)} />
       </div>
 
       <div className="toolbar-card action-toolbar tag-management-toolbar">
@@ -593,8 +593,8 @@ export function TagManagementPage({
               <div className="sheet-section danger-zone">
                 <div className="section-header">
                   <div>
-                    <strong>危险操作</strong>
-                    <p className="muted-paragraph">危险操作需要二次确认，请在确认影响范围后执行。</p>
+                    <strong>合并标签（危险操作）</strong>
+                    <p className="muted-paragraph">合并标签需二次确认，请确认范围。</p>
                   </div>
                 </div>
                 <label className="form-field">
@@ -780,6 +780,23 @@ export function TagManagementPage({
         </Dialog>
       ) : null}
     </section>
+  );
+}
+
+function TagSummaryBadge({
+  label,
+  tone = 'default',
+  value,
+}: {
+  label: string;
+  tone?: Severity | 'default';
+  value: string;
+}) {
+  return (
+    <div className={`tag-summary-badge${tone !== 'default' ? ` ${tone}` : ''}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
   );
 }
 

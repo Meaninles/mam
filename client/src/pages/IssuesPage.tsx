@@ -4,12 +4,16 @@ import { ActionButton, EmptyState, SelectPill, TonePill } from '../components/Sh
 export function IssuesPage({
   issueTypeFilter,
   items,
+  taskFilterLabel,
+  onClearTaskFilter,
   onIgnoreIssue,
   onResolveIssue,
   setIssueTypeFilter,
 }: {
   issueTypeFilter: string;
   items: IssueRecord[];
+  taskFilterLabel?: string | null;
+  onClearTaskFilter?: () => void;
   onIgnoreIssue: (id: string) => void;
   onResolveIssue: (id: string) => void;
   setIssueTypeFilter: (value: string) => void;
@@ -17,12 +21,20 @@ export function IssuesPage({
   return (
     <section className="page-stack">
       <div className="toolbar-card action-toolbar">
-        <SelectPill
-          ariaLabel="异常类型"
-          options={['全部', '路径冲突', '校验失败', '鉴权提醒', '历史临时文件', '空间不足']}
-          value={issueTypeFilter}
-          onChange={setIssueTypeFilter}
-        />
+        <div className="toolbar-group wrap">
+          <SelectPill
+            ariaLabel="异常类型"
+            options={['全部', '路径冲突', '校验失败', '鉴权提醒', '历史临时文件', '空间不足']}
+            value={issueTypeFilter}
+            onChange={setIssueTypeFilter}
+          />
+          {taskFilterLabel ? (
+            <div className="issue-task-filter-banner">
+              <span>当前按任务查看异常：{taskFilterLabel}</span>
+              <ActionButton onClick={onClearTaskFilter}>清除筛选</ActionButton>
+            </div>
+          ) : null}
+        </div>
       </div>
 
       <div className="workspace-card compact-list">

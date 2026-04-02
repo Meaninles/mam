@@ -989,6 +989,11 @@ button {
   gap: 8px;
 }
 
+.action-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
+}
+
 .action-button.primary {
   background: var(--accent);
   color: #fff;
@@ -1039,6 +1044,18 @@ button {
 
 .feedback-banner.info {
   color: var(--info);
+}
+
+.issue-task-filter-banner {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 0 12px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--bg-control);
+  color: var(--text-secondary);
 }
 
 .address-bar button {
@@ -1336,6 +1353,334 @@ button {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+}
+
+.task-center-toolbar {
+  align-items: flex-start;
+}
+
+.task-toolbar-main {
+  flex: 1;
+}
+
+.task-search {
+  min-width: 260px;
+}
+
+.transfer-task-board {
+  gap: 12px;
+}
+
+.transfer-task-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 2px 8px;
+}
+
+.transfer-task-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-control);
+}
+
+.transfer-task-row {
+  display: grid;
+  grid-template-columns: 28px 32px minmax(300px, 1.2fr) minmax(360px, 1.08fr) minmax(160px, 0.68fr) auto;
+  gap: 14px;
+  align-items: center;
+}
+
+.transfer-task-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+}
+
+.transfer-task-check input {
+  width: 15px;
+  height: 15px;
+}
+
+.transfer-expand-button {
+  width: 32px;
+  height: 32px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+}
+
+.transfer-expand-button:hover {
+  color: var(--text-main);
+  background: var(--accent-soft);
+}
+
+.transfer-task-main,
+.transfer-task-metrics,
+.transfer-task-side {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  min-height: 92px;
+}
+
+.transfer-task-metrics {
+  justify-self: start;
+  width: min(100%, 420px);
+  margin-left: -10px;
+}
+
+.transfer-task-tag-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.transfer-link-pill,
+.transfer-priority-pill,
+.transfer-size-pill {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  font-size: 0.78rem;
+}
+
+.transfer-link-pill {
+  color: var(--mare-wave-main);
+}
+
+.transfer-priority-pill {
+  color: var(--text-secondary);
+}
+
+.transfer-size-pill {
+  color: var(--text-secondary);
+}
+
+.transfer-task-title {
+  line-height: 1.3;
+}
+
+.transfer-task-inline-path,
+.transfer-task-summary,
+.transfer-task-path {
+  color: var(--text-secondary);
+}
+
+.transfer-task-inline-path,
+.transfer-task-path,
+.transfer-progress-meta {
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.transfer-task-inline-path {
+  font-size: 0.78rem;
+}
+
+.transfer-task-metric-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.transfer-task-metric-head strong {
+  white-space: nowrap;
+}
+
+.transfer-progress-meta {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  min-height: 24px;
+  max-width: min(100%, 280px);
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+}
+
+.task-issue-anchor {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.task-issue-badge {
+  min-width: 38px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: rgba(210, 88, 85, 0.14);
+  color: var(--critical);
+  font-size: 0.8rem;
+}
+
+.task-issue-badge.warning {
+  background: rgba(199, 138, 38, 0.14);
+  color: var(--warning);
+}
+
+.task-issue-badge.info {
+  background: rgba(10, 132, 255, 0.14);
+  color: var(--info);
+}
+
+.task-issue-badge.ghost {
+  visibility: hidden;
+}
+
+.task-issue-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 14px;
+  z-index: 25;
+  width: min(420px, calc(100vw - 120px));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-large);
+}
+
+.task-issue-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.task-issue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.task-issue-item {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  text-align: left;
+  border-radius: 14px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-control);
+  color: var(--text-main);
+}
+
+.task-issue-item p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.transfer-task-side {
+  align-items: flex-start;
+  justify-self: center;
+  min-width: 118px;
+  margin-left: 10px;
+}
+
+.transfer-task-speed {
+  color: var(--text-main);
+}
+
+.transfer-task-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.transfer-task-actions {
+  align-self: center;
+  justify-content: flex-end;
+}
+
+.transfer-children-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 0 0 60px;
+}
+
+.transfer-child-task-row {
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-card);
+}
+
+.transfer-expand-placeholder {
+  width: 32px;
+  height: 32px;
+}
+
+.transfer-child-main {
+  min-height: 82px;
+}
+
+.transfer-child-actions {
+  justify-content: flex-end;
+}
+
+.task-issue-inline {
+  color: var(--critical);
+  font-size: 0.88rem;
+}
+
+.task-tree-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.task-tree-node {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.task-tree-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.4fr) 120px 100px 120px minmax(120px, 1fr) 90px;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-control);
 }
 
 .storage-table-card {
@@ -1728,9 +2073,41 @@ button {
 }
 
 .tag-management-stats {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 12px;
+}
+
+.tag-summary-badge {
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-control);
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-secondary);
+}
+
+.tag-summary-badge strong {
+  color: var(--text-main);
+  font-size: 0.95rem;
+}
+
+.tag-summary-badge.success {
+  border-color: rgba(91, 198, 145, 0.26);
+  background: rgba(91, 198, 145, 0.1);
+}
+
+.tag-summary-badge.warning {
+  border-color: rgba(240, 183, 65, 0.26);
+  background: rgba(240, 183, 65, 0.1);
+}
+
+.tag-summary-badge.info {
+  border-color: rgba(91, 165, 255, 0.26);
+  background: rgba(91, 165, 255, 0.1);
 }
 
 .tag-management-toolbar {
@@ -2113,6 +2490,28 @@ button {
   .action-toolbar {
     grid-template-columns: 1fr;
     display: grid;
+  }
+
+  .transfer-task-row,
+  .task-tree-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .transfer-task-metrics,
+  .transfer-task-side,
+  .task-issue-anchor,
+  .transfer-task-actions {
+    grid-column: 1 / -1;
+  }
+
+  .transfer-task-list-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .task-search {
+    min-width: 0;
+    width: 100%;
   }
 
   .settings-tabs {

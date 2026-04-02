@@ -1,4 +1,4 @@
-import { startTransition, useDeferredValue, useEffect, useMemo, useState } from 'react';
+import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Bell,
@@ -16,12 +16,14 @@ import type {
   SettingsTab,
   Severity,
   StorageNode,
+  TaskPriority,
   TaskRecord,
   TaskTab,
 } from './data';
 import { navigationItems } from './data';
 import {
   cloneSettingsRecord,
+  collectNodeIds,
   createId,
   getDefaultPageSize,
   loadPersistedState,
@@ -61,6 +63,9 @@ export type ContextMenuTarget =
   | null;
 
 type FeedbackState = { message: string; tone: Severity } | null;
+type IssueTaskFilterState = { taskId: string; taskTitle: string; issueId?: string } | null;
+type PendingFileCenterJump = { libraryId: string; folderId: string | null; selectedIds: string[] } | null;
+type PendingTaskSelection = string[] | null;
 type FileConfirmAction =
   | { kind: 'sync'; items: FileCenterEntry[]; endpointName: string; totalSelected: number }
   | { kind: 'delete-asset'; items: FileCenterEntry[] }
@@ -70,6 +75,16 @@ type FileConfirmAction =
       endpointName: string;
       totalSelected: number;
       willDeleteAssetCount: number;
+    }
+  | {
+      kind: 'delete-conflict';
+      mode: 'asset' | 'endpoint';
+      items: FileCenterEntry[];
+      endpointName?: string;
+      totalSelected: number;
+      willDeleteAssetCount?: number;
+      blockingTaskIds: string[];
+      blockingTaskTitles: string[];
     };
 type TagEditorState = {
   item: FileCenterEntry;
@@ -82,6 +97,341 @@ type BatchEndpointAction = {
   enabled: boolean;
 };
 
+function resolveTaskStatusTone(status: string): Severity {
+  if (status === '失败') return 'critical';
+  if (status === '异常待处理') return 'critical';
+  if (status === '运行中') return 'warning';
+  if (status === '等待确认') return 'info';
+  if (status === '已暂停') return 'info';
+  if (status === '已完成') return 'success';
+  if (status === '已取消') return 'info';
+  if (status === '部分成功') return 'warning';
+  return 'info';
+}
+
+function applyTaskStatusChange(task: TaskRecord, action: 'pause' | 'resume' | 'retry' | 'cancel'): TaskRecord {
+  if (action === 'pause') {
+    return {
+      ...task,
+      status: '已暂停',
+      statusTone: resolveTaskStatusTone('已暂停'),
+      speed: '—',
+      eta: '等待继续',
+      updatedAt: '刚刚',
+    };
+  }
+
+  if (action === 'resume') {
+    return {
+      ...task,
+      status: '运行中',
+      statusTone: resolveTaskStatusTone('运行中'),
+      eta: task.eta === '等待继续' ? '继续处理中' : task.eta,
+      updatedAt: '刚刚',
+    };
+  }
+
+  if (action === 'retry') {
+    return {
+      ...task,
+      status: '运行中',
+      statusTone: resolveTaskStatusTone('运行中'),
+      progress: Math.min(task.progress, 18),
+      eta: '重新进入队列',
+      updatedAt: '刚刚',
+    };
+  }
+
+  return {
+    ...task,
+    status: '已取消',
+    statusTone: resolveTaskStatusTone('已取消'),
+    speed: '—',
+    eta: '已取消',
+    updatedAt: '刚刚',
+  };
+}
+
+function resolveSyncLinkTypeFromTarget(target?: string) {
+  if (!target) {
+    return 'COPY' as const;
+  }
+  return target.includes('115') || target.includes('云') ? ('UPLOAD' as const) : ('COPY' as const);
+}
+
+function summarizeTransferTitle(names: string[]) {
+  const unique = Array.from(new Set(names.map((item) => item.trim()).filter(Boolean)));
+  if (unique.length === 0) return '未命名任务';
+  if (unique.length === 1) return unique[0];
+  if (unique.length === 2) return `${unique[0]}、${unique[1]}`;
+  return `${unique[0]}、${unique[1]}...`;
+}
+
+function extractImportBatchSize(summary: string) {
+  return summary.split('/')[1]?.trim() ?? '—';
+}
+
+function resolveTaskItemStatusTone(status: string): Severity {
+  if (['失败', '已取消'].includes(status)) return 'critical';
+  if (['传输中', '导入中', '校验中', '提交中'].includes(status)) return 'warning';
+  if (['已暂停', '待执行', '已排队', '待导入'].includes(status)) return 'info';
+  if (['已完成', '可执行'].includes(status)) return 'success';
+  return 'info';
+}
+
+function applyTaskItemStatusChange(item: PersistedState['taskItemRecords'][number], action: 'pause' | 'resume' | 'cancel') {
+  if (action === 'pause') {
+    return {
+      ...item,
+      status: '已暂停',
+      phase: '已暂停',
+      statusTone: resolveTaskItemStatusTone('已暂停'),
+      speed: '—',
+    };
+  }
+
+  if (action === 'resume') {
+    const nextStatus = item.kind === 'file' || item.kind === 'folder' ? '传输中' : '传输中';
+    return {
+      ...item,
+      status: nextStatus,
+      phase: nextStatus,
+      statusTone: resolveTaskItemStatusTone(nextStatus),
+    };
+  }
+
+  return {
+    ...item,
+    status: '已取消',
+    phase: '已取消',
+    statusTone: resolveTaskItemStatusTone('已取消'),
+    speed: '—',
+  };
+}
+
+function applyTaskPriorityChange(task: TaskRecord, priority: TaskPriority): TaskRecord {
+  return { ...task, priority, updatedAt: '刚刚' };
+}
+
+function parseTaskSizeLabel(value: string): number {
+  const normalized = value.trim().toUpperCase();
+  const numeric = Number.parseFloat(normalized.replace(/[^\d.]/g, ''));
+  if (!Number.isFinite(numeric)) {
+    return 0;
+  }
+  if (normalized.includes('TB')) return numeric * 1024 * 1024 * 1024 * 1024;
+  if (normalized.includes('GB')) return numeric * 1024 * 1024 * 1024;
+  if (normalized.includes('MB')) return numeric * 1024 * 1024;
+  if (normalized.includes('KB')) return numeric * 1024;
+  return numeric;
+}
+
+function formatTaskSizeLabel(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1).replace(/\.0$/, '')} GB`;
+  }
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1).replace(/\.0$/, '')} MB`;
+  }
+  if (bytes >= 1024) {
+    return `${Math.round(bytes / 1024)} KB`;
+  }
+  return `${bytes} B`;
+}
+
+function isTrackedTransferTaskItem(item: PersistedState['taskItemRecords'][number]) {
+  return (item.kind === 'file' || item.kind === undefined) && item.status !== '已取消';
+}
+
+function resolveTaskItemSizeLabel(
+  item: PersistedState['taskItemRecords'][number],
+  fileNodes: PersistedState['fileNodes'],
+) {
+  if (item.fileNodeId) {
+    return fileNodes.find((node) => node.id === item.fileNodeId)?.size ?? item.size ?? '0 B';
+  }
+  return item.size ?? '0 B';
+}
+
+function resolveTaskTotalSizeBytes(task: TaskRecord) {
+  if (typeof task.pendingTotalSizeBytes === 'number') {
+    return task.pendingTotalSizeBytes;
+  }
+  if (typeof task.totalSizeBytes === 'number') {
+    return task.totalSizeBytes;
+  }
+  if (task.totalSize) {
+    return parseTaskSizeLabel(task.totalSize);
+  }
+  return 0;
+}
+
+function scheduleTransferTaskSizeAdjustment(
+  sourceState: PersistedState,
+  nextState: PersistedState,
+  taskIds: string[],
+  taskItemIds: string[],
+): PersistedState {
+  const canceledTaskIds = new Set(taskIds);
+  const canceledTaskItemIds = new Set(taskItemIds);
+  const adjustmentByTask = new Map<string, number>();
+
+  sourceState.taskRecords.forEach((task) => {
+    if (task.kind !== 'transfer') {
+      return;
+    }
+
+    const trackedItems = sourceState.taskItemRecords.filter(
+      (item) => item.taskId === task.id && isTrackedTransferTaskItem(item),
+    );
+
+    if (trackedItems.length === 0) {
+      return;
+    }
+
+    const bytesToSubtract = canceledTaskIds.has(task.id)
+      ? trackedItems.reduce((sum, item) => sum + parseTaskSizeLabel(resolveTaskItemSizeLabel(item, sourceState.fileNodes)), 0)
+      : trackedItems
+          .filter((item) => canceledTaskItemIds.has(item.id))
+          .reduce((sum, item) => sum + parseTaskSizeLabel(resolveTaskItemSizeLabel(item, sourceState.fileNodes)), 0);
+
+    if (bytesToSubtract <= 0) {
+      return;
+    }
+
+    adjustmentByTask.set(task.id, bytesToSubtract);
+  });
+
+  if (adjustmentByTask.size === 0) {
+    return nextState;
+  }
+
+  return {
+    ...nextState,
+    taskRecords: nextState.taskRecords.map((task) => {
+      const bytesToSubtract = adjustmentByTask.get(task.id);
+      if (!bytesToSubtract) {
+        return task;
+      }
+
+      const nextBytes = Math.max(resolveTaskTotalSizeBytes(task) - bytesToSubtract, 0);
+      return {
+        ...task,
+        totalSize: undefined,
+        totalSizeBytes: resolveTaskTotalSizeBytes(task),
+        pendingTotalSizeBytes: nextBytes,
+      };
+    }),
+  };
+}
+
+function markTransferTasksForFullSizeRecompute(current: PersistedState, taskIds: string[]): PersistedState {
+  if (taskIds.length === 0) {
+    return current;
+  }
+
+  const targetIds = new Set(taskIds);
+  return {
+    ...current,
+    taskRecords: current.taskRecords.map((task) =>
+      task.kind === 'transfer' && targetIds.has(task.id)
+        ? {
+            ...task,
+            totalSize: undefined,
+            totalSizeBytes: undefined,
+            pendingTotalSizeBytes: undefined,
+          }
+        : task,
+    ),
+  };
+}
+
+function isBlockingTransferTaskStatus(status: string) {
+  return !['已完成', '已取消', '失败', '部分成功'].includes(status);
+}
+
+function cancelTransferTasks(current: PersistedState, taskIds: string[]): PersistedState {
+  if (taskIds.length === 0) {
+    return current;
+  }
+
+  const nextState = {
+    ...current,
+    taskRecords: current.taskRecords.map((task) =>
+      taskIds.includes(task.id) ? applyTaskStatusChange(task, 'cancel') : task,
+    ),
+    taskItemRecords: current.taskItemRecords.map((item) =>
+      taskIds.includes(item.taskId) ? applyTaskItemStatusChange(item, 'cancel') : item,
+    ),
+  };
+
+  return scheduleTransferTaskSizeAdjustment(current, nextState, taskIds, []);
+}
+
+function resolveBlockingTransferTasksForEntries(current: PersistedState, entryIds: string[]) {
+  const relatedEntryIds = new Set(collectNodeIds(current.fileNodes, entryIds));
+  return current.taskRecords.filter((task) => {
+    if (task.kind !== 'transfer' || !isBlockingTransferTaskStatus(task.status)) {
+      return false;
+    }
+
+    const taskEntryIds = new Set([
+      ...(task.fileNodeIds ?? []),
+      ...current.taskItemRecords
+        .filter((item) => item.taskId === task.id)
+        .map((item) => item.fileNodeId)
+        .filter((id): id is string => Boolean(id)),
+    ]);
+
+    return Array.from(taskEntryIds).some((id) => relatedEntryIds.has(id));
+  });
+}
+
+function resolveFileCenterJumpForTask(
+  fileNodes: PersistedState['fileNodes'],
+  task: TaskRecord,
+  taskItems: PersistedState['taskItemRecords'],
+) {
+  const relatedNodeIds = Array.from(
+    new Set([
+      ...(task.fileNodeIds ?? []),
+      ...taskItems
+        .filter((item) => item.taskId === task.id)
+        .map((item) => item.fileNodeId)
+        .filter((id): id is string => Boolean(id)),
+    ]),
+  );
+
+  if (relatedNodeIds.length === 0) {
+    return { folderId: null, selectedIds: [] as string[] };
+  }
+
+  const relatedNodes = fileNodes.filter((node) => relatedNodeIds.includes(node.id));
+  const parentIds = Array.from(new Set(relatedNodes.map((node) => node.parentId).filter((id): id is string => Boolean(id))));
+  if (parentIds.length === 1 && relatedNodes.every((node) => node.parentId === parentIds[0])) {
+    return {
+      folderId: parentIds[0],
+      selectedIds: relatedNodes.map((node) => node.id),
+    };
+  }
+
+  const topLevelIds = new Set<string>();
+  relatedNodes.forEach((node) => {
+    let cursor = node;
+    let parent = fileNodes.find((entry) => entry.id === cursor.parentId);
+    while (parent && parent.parentId !== null) {
+      cursor = parent;
+      parent = fileNodes.find((entry) => entry.id === cursor.parentId);
+    }
+    topLevelIds.add(parent ? parent.id : cursor.id);
+  });
+
+  return {
+    folderId: null,
+    selectedIds: Array.from(topLevelIds),
+  };
+}
+
 export default function App() {
   const [persisted, setPersisted] = useState<PersistedState>(loadPersistedState);
   const [activeView, setActiveView] = useState<MainView>('file-center');
@@ -93,6 +443,7 @@ export default function App() {
   const [partialSyncEndpointNames, setPartialSyncEndpointNames] = useState<string[]>([]);
   const [taskStatusFilter, setTaskStatusFilter] = useState('全部');
   const [issueTypeFilter, setIssueTypeFilter] = useState('全部');
+  const [issueTaskFilter, setIssueTaskFilter] = useState<IssueTaskFilterState>(null);
   const [searchText, setSearchText] = useState('');
   const [fileSort, setFileSort] = useState<FileCenterSortValue>('修改时间');
   const [fileSortDirection, setFileSortDirection] = useState<FileCenterSortDirection>('desc');
@@ -128,6 +479,9 @@ export default function App() {
   const [batchAnnotationState, setBatchAnnotationState] = useState<BatchAnnotationState>(null);
   const [selectedFileEntries, setSelectedFileEntries] = useState<FileCenterEntry[]>([]);
   const [folderDraft, setFolderDraft] = useState<string | null>(null);
+  const [pendingFileCenterJump, setPendingFileCenterJump] = useState<PendingFileCenterJump>(null);
+  const [pendingTaskSelection, setPendingTaskSelection] = useState<PendingTaskSelection>(null);
+  const pendingTaskSizeCalcIdsRef = useRef<Set<string>>(new Set());
   const unreadNotificationCount = useMemo(
     () => persisted.notifications.filter((item) => item.read === false).length,
     [persisted.notifications],
@@ -146,10 +500,75 @@ export default function App() {
   }, [persisted.importSourceFiles, persisted.settings]);
 
   useEffect(() => {
+    if (!taskDetail) {
+      return;
+    }
+
+    const nextTaskDetail = persisted.taskRecords.find((task) => task.id === taskDetail.id) ?? null;
+    if (!nextTaskDetail) {
+      setTaskDetail(null);
+      return;
+    }
+
+    setTaskDetail((current) => {
+      if (!current || current.id !== nextTaskDetail.id) {
+        return current;
+      }
+
+      const nextValue = { ...nextTaskDetail, title: current.title };
+      return JSON.stringify(current) === JSON.stringify(nextValue) ? current : nextValue;
+    });
+  }, [persisted.taskRecords, taskDetail?.id, taskDetail?.title]);
+
+  useEffect(() => {
     if (!feedback) return;
     const timer = window.setTimeout(() => setFeedback(null), 3000);
     return () => window.clearTimeout(timer);
   }, [feedback]);
+
+  useEffect(() => {
+    const transferTasksNeedingSize = persisted.taskRecords.filter(
+      (task) => task.kind === 'transfer' && !task.totalSize,
+    );
+    if (transferTasksNeedingSize.length === 0) {
+      return;
+    }
+
+    const timers = transferTasksNeedingSize
+      .filter((task) => !pendingTaskSizeCalcIdsRef.current.has(task.id))
+      .map((task) => {
+        pendingTaskSizeCalcIdsRef.current.add(task.id);
+        return window.setTimeout(() => {
+          setPersisted((current) => ({
+            ...current,
+            taskRecords: current.taskRecords.map((record) => {
+              if (record.id !== task.id || record.totalSize) {
+                return record;
+              }
+
+              const bytes =
+                typeof record.pendingTotalSizeBytes === 'number'
+                  ? record.pendingTotalSizeBytes
+                  : current.taskItemRecords
+                      .filter((item) => item.taskId === task.id && isTrackedTransferTaskItem(item))
+                      .reduce((sum, item) => sum + parseTaskSizeLabel(resolveTaskItemSizeLabel(item, current.fileNodes)), 0);
+
+              return {
+                ...record,
+                totalSize: formatTaskSizeLabel(bytes),
+                totalSizeBytes: bytes,
+                pendingTotalSizeBytes: undefined,
+              };
+            }),
+          }));
+          pendingTaskSizeCalcIdsRef.current.delete(task.id);
+        }, 220);
+      });
+
+    return () => {
+      timers.forEach((timer) => window.clearTimeout(timer));
+    };
+  }, [persisted.taskItemRecords, persisted.taskRecords]);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -158,6 +577,26 @@ export default function App() {
   useEffect(() => {
     setSelectedFileIds([]);
   }, [activeLibraryId, currentFolderId]);
+
+  useEffect(() => {
+    if (!pendingFileCenterJump) {
+      return;
+    }
+    if (activeView !== 'file-center') {
+      return;
+    }
+    if (fileCenterLoading) {
+      return;
+    }
+    if (activeLibraryId !== pendingFileCenterJump.libraryId) {
+      return;
+    }
+    if (currentFolderId !== pendingFileCenterJump.folderId) {
+      return;
+    }
+    setSelectedFileIds(pendingFileCenterJump.selectedIds);
+    setPendingFileCenterJump(null);
+  }, [activeLibraryId, activeView, currentFolderId, fileCenterLoading, pendingFileCenterJump]);
 
   useEffect(() => {
     setPartialSyncEndpointNames([]);
@@ -309,20 +748,16 @@ export default function App() {
     () => persisted.importSourceFiles.filter((file) => file.batchId === selectedBatch?.id),
     [persisted.importSourceFiles, selectedBatch],
   );
-  const visibleTasks = useMemo(
-    () =>
-      persisted.taskRecords.filter(
-        (task) =>
-          task.kind === taskTab && (taskStatusFilter === '全部' || task.status === taskStatusFilter),
-      ),
-    [persisted.taskRecords, taskStatusFilter, taskTab],
-  );
   const visibleIssues = useMemo(
     () =>
       persisted.issueRecords.filter(
-        (item) => (issueTypeFilter === '全部' || item.type === issueTypeFilter) && item.status !== '已处理',
+        (item) =>
+          (issueTypeFilter === '全部' || item.type === issueTypeFilter) &&
+          item.status !== '已处理' &&
+          (!issueTaskFilter?.taskId || item.taskId === issueTaskFilter.taskId) &&
+          (!issueTaskFilter?.issueId || item.id === issueTaskFilter.issueId),
       ),
-    [issueTypeFilter, persisted.issueRecords],
+    [issueTaskFilter?.issueId, issueTaskFilter?.taskId, issueTypeFilter, persisted.issueRecords],
   );
   const commitState = (updater: (current: PersistedState) => PersistedState, nextFeedback?: FeedbackState) => {
     setPersisted((current) => {
@@ -395,29 +830,86 @@ export default function App() {
     current: PersistedState,
     items: FileCenterEntry[],
     endpointName: string,
-  ): PersistedState => ({
-    ...current,
-    taskRecords: [
-      ...items.map((item): TaskRecord => ({
-        id: createId('task'),
+  ): PersistedState => {
+    const nextTaskRecords: TaskRecord[] = [];
+    const nextTaskItems: PersistedState['taskItemRecords'] = [];
+
+    items.forEach((item) => {
+      const taskId = createId('task');
+      const descendantIds = item.type === 'folder' ? collectNodeIds(current.fileNodes, [item.id]) : [item.id];
+      const descendantFiles = current.fileNodes.filter(
+        (node) => descendantIds.includes(node.id) && node.type === 'file',
+      );
+
+      const fallbackItems =
+        descendantFiles.length > 0
+          ? descendantFiles
+          : [
+              {
+                id: item.id,
+                name: item.name,
+                path: item.path,
+                size: item.size,
+              },
+            ];
+      const totalSizeBytes = fallbackItems.reduce((sum, file) => sum + parseTaskSizeLabel(file.size), 0);
+      const totalSizeLabel = totalSizeBytes > 0 ? formatTaskSizeLabel(totalSizeBytes) : item.size;
+
+      nextTaskRecords.push({
+        id: taskId,
         kind: 'transfer',
-        title: `同步资产：${item.name}`,
+        title: item.name,
         type: 'SYNC',
+        businessType: 'SYNC',
+        syncLinkType: resolveSyncLinkTypeFromTarget(endpointName),
         status: '等待确认',
-        statusTone: 'warning',
+        statusTone: resolveTaskStatusTone('等待确认'),
         libraryId: item.libraryId,
         source: '统一资产',
         target: endpointName,
+        fileNodeIds: [item.id],
+        sourcePath: item.path,
+        targetPath: `${endpointName} / ${item.name}`,
         progress: 0,
         speed: '—',
         eta: '等待执行器接管',
-        fileCount: 1,
-        multiFile: false,
+        fileCount: fallbackItems.length,
+        folderCount: item.type === 'folder' ? 1 : 0,
+        totalSize: totalSizeLabel,
+        totalSizeBytes: totalSizeBytes > 0 ? totalSizeBytes : parseTaskSizeLabel(item.size),
+        multiFile: fallbackItems.length > 1,
+        priority: '普通优先级',
+        issueIds: [],
+        creator: '文件中心',
+        createdAt: '刚刚',
         updatedAt: '刚刚',
-      })),
-      ...current.taskRecords,
-    ],
-  });
+      });
+
+      fallbackItems.forEach((file) => {
+        nextTaskItems.push({
+          id: createId('task-item'),
+          taskId,
+          fileNodeId: file.id,
+          parentId: null,
+          kind: 'file',
+          depth: 1,
+          phase: '待执行',
+          status: '待执行',
+          statusTone: 'info',
+          priority: '普通优先级',
+          progress: 0,
+          speed: '—',
+          targetPath: `${endpointName} / ${file.name}`,
+        });
+      });
+    });
+
+    return {
+      ...current,
+      taskRecords: [...nextTaskRecords, ...current.taskRecords],
+      taskItemRecords: [...nextTaskItems, ...current.taskItemRecords],
+    };
+  };
 
   const getManagedReplicaCount = (item: FileCenterEntry, excludingEndpointName?: string) =>
     item.endpoints.filter(
@@ -475,12 +967,27 @@ export default function App() {
       setFeedback({ message: '请先选择要删除的资产', tone: 'info' });
       return;
     }
+    const blockingTasks = resolveBlockingTransferTasksForEntries(
+      persisted,
+      targets.map((item) => item.id),
+    );
+    if (blockingTasks.length > 0) {
+      setPendingAction({
+        kind: 'delete-conflict',
+        mode: 'asset',
+        items: targets,
+        totalSelected: targets.length,
+        blockingTaskIds: blockingTasks.map((task) => task.id),
+        blockingTaskTitles: blockingTasks.map((task) => task.title),
+      });
+      return;
+    }
     setPendingAction({ kind: 'delete-asset', items: targets });
   };
 
-  const performDeleteAssets = async (items: FileCenterEntry[]) => {
+  const performDeleteAssets = async (items: FileCenterEntry[], cancelTaskIds: string[] = []) => {
     const result = await fileCenterApi.deleteAssets(items.map((item) => item.id));
-    commitState((current) => createDeleteTasks(current, items, 'asset'), {
+    commitState((current) => createDeleteTasks(cancelTransferTasks(current, cancelTaskIds), items, 'asset'), {
       message: result.message,
       tone: 'warning',
     });
@@ -505,6 +1012,24 @@ export default function App() {
       return;
     }
 
+    const blockingTasks = resolveBlockingTransferTasksForEntries(
+      persisted,
+      eligibleItems.map((item) => item.id),
+    );
+    if (blockingTasks.length > 0) {
+      setPendingAction({
+        kind: 'delete-conflict',
+        mode: 'endpoint',
+        endpointName,
+        items: eligibleItems,
+        totalSelected: sourceItems.length,
+        willDeleteAssetCount: eligibleItems.filter((item) => getManagedReplicaCount(item, endpointName) === 0).length,
+        blockingTaskIds: blockingTasks.map((task) => task.id),
+        blockingTaskTitles: blockingTasks.map((task) => task.title),
+      });
+      return;
+    }
+
     setPendingAction({
       kind: 'delete-endpoint',
       endpointName,
@@ -514,13 +1039,17 @@ export default function App() {
     });
   };
 
-  const performDeleteFromEndpoint = async (items: FileCenterEntry[], endpointName: string) => {
+  const performDeleteFromEndpoint = async (
+    items: FileCenterEntry[],
+    endpointName: string,
+    cancelTaskIds: string[] = [],
+  ) => {
     const shouldRefreshDetail = items.some((item) => item.id === fileDetail?.id);
     const results = await Promise.all(items.map((item) => fileCenterApi.deleteFromEndpoint(item.id, endpointName)));
     const deletedCount = results.filter((result) => result.deleted).length;
     const deletedIds = items.filter((_, index) => results[index]?.deleted).map((item) => item.id);
     const updatedItem = shouldRefreshDetail && fileDetail ? await fileCenterApi.loadEntryDetail(fileDetail.id) : null;
-    commitState((current) => createDeleteTasks(current, items, 'endpoint', endpointName), {
+    commitState((current) => createDeleteTasks(cancelTransferTasks(current, cancelTaskIds), items, 'endpoint', endpointName), {
       message:
         deletedCount === 0
           ? items.length === 1
@@ -588,6 +1117,16 @@ export default function App() {
 
     if (pendingAction.kind === 'delete-endpoint') {
       await performDeleteFromEndpoint(pendingAction.items, pendingAction.endpointName);
+      setPendingAction(null);
+      return;
+    }
+
+    if (pendingAction.kind === 'delete-conflict') {
+      if (pendingAction.mode === 'endpoint' && pendingAction.endpointName) {
+        await performDeleteFromEndpoint(pendingAction.items, pendingAction.endpointName, pendingAction.blockingTaskIds);
+      } else {
+        await performDeleteAssets(pendingAction.items, pendingAction.blockingTaskIds);
+      }
       setPendingAction(null);
       return;
     }
@@ -763,7 +1302,14 @@ export default function App() {
               aria-label={item.label}
               className={`nav-item${item.id === activeView ? ' active' : ''}`}
               type="button"
-              onClick={() => startTransition(() => setActiveView(item.id))}
+              onClick={() =>
+                startTransition(() => {
+                  if (item.id === 'issues') {
+                    setIssueTaskFilter(null);
+                  }
+                  setActiveView(item.id);
+                })
+              }
             >
               <span className="nav-icon">{navIcons[item.id]}</span>
               <span className="nav-label">{item.label}</span>
@@ -934,21 +1480,31 @@ export default function App() {
                     {
                       id: taskId,
                       kind: 'transfer',
-                      title: `${selectedBatch.name} 入库`,
+                      title: summarizeTransferTitle(visibleImportFiles.map((file) => file.name)),
                       type: 'IMPORT',
+                      businessType: 'IMPORT',
                       status: '等待确认',
-                      statusTone: 'info',
+                      statusTone: resolveTaskStatusTone('等待确认'),
                       libraryId: resolveLibraryForImport(selectedBatch.id),
                       source: selectedBatch.source,
                       target: visibleImportFiles
                         .flatMap((file) => selectedImportTargets[file.id] ?? [])
                         .filter((item, index, array) => array.indexOf(item) === index)
                         .join('、'),
+                      sourcePath: selectedBatch.source,
+                      targetPath: selectedBatch.name,
                       progress: 0,
                       speed: '—',
                       eta: '等待分配执行器',
                       fileCount: visibleImportFiles.length,
+                      folderCount: 1,
+                      totalSize: extractImportBatchSize(selectedBatch.fileCount),
+                      totalSizeBytes: parseTaskSizeLabel(extractImportBatchSize(selectedBatch.fileCount)),
                       multiFile: visibleImportFiles.length > 1,
+                      priority: '普通优先级',
+                      issueIds: [],
+                      creator: '导入中心',
+                      createdAt: '刚刚',
                       updatedAt: '刚刚',
                     },
                     ...current.taskRecords,
@@ -958,11 +1514,16 @@ export default function App() {
                       id: createId('task-item'),
                       taskId,
                       name: file.name,
+                      kind: 'file' as const,
+                      depth: 1,
+                      phase: '待执行',
                       status: '已排队',
                       statusTone: 'info' as Severity,
+                      priority: '高优先级' as const,
                       progress: 0,
                       size: file.size,
                       speed: '—',
+                      sourcePath: file.relativePath,
                     })),
                     ...current.taskItemRecords,
                   ],
@@ -976,21 +1537,73 @@ export default function App() {
         {activeView === 'task-center' ? (
           <TaskCenterPage
             activeTab={taskTab}
+            fileNodes={persisted.fileNodes}
+            issues={persisted.issueRecords}
+            libraries={persisted.libraries}
             statusFilter={taskStatusFilter}
-            tasks={visibleTasks}
-            onChangeTaskStatus={(taskId, action) =>
+            taskItems={persisted.taskItemRecords}
+            tasks={persisted.taskRecords}
+            onChangeTaskPriority={(taskIds, priority) =>
               commitState((current) => ({
                 ...current,
-                taskRecords: current.taskRecords.map((task) => {
-                  if (task.id !== taskId) return task;
-                  if (action === 'pause') return { ...task, status: '暂停中', statusTone: 'info', updatedAt: '刚刚' };
-                  if (action === 'resume') return { ...task, status: '运行中', statusTone: 'warning', updatedAt: '刚刚' };
-                  if (action === 'retry') return { ...task, status: '运行中', statusTone: 'warning', progress: 12, updatedAt: '刚刚' };
-                  return { ...task, status: '已完成', statusTone: 'success', progress: 100, updatedAt: '刚刚' };
-                }),
+                taskRecords: current.taskRecords.map((task) =>
+                  taskIds.includes(task.id) ? applyTaskPriorityChange(task, priority) : task,
+                ),
+                taskItemRecords: current.taskItemRecords.map((item) =>
+                  taskIds.includes(item.taskId) ? { ...item, priority } : item,
+                ),
               }))
             }
+            onChangeTaskItemStatus={(taskItemIds, action) =>
+              commitState((current) => {
+                const nextState = {
+                  ...current,
+                  taskItemRecords: current.taskItemRecords.map((item) =>
+                    taskItemIds.includes(item.id) ? applyTaskItemStatusChange(item, action) : item,
+                  ),
+                };
+
+                return action === 'cancel'
+                  ? scheduleTransferTaskSizeAdjustment(current, nextState, [], taskItemIds)
+                  : nextState;
+              })
+            }
+            onChangeTaskStatus={(taskIds, action) =>
+              commitState((current) => {
+                const nextState = {
+                  ...current,
+                  taskRecords: current.taskRecords.map((task) =>
+                    taskIds.includes(task.id) ? applyTaskStatusChange(task, action) : task,
+                  ),
+                  taskItemRecords: current.taskItemRecords.map((item) =>
+                    taskIds.includes(item.taskId)
+                      ? applyTaskItemStatusChange(item, action === 'retry' ? 'resume' : action)
+                      : item,
+                  ),
+                };
+
+                if (action === 'cancel') {
+                  return scheduleTransferTaskSizeAdjustment(current, nextState, taskIds, []);
+                }
+
+                if (action === 'retry') {
+                  return markTransferTasksForFullSizeRecompute(nextState, taskIds);
+                }
+
+                return nextState;
+              })
+            }
+            onOpenIssueCenterForIssue={(issue) => {
+              setIssueTaskFilter(issue.taskId ? { taskId: issue.taskId, taskTitle: persisted.taskRecords.find((task) => task.id === issue.taskId)?.title ?? issue.asset, issueId: issue.id } : { taskId: '', taskTitle: issue.asset, issueId: issue.id });
+              setActiveView('issues');
+            }}
+            onOpenIssueCenterForTask={(task) => {
+              setIssueTaskFilter({ taskId: task.id, taskTitle: task.title });
+              setActiveView('issues');
+            }}
             onOpenTaskDetail={setTaskDetail}
+            preselectedTaskIds={pendingTaskSelection}
+            onConsumePreselectedTaskIds={() => setPendingTaskSelection(null)}
             onSetActiveTab={setTaskTab}
             onSetTaskStatusFilter={setTaskStatusFilter}
           />
@@ -1000,6 +1613,8 @@ export default function App() {
           <IssuesPage
             issueTypeFilter={issueTypeFilter}
             items={visibleIssues}
+            taskFilterLabel={issueTaskFilter?.taskTitle ?? null}
+            onClearTaskFilter={() => setIssueTaskFilter(null)}
             onIgnoreIssue={(id) =>
               commitState(
                 (current) => ({
@@ -1053,7 +1668,10 @@ export default function App() {
           <StorageNodesPage
             libraries={persisted.libraries}
             onFeedback={setFeedback}
-            onOpenIssueCenter={() => setActiveView('issues')}
+            onOpenIssueCenter={() => {
+              setIssueTaskFilter(null);
+              setActiveView('issues');
+            }}
             onOpenTaskCenter={() => setActiveView('task-center')}
           />
         ) : null}
@@ -1117,9 +1735,68 @@ export default function App() {
 
       {taskDetail ? (
         <TaskDetailSheet
+          fileNodes={persisted.fileNodes}
           item={taskDetail}
+          issues={persisted.issueRecords}
           items={persisted.taskItemRecords.filter((item) => item.taskId === taskDetail.id)}
+          onChangeTaskPriority={(taskIds, priority) =>
+            commitState((current) => ({
+              ...current,
+              taskRecords: current.taskRecords.map((task) =>
+                taskIds.includes(task.id) ? applyTaskPriorityChange(task, priority) : task,
+              ),
+              taskItemRecords: current.taskItemRecords.map((item) =>
+                taskIds.includes(item.taskId) ? { ...item, priority } : item,
+              ),
+            }))
+          }
+          onChangeTaskStatus={(taskIds, action) =>
+            commitState((current) => {
+              const nextState = {
+                ...current,
+                taskRecords: current.taskRecords.map((task) =>
+                  taskIds.includes(task.id) ? applyTaskStatusChange(task, action) : task,
+                ),
+                taskItemRecords: current.taskItemRecords.map((item) =>
+                  taskIds.includes(item.taskId)
+                    ? applyTaskItemStatusChange(item, action === 'retry' ? 'resume' : action)
+                    : item,
+                ),
+              };
+
+              if (action === 'cancel') {
+                return scheduleTransferTaskSizeAdjustment(current, nextState, taskIds, []);
+              }
+
+              if (action === 'retry') {
+                return markTransferTasksForFullSizeRecompute(nextState, taskIds);
+              }
+
+              return nextState;
+            })
+          }
           onClose={() => setTaskDetail(null)}
+          onOpenFileCenterForTask={(task) => {
+            const jumpTarget = resolveFileCenterJumpForTask(persisted.fileNodes, task, persisted.taskItemRecords);
+            setTaskDetail(null);
+            setActiveLibraryId(task.libraryId);
+            setCurrentFolderId(jumpTarget.folderId);
+            setFolderHistory([jumpTarget.folderId]);
+            setHistoryIndex(0);
+            setSelectedFileIds(jumpTarget.selectedIds);
+            setPendingFileCenterJump({
+              libraryId: task.libraryId,
+              folderId: jumpTarget.folderId,
+              selectedIds: jumpTarget.selectedIds,
+            });
+            setActiveView('file-center');
+          }}
+          onOpenIssueCenterForTask={(task) => {
+            setTaskDetail(null);
+            // TODO: 后续异常中心实现时，在这里补上按异常记录自动勾选/高亮的导航参数。
+            setIssueTaskFilter({ taskId: task.id, taskTitle: task.title });
+            setActiveView('issues');
+          }}
         />
       ) : null}
 
@@ -1168,6 +1845,15 @@ export default function App() {
           action={pendingAction}
           onCancel={() => setPendingAction(null)}
           onConfirm={() => void confirmPendingAction()}
+          onInspectConflict={() => {
+            if (pendingAction.kind !== 'delete-conflict') {
+              return;
+            }
+            setPendingAction(null);
+            setTaskTab('transfer');
+            setPendingTaskSelection(pendingAction.blockingTaskIds);
+            setActiveView('task-center');
+          }}
         />
       ) : null}
 
@@ -1217,20 +1903,29 @@ function FileActionDialog({
   action,
   onCancel,
   onConfirm,
+  onInspectConflict,
 }: {
   action: FileConfirmAction;
   onCancel: () => void;
   onConfirm: () => void;
+  onInspectConflict: () => void;
 }) {
   const isDeleteAsset = action.kind === 'delete-asset';
-  const skippedCount = action.kind === 'delete-asset' ? 0 : action.totalSelected - action.items.length;
+  const skippedCount =
+    action.kind === 'delete-asset'
+      ? 0
+      : action.kind === 'delete-conflict'
+        ? action.totalSelected - action.items.length
+        : action.totalSelected - action.items.length;
 
   const title =
     action.kind === 'sync'
       ? '确认同步'
       : action.kind === 'delete-endpoint'
         ? '确认删除副本'
-        : '确认删除资产';
+        : action.kind === 'delete-conflict'
+          ? '存在运行中任务'
+          : '确认删除资产';
 
   const description =
     action.kind === 'sync'
@@ -1241,6 +1936,8 @@ function FileActionDialog({
         ? action.totalSelected === 1
           ? `是否删除“${action.items[0].name}”在 ${action.endpointName} 上的副本？`
           : `是否删除选中的 ${action.totalSelected} 项资产在 ${action.endpointName} 上的副本？`
+        : action.kind === 'delete-conflict'
+          ? `当前选中的资产仍有关联传输任务在运行。若继续删除，将先取消相关任务，再执行删除。`
         : action.items.length === 1
           ? `是否删除资产“${action.items[0].name}”？`
           : `是否删除这 ${action.items.length} 个资产？`;
@@ -1266,6 +1963,13 @@ function FileActionDialog({
     notes.push({ text: '删除后可在任务中心查看执行状态。', critical: true });
   }
 
+  if (action.kind === 'delete-conflict') {
+    notes.push({
+      text: `关联任务：${action.blockingTaskTitles.join('、')}`,
+      critical: true,
+    });
+  }
+
   return (
     <div className="dialog-backdrop" role="presentation" onClick={onCancel}>
       <section className="dialog-panel compact-confirm-dialog" role="dialog" aria-label={title} onClick={(event) => event.stopPropagation()}>
@@ -1282,8 +1986,11 @@ function FileActionDialog({
         </div>
         <div className="sheet-actions right">
           <ActionButton onClick={onCancel}>取消</ActionButton>
+          {action.kind === 'delete-conflict' ? (
+            <ActionButton onClick={onInspectConflict}>查看任务</ActionButton>
+          ) : null}
           <ActionButton tone={action.kind === 'sync' ? 'primary' : 'danger'} onClick={onConfirm}>
-            {action.kind === 'sync' ? '确认同步' : '确认删除'}
+            {action.kind === 'sync' ? '确认同步' : action.kind === 'delete-conflict' ? '取消任务并删除' : '确认删除'}
           </ActionButton>
         </div>
       </section>

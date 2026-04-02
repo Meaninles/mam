@@ -86,6 +86,8 @@ startup_timeout_sec = 30
 # Codex multi-agent collaboration is stable and on by default in current builds.
 # Keep the explicit toggle here so the repo documents its expectation clearly.
 multi_agent = true
+sqlite = true
+memory_tool = true
 
 # Profiles — switch with `codex -p <name>`
 [profiles.strict]

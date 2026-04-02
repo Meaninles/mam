@@ -72,6 +72,16 @@ export function createInitialState(): PersistedState {
   };
 }
 
+function createTaskStateSeeds() {
+  return {
+    importBatches: structuredClone(importBatches),
+    importSourceFiles: structuredClone(importSourceFiles),
+    issueRecords: structuredClone(issueRecords),
+    taskItemRecords: structuredClone(taskItemRecords),
+    taskRecords: structuredClone(taskRecords),
+  };
+}
+
 export function loadPersistedState(): PersistedState {
   const raw = window.localStorage.getItem(STORAGE_KEY);
   if (!raw) {
@@ -80,10 +90,16 @@ export function loadPersistedState(): PersistedState {
 
   try {
     const parsed = JSON.parse(raw) as PersistedState;
+    const taskSeeds = createTaskStateSeeds();
     return {
       ...parsed,
+      importBatches: taskSeeds.importBatches,
+      importSourceFiles: taskSeeds.importSourceFiles,
+      issueRecords: taskSeeds.issueRecords,
       notifications: (parsed.notifications ?? []).map((item) => ({ ...item, read: item.read ?? true })),
       settings: parsed.settings ? cloneSettingsRecord(parsed.settings) : cloneSettingsContent(),
+      taskItemRecords: taskSeeds.taskItemRecords,
+      taskRecords: taskSeeds.taskRecords,
     };
   } catch {
     return createInitialState();

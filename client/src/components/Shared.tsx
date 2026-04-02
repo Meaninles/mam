@@ -31,6 +31,7 @@ export function ActionButton({
   ariaLabel,
   className,
   children,
+  disabled,
   onClick,
   tone = 'default',
   type = 'button',
@@ -38,6 +39,7 @@ export function ActionButton({
   ariaLabel?: string;
   className?: string;
   children: React.ReactNode;
+  disabled?: boolean;
   onClick?: () => void;
   tone?: 'default' | 'primary' | 'danger';
   type?: 'button' | 'submit';
@@ -46,6 +48,7 @@ export function ActionButton({
     <button
       aria-label={ariaLabel}
       className={`action-button ${tone}${className ? ` ${className}` : ''}`}
+      disabled={disabled}
       type={type}
       onClick={onClick}
     >
