@@ -347,7 +347,7 @@ describe('MARE 客户端', () => {
 
     await user.click(screen.getByRole('button', { name: '任务中心' }));
     await user.click(screen.getByRole('button', { name: '其它任务' }));
-    expect(screen.getByText('修复：客户访谈_第一机位_精编版.mov')).toBeInTheDocument();
+    expect(screen.queryByText('修复：客户访谈_第一机位_精编版.mov')).not.toBeInTheDocument();
   });
 
   it('支持删除资产并进入等待清理状态', async () => {

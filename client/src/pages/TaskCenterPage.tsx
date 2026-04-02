@@ -4,6 +4,7 @@ import type {
   FileNode,
   IssueRecord,
   Library,
+  OtherTaskType,
   TaskItemRecord,
   TaskPriority,
   TaskRecord,
@@ -31,8 +32,16 @@ const TRANSFER_BUSINESS_ITEMS = [
   { id: 'SYNC', label: '同步' },
 ];
 
+const OTHER_TASK_FILTER_ITEMS = [
+  { id: 'ALL', label: '全部' },
+  { id: 'SCAN', label: '扫描' },
+  { id: 'METADATA_EXTRACT', label: '元数据解析' },
+  { id: 'VERIFY', label: '校验' },
+  { id: 'DELETE_CLEANUP', label: '删除清理' },
+];
+
 const TRANSFER_STATUS_OPTIONS = ['全部', '活跃中', '运行中', '等待确认', '暂停任务', '异常待处理', '部分成功', '失败', '已完成', '已取消'];
-const OTHER_STATUS_OPTIONS = ['全部', '活跃中', '运行中', '等待确认', '暂停任务', '失败', '已完成'];
+const OTHER_STATUS_OPTIONS = ['全部', '活跃中', '待执行', '运行中', '等待确认', '异常待处理', '等待清理', '暂停任务', '部分成功', '失败', '已完成', '已取消'];
 const SYNC_LINK_OPTIONS = ['全部', '复制', '上传', '下载'];
 const SORT_OPTIONS = ['默认排序', '优先级', '进度', '名称'];
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
@@ -40,13 +49,15 @@ const PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
 const STATUS_ORDER: Record<string, number> = {
   运行中: 0,
   异常待处理: 1,
-  已暂停: 2,
-  等待确认: 3,
-  部分成功: 4,
-  失败: 5,
-  已完成: 6,
-  已取消: 7,
-  待调度: 8,
+  等待清理: 2,
+  已暂停: 3,
+  等待确认: 4,
+  部分成功: 5,
+  失败: 6,
+  已完成: 7,
+  已取消: 8,
+  待调度: 9,
+  待执行: 10,
 };
 
 const PRIORITY_ORDER: Record<TaskPriority, number> = {
@@ -86,6 +97,142 @@ function resolveLinkLabel(linkType: TransferSyncLinkType | null | undefined) {
   if (linkType === 'UPLOAD') return '上传';
   if (linkType === 'DOWNLOAD') return '下载';
   return '';
+}
+
+function resolveOtherTaskType(task: TaskRecord): OtherTaskType | null {
+  if (task.otherTaskType) {
+    return task.otherTaskType;
+  }
+  if (task.type === 'DELETE' || task.type === 'ASSET_CLEANUP') {
+    return 'DELETE_CLEANUP';
+  }
+  if (task.type === 'SCAN' || task.type === 'METADATA_EXTRACT' || task.type === 'VERIFY') {
+    return task.type;
+  }
+  return null;
+}
+
+function resolveOtherTaskTypeLabel(task: TaskRecord) {
+  const type = resolveOtherTaskType(task);
+  if (type === 'SCAN') return '扫描';
+  if (type === 'METADATA_EXTRACT') return '元数据解析';
+  if (type === 'VERIFY') return '校验';
+  if (type === 'DELETE_CLEANUP') return '删除清理';
+  return task.type;
+}
+
+function resolveOtherTaskScope(task: TaskRecord) {
+  return task.scopeLabel ?? task.sourcePath ?? task.targetPath ?? task.source ?? task.target ?? '—';
+}
+
+function resolveOtherTaskMetricLabel(task: TaskRecord) {
+  if (task.otherTaskType === 'DELETE_CLEANUP') {
+    return `${task.fileCount} 项待处理`;
+  }
+  return `${task.fileCount} 项`;
+}
+
+function resolveOtherTaskInlinePath(task: TaskRecord) {
+  const path = task.sourcePath ?? task.targetPath;
+  if (!path) {
+    return null;
+  }
+  return {
+    full: path,
+    display: compactPathLabel(path, 52),
+  };
+}
+
+function resolveOtherTaskProgressMeta(task: TaskRecord) {
+  if (!task.phaseLabel) {
+    return null;
+  }
+  return {
+    full: task.phaseLabel,
+    display: `当前阶段：${task.phaseLabel}`,
+  };
+}
+
+function resolveTaskItemKindLabel(kind?: TaskItemRecord['kind']) {
+  if (kind === 'group') return '分组';
+  if (kind === 'folder') return '目录';
+  if (kind === 'file') return '文件';
+  if (kind === 'asset') return '资产';
+  if (kind === 'step') return '步骤';
+  return '对象';
+}
+
+function matchesOtherTaskSearch(task: TaskRecord, items: TaskItemRecord[], issues: IssueRecord[], query: string, fileNodeMap: Map<string, FileNode>) {
+  if (!query.trim()) {
+    return true;
+  }
+
+  const keyword = query.trim().toLowerCase();
+  const taskFields = [
+    task.title,
+    task.scopeLabel,
+    task.sourcePath,
+    task.targetPath,
+    task.resultSummary,
+    task.phaseLabel,
+    task.source,
+    task.target,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  if (taskFields.includes(keyword)) {
+    return true;
+  }
+
+  const issueFields = issues.map((issue) => `${issue.type} ${issue.detail} ${issue.asset}`).join(' ').toLowerCase();
+  if (issueFields.includes(keyword)) {
+    return true;
+  }
+
+  return items.some((item) => {
+    const itemFields = [
+      resolveTaskItemName(item, fileNodeMap),
+      item.pathLabel,
+      resolveTaskItemPathValue(item, fileNodeMap),
+      item.resultLabel,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    return itemFields.includes(keyword);
+  });
+}
+
+function compareOtherTasks(left: TaskRecord, right: TaskRecord, sortValue: string) {
+  if (sortValue === '名称') {
+    return left.title.localeCompare(right.title, 'zh-CN');
+  }
+
+  if (sortValue === '进度') {
+    return right.progress - left.progress || left.title.localeCompare(right.title, 'zh-CN');
+  }
+
+  if (sortValue === '优先级') {
+    const leftPriority = PRIORITY_ORDER[left.priority ?? '普通优先级'];
+    const rightPriority = PRIORITY_ORDER[right.priority ?? '普通优先级'];
+    return leftPriority - rightPriority || left.title.localeCompare(right.title, 'zh-CN');
+  }
+
+  const leftStatus = STATUS_ORDER[left.status] ?? 99;
+  const rightStatus = STATUS_ORDER[right.status] ?? 99;
+  if (leftStatus !== rightStatus) {
+    return leftStatus - rightStatus;
+  }
+
+  const leftPriority = PRIORITY_ORDER[left.priority ?? '普通优先级'];
+  const rightPriority = PRIORITY_ORDER[right.priority ?? '普通优先级'];
+  if (leftPriority !== rightPriority) {
+    return leftPriority - rightPriority;
+  }
+
+  return (right.updatedAt ?? '').localeCompare(left.updatedAt ?? '', 'zh-CN') || left.title.localeCompare(right.title, 'zh-CN');
 }
 
 function normalizeTaskName(name: string) {
@@ -344,7 +491,7 @@ function canResume(task: TaskRecord) {
 }
 
 function canRetry(task: TaskRecord) {
-  return ['失败', '异常待处理', '已取消'].includes(task.status);
+  return ['失败', '异常待处理', '已取消', '部分成功'].includes(task.status);
 }
 
 function canCancel(task: TaskRecord) {
@@ -370,7 +517,7 @@ function matchesTaskStatusFilter(status: string, statusFilter: string) {
   }
 
   if (normalizedStatusFilter === '活跃中') {
-    return ['运行中', '已暂停', '等待确认'].includes(status);
+    return ['运行中', '已暂停', '等待确认', '等待清理'].includes(status);
   }
 
   return status === normalizedStatusFilter;
@@ -448,6 +595,7 @@ export function TaskCenterPage(props: {
   const fileNodeMap = useMemo(() => buildFileNodeMap(fileNodes), [fileNodes]);
 
   const [businessFilter, setBusinessFilter] = useState<TransferBusinessType>('SYNC');
+  const [otherTaskTypeFilter, setOtherTaskTypeFilter] = useState<'ALL' | OtherTaskType>('ALL');
   const [syncLinkFilter, setSyncLinkFilter] = useState('全部');
   const [libraryFilter, setLibraryFilter] = useState('全部');
   const [sortValue, setSortValue] = useState('默认排序');
@@ -466,7 +614,7 @@ export function TaskCenterPage(props: {
     setIssuePopoverTaskId(null);
     setTaskItemDetail(null);
     setCurrentPage(1);
-  }, [activeTab, businessFilter, libraryFilter, query, sortValue, statusFilter, syncLinkFilter]);
+  }, [activeTab, businessFilter, libraryFilter, otherTaskTypeFilter, query, sortValue, statusFilter, syncLinkFilter]);
 
   useEffect(() => {
     if (!issuePopoverTaskId) {
@@ -526,16 +674,39 @@ export function TaskCenterPage(props: {
     [tasks],
   );
 
-  const otherTasks = useMemo(
-    () =>
-      tasks.filter((task) => {
+  const visibleOtherTasks = useMemo(() => {
+    return tasks
+      .filter((task) => {
         if (task.kind !== 'other') {
           return false;
         }
-        return matchesTaskStatusFilter(task.status, statusFilter);
-      }),
-    [statusFilter, tasks],
-  );
+
+        const otherTaskType = resolveOtherTaskType(task);
+        if (!otherTaskType) {
+          return false;
+        }
+
+        if (otherTaskTypeFilter !== 'ALL' && otherTaskType !== otherTaskTypeFilter) {
+          return false;
+        }
+
+        if (!matchesTaskStatusFilter(task.status, statusFilter)) {
+          return false;
+        }
+
+        if (libraryFilter !== '全部') {
+          const library = libraries.find((item) => item.id === task.libraryId);
+          if (library?.name !== libraryFilter) {
+            return false;
+          }
+        }
+
+        const taskIssues = getTaskIssues(task, issues);
+        const relatedItems = getRelatedTaskItems(taskItems, task.id);
+        return matchesOtherTaskSearch(task, relatedItems, taskIssues, query, fileNodeMap);
+      })
+      .sort((left, right) => compareOtherTasks(left, right, sortValue));
+  }, [fileNodeMap, issues, libraries, libraryFilter, otherTaskTypeFilter, query, sortValue, statusFilter, taskItems, tasks]);
 
   const visibleTransferTasks = useMemo(() => {
     return transferTasks
@@ -568,7 +739,7 @@ export function TaskCenterPage(props: {
   const selectedTasks = visibleTransferTasks.filter((task) => selectedTaskIds.includes(task.id));
   const selectedTaskItems = taskItems.filter((item) => selectedTaskItemIds.includes(item.id));
   const transferPageCount = Math.max(1, Math.ceil(visibleTransferTasks.length / pageSize));
-  const otherPageCount = Math.max(1, Math.ceil(otherTasks.length / pageSize));
+  const otherPageCount = Math.max(1, Math.ceil(visibleOtherTasks.length / pageSize));
   const pageCount = activeTab === 'transfer' ? transferPageCount : otherPageCount;
 
   useEffect(() => {
@@ -582,13 +753,16 @@ export function TaskCenterPage(props: {
 
   const pagedOtherTasks = useMemo(() => {
     const start = (currentPage - 1) * pageSize;
-    return otherTasks.slice(start, start + pageSize);
-  }, [currentPage, otherTasks, pageSize]);
+    return visibleOtherTasks.slice(start, start + pageSize);
+  }, [currentPage, pageSize, visibleOtherTasks]);
 
   const allVisibleSelected =
     pagedTransferTasks.length > 0 && pagedTransferTasks.every((task) => selectedTaskIds.includes(task.id));
+  const allVisibleOtherSelected =
+    pagedOtherTasks.length > 0 && pagedOtherTasks.every((task) => selectedTaskIds.includes(task.id));
 
   const selectedTransferEntryCount = getEffectiveSelectedTransferCount(selectedTaskIds, selectedTaskItemIds, taskItems);
+  const selectedOtherTasks = visibleOtherTasks.filter((task) => selectedTaskIds.includes(task.id));
   const batchPauseTaskIds = selectedTasks.filter(canPause).map((task) => task.id);
   const batchPauseTaskItemIds = selectedTaskItems
     .filter((item) => !selectedTaskIds.includes(item.taskId))
@@ -611,6 +785,10 @@ export function TaskCenterPage(props: {
   const canBatchRetry = batchRetryTaskIds.length > 0;
   const canBatchCancel = batchCancelTaskIds.length + batchCancelTaskItemIds.length > 0;
   const canBatchPriority = selectedTaskIds.length > 0;
+  const otherBatchPauseTaskIds = selectedOtherTasks.filter(canPause).map((task) => task.id);
+  const otherBatchResumeTaskIds = selectedOtherTasks.filter(canResume).map((task) => task.id);
+  const otherBatchRetryTaskIds = selectedOtherTasks.filter(canRetry).map((task) => task.id);
+  const otherBatchCancelTaskIds = selectedOtherTasks.filter(canCancel).map((task) => task.id);
 
   function toggleTaskSelection(taskId: string) {
     const displayItems = getDisplayTaskItems(taskItems, taskId);
@@ -647,6 +825,14 @@ export function TaskCenterPage(props: {
     );
   }
 
+  function toggleSelectVisibleOther() {
+    setSelectedTaskIds((current) =>
+      allVisibleOtherSelected
+        ? current.filter((id) => !pagedOtherTasks.some((task) => task.id === id))
+        : Array.from(new Set([...current, ...pagedOtherTasks.map((task) => task.id)])),
+    );
+  }
+
   function toggleExpanded(taskId: string) {
     setExpandedTaskIds((current) =>
       current.includes(taskId) ? current.filter((item) => item !== taskId) : [...current, taskId],
@@ -654,30 +840,141 @@ export function TaskCenterPage(props: {
   }
 
   function renderOtherTasks() {
-    if (otherTasks.length === 0) {
-      return <EmptyState title="当前没有其它任务" description="删除、修复、校验等非传输任务会汇总在这里。" />;
+    if (visibleOtherTasks.length === 0) {
+      return <EmptyState title="当前没有匹配的其它任务" description="可以调整筛选条件，或去存储节点、文件中心继续触发后台任务。" />;
     }
 
-    return pagedOtherTasks.map((task) => (
-      <article className="list-row task-row" key={task.id}>
-        <div className="row-main">
-          <strong>{task.title}</strong>
-          <span>{task.type}</span>
-          <p>{task.eta}</p>
+    return (
+      <>
+        <div className="transfer-task-list-header">
+          <label className="transfer-task-check">
+            <input
+              aria-label="选择全部可见其它任务"
+              checked={allVisibleOtherSelected}
+              type="checkbox"
+              onChange={toggleSelectVisibleOther}
+            />
+            <span>全选</span>
+          </label>
         </div>
-        <span>{task.fileCount} 项</span>
-        <span>{task.speed}</span>
-        <span>{task.eta}</span>
-        <TonePill tone={task.statusTone}>{task.status}</TonePill>
-        <div className="row-progress">
-          <ProgressBar value={task.progress} />
-        </div>
-        <div className="row-actions">
-          <ActionButton onClick={() => onOpenTaskDetail(task)}>详情</ActionButton>
-          {canRetry(task) ? <ActionButton onClick={() => onChangeTaskStatus([task.id], 'retry')}>重试</ActionButton> : null}
-        </div>
-      </article>
-    ));
+
+        {pagedOtherTasks.map((task) => {
+          const taskIssues = getTaskIssues(task, issues);
+          const issueTone = resolveIssueTone(taskIssues);
+          const primaryTaskAction = resolvePrimaryTaskAction(task);
+          const inlinePath = resolveOtherTaskInlinePath(task);
+          const progressMeta = resolveOtherTaskProgressMeta(task);
+          const taskCardTone = resolveTaskCardTone(task);
+
+          return (
+            <article className={`transfer-task-card ${taskCardTone}`} key={task.id}>
+              <div className="transfer-task-row">
+                <label className="transfer-task-check">
+                  <input
+                    aria-label={`选择 ${task.title}`}
+                    checked={selectedTaskIds.includes(task.id)}
+                    type="checkbox"
+                    onChange={() => setSelectedTaskIds((current) => (current.includes(task.id) ? current.filter((id) => id !== task.id) : [...current, task.id]))}
+                  />
+                </label>
+
+                <span className="transfer-expand-placeholder" aria-hidden="true" />
+
+                <div className="transfer-task-main">
+                  <strong className="transfer-task-title">{task.title}</strong>
+                  {inlinePath ? (
+                    <span className="transfer-task-inline-path" title={inlinePath.full}>
+                      {inlinePath.display}
+                    </span>
+                  ) : null}
+                  <span className="transfer-task-summary">{resolveOtherTaskScope(task)}</span>
+                </div>
+
+                <div className="transfer-task-metrics">
+                  <div className="transfer-task-metric-head">
+                    <div className="transfer-task-tag-group">
+                      <span className="transfer-size-pill">{resolveOtherTaskMetricLabel(task)}</span>
+                      <span className="transfer-task-type-pill">{resolveOtherTaskTypeLabel(task)}</span>
+                      <span className="transfer-priority-pill">{renderPriority(task.priority)}</span>
+                    </div>
+                    <strong>{task.progress}%</strong>
+                  </div>
+                  <div className="row-progress">
+                    <ProgressBar value={task.progress} />
+                  </div>
+                  {progressMeta ? (
+                    <span className="transfer-progress-meta" title={progressMeta.full}>
+                      {progressMeta.display}
+                    </span>
+                  ) : null}
+                </div>
+
+                <div className="transfer-task-side">
+                  <span className="transfer-task-speed">{task.speed}</span>
+                  <span>{task.eta}</span>
+                  <div className="transfer-task-status-row">
+                    <TonePill tone={task.statusTone}>{task.status}</TonePill>
+                    <div className="task-issue-anchor">
+                      {taskIssues.length > 0 ? (
+                        <button
+                          aria-label={`查看异常 ${task.title}`}
+                          className={`task-issue-badge ${issueTone}`}
+                          type="button"
+                          onClick={() => setIssuePopoverTaskId((current) => (current === task.id ? null : task.id))}
+                        >
+                          <AlertTriangle size={14} />
+                          <span>{taskIssues.length > 99 ? '99+' : taskIssues.length}</span>
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="row-actions transfer-task-actions">
+                  <ActionButton onClick={() => onOpenTaskDetail(task)}>详情</ActionButton>
+                  {task.status === '已完成' ? <ActionButton disabled>完成</ActionButton> : null}
+                  {primaryTaskAction === 'resume' ? (
+                    <ActionButton onClick={() => onChangeTaskStatus([task.id], 'resume')}>继续</ActionButton>
+                  ) : null}
+                  {primaryTaskAction === 'retry' ? (
+                    <ActionButton onClick={() => onChangeTaskStatus([task.id], 'retry')}>重试</ActionButton>
+                  ) : null}
+                  {primaryTaskAction === 'pause' ? (
+                    <ActionButton onClick={() => onChangeTaskStatus([task.id], 'pause')}>暂停</ActionButton>
+                  ) : null}
+                  <ActionButton disabled={!canCancel(task)} tone="danger" onClick={() => onChangeTaskStatus([task.id], 'cancel')}>
+                    取消
+                  </ActionButton>
+                </div>
+              </div>
+
+              {issuePopoverTaskId === task.id ? (
+                <div className="task-issue-popover" role="dialog" aria-label={`异常 ${task.title}`}>
+                  <div className="task-issue-popover-header">
+                    <strong>当前任务异常</strong>
+                    <span>{taskIssues.length} 条</span>
+                  </div>
+                  <div className="task-issue-list">
+                    {taskIssues.map((issue) => (
+                      <button key={issue.id} className="task-issue-item" type="button" onClick={() => onOpenIssueCenterForIssue(issue)}>
+                        <span className={`tone-text-${issue.severity}`}>{issue.type}</span>
+                        <strong>{issue.asset}</strong>
+                        <p>{issue.detail}</p>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="sheet-actions right">
+                    <ActionButton onClick={() => onOpenIssueCenterForTask(task)}>查看全部异常</ActionButton>
+                  </div>
+                </div>
+              ) : null}
+            </article>
+          );
+        })}
+
+        {renderPagination(visibleOtherTasks.length)}
+      </>
+    );
   }
 
   function renderPagination(total: number) {
@@ -753,17 +1050,21 @@ export function TaskCenterPage(props: {
               <SelectPill ariaLabel="排序方式" options={SORT_OPTIONS} value={sortValue} onChange={setSortValue} />
             </>
           ) : (
-            <SelectPill ariaLabel="任务状态" options={OTHER_STATUS_OPTIONS} value={statusFilter} onChange={onSetTaskStatusFilter} />
+            <>
+              <TabSwitch items={OTHER_TASK_FILTER_ITEMS} value={otherTaskTypeFilter} onChange={(value) => setOtherTaskTypeFilter(value as 'ALL' | OtherTaskType)} />
+              <SelectPill ariaLabel="任务状态" options={OTHER_STATUS_OPTIONS} value={statusFilter} onChange={onSetTaskStatusFilter} />
+              <SelectPill ariaLabel="排序方式" options={SORT_OPTIONS} value={sortValue} onChange={setSortValue} />
+            </>
           )}
         </div>
 
-        {activeTab === 'transfer' ? (
+        {activeTab === 'transfer' || activeTab === 'other' ? (
           <label className="search-field task-search" htmlFor="task-search">
             <Search size={15} />
             <input
               id="task-search"
               aria-label="搜索任务"
-              placeholder="搜索任务名称、路径、文件名"
+              placeholder={activeTab === 'transfer' ? '搜索任务名称、路径、文件名' : '搜索任务名称、路径、对象、异常摘要'}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
             />
@@ -809,6 +1110,35 @@ export function TaskCenterPage(props: {
             <ActionButton onClick={() => onChangeTaskPriority(selectedTaskIds, '高优先级')} disabled={!canBatchPriority}>
               批量设为高优先级
             </ActionButton>
+            <ActionButton
+              onClick={() => {
+                setSelectedTaskIds([]);
+                setSelectedTaskItemIds([]);
+              }}
+            >
+              清空选择
+            </ActionButton>
+          </div>
+        </div>
+      ) : null}
+
+      {activeTab === 'other' && selectedTaskIds.length > 0 ? (
+        <div className="toolbar-card selection-toolbar">
+          <span className="selection-caption">已选择 {selectedTaskIds.length} 个任务</span>
+          <div className="row-actions">
+            <ActionButton onClick={() => onChangeTaskStatus(otherBatchPauseTaskIds, 'pause')} disabled={otherBatchPauseTaskIds.length === 0}>
+              批量暂停
+            </ActionButton>
+            <ActionButton onClick={() => onChangeTaskStatus(otherBatchResumeTaskIds, 'resume')} disabled={otherBatchResumeTaskIds.length === 0}>
+              批量继续
+            </ActionButton>
+            <ActionButton onClick={() => onChangeTaskStatus(otherBatchRetryTaskIds, 'retry')} disabled={otherBatchRetryTaskIds.length === 0}>
+              批量重试
+            </ActionButton>
+            <ActionButton onClick={() => onChangeTaskStatus(otherBatchCancelTaskIds, 'cancel')} disabled={otherBatchCancelTaskIds.length === 0} tone="danger">
+              批量取消
+            </ActionButton>
+            <ActionButton onClick={() => onChangeTaskPriority(selectedTaskIds, '高优先级')}>批量设为高优先级</ActionButton>
             <ActionButton
               onClick={() => {
                 setSelectedTaskIds([]);
@@ -1060,7 +1390,6 @@ export function TaskCenterPage(props: {
             {renderPagination(visibleTransferTasks.length)}
           </>
         )}
-        {activeTab === 'other' && otherTasks.length > 0 ? renderPagination(otherTasks.length) : null}
       </div>
       {taskItemDetail ? (
         <TaskItemDetailSheet
@@ -1112,7 +1441,7 @@ function TaskItemDetailSheet({
       </div>
 
       <div className="sheet-section">
-        <DenseRow label="节点类型" value={item.kind === 'group' ? '子任务分组' : item.kind === 'folder' ? '文件夹' : '文件'} />
+        <DenseRow label="节点类型" value={resolveTaskItemKindLabel(item.kind)} />
         <DenseRow label="状态" tone={item.statusTone} value={item.status} />
         <DenseRow label="优先级" value={renderPriority(item.priority)} />
         <DenseRow label="当前阶段" value={item.phase ?? '—'} />
@@ -1137,6 +1466,7 @@ export function TaskDetailSheet({
   onClose,
   onOpenFileCenterForTask,
   onOpenIssueCenterForTask,
+  onOpenStorageNodesForTask,
 }: {
   fileNodes: FileNode[];
   item: TaskRecord;
@@ -1147,9 +1477,11 @@ export function TaskDetailSheet({
   onClose: () => void;
   onOpenFileCenterForTask: (task: TaskRecord) => void;
   onOpenIssueCenterForTask: (task: TaskRecord) => void;
+  onOpenStorageNodesForTask: (task: TaskRecord) => void;
 }) {
   const itemIssues = getTaskIssues(item, issues);
   const isTransferTask = item.kind === 'transfer';
+  const otherTaskType = resolveOtherTaskType(item);
   const fileNodeMap = useMemo(() => buildFileNodeMap(fileNodes), [fileNodes]);
   const linkedNodePaths = (item.fileNodeIds ?? [])
     .map((id) => fileNodeMap.get(id)?.path)
@@ -1179,9 +1511,10 @@ export function TaskDetailSheet({
       </div>
 
       <div className="sheet-section">
-        <DenseRow label="业务类型" value={item.kind === 'transfer' ? resolveBusinessLabel(item) : item.type} />
+        <DenseRow label="业务类型" value={item.kind === 'transfer' ? resolveBusinessLabel(item) : resolveOtherTaskTypeLabel(item)} />
         <DenseRow label="链路类型" value={isTransferTask ? resolveLinkLabel(resolveLinkType(item)) || '—' : '—'} />
         <DenseRow label="状态" tone={item.statusTone} value={item.status} />
+        {!isTransferTask ? <DenseRow label="当前阶段" value={item.phaseLabel ?? '—'} /> : null}
         <DenseRow label="优先级" value={renderPriority(item.priority)} />
         <DenseRow label="源端" value={item.source ?? '—'} />
         <DenseRow label="目标端" value={item.target ?? '—'} />
@@ -1191,6 +1524,10 @@ export function TaskDetailSheet({
         <DenseRow label="文件夹数量" value={`${item.folderCount ?? 0}`} />
         <DenseRow label="当前速度" value={item.speed} />
         <DenseRow label="剩余时间" value={item.eta} />
+        {!isTransferTask ? <DenseRow label="范围摘要" value={item.scopeLabel ?? '—'} /> : null}
+        {!isTransferTask ? <DenseRow label="结果摘要" value={item.resultSummary ?? '—'} /> : null}
+        {!isTransferTask ? <DenseRow label="创建时间" value={item.createdAt ?? '—'} /> : null}
+        {!isTransferTask ? <DenseRow label="最近更新" value={item.updatedAt ?? '—'} /> : null}
       </div>
 
       {!isTransferTask ? (
@@ -1199,12 +1536,17 @@ export function TaskDetailSheet({
             <EmptyState title="暂无子任务" description="当前任务没有拆分的文件级记录。" />
           ) : (
             items.map((taskItem) => (
-              <div className="list-row task-detail-row" key={taskItem.id}>
+              <div className="list-row task-detail-row other-task-detail-row" key={taskItem.id}>
                 <div className="row-main">
-                  <strong>{taskItem.name}</strong>
-                  <span>{taskItem.size}</span>
+                  <strong>{resolveTaskItemName(taskItem, fileNodeMap)}</strong>
+                  <span
+                    className="task-detail-path"
+                    title={taskItem.pathLabel ?? resolveTaskItemPathValue(taskItem, fileNodeMap) ?? undefined}
+                  >
+                    {taskItem.pathLabel ?? resolveTaskItemPathValue(taskItem, fileNodeMap) ?? taskItem.resultLabel ?? '—'}
+                  </span>
                 </div>
-                <span>{taskItem.speed}</span>
+                <span>{taskItem.phase ?? '—'}</span>
                 <TonePill tone={taskItem.statusTone}>{taskItem.status}</TonePill>
                 <div className="row-progress">
                   <ProgressBar value={taskItem.progress} />
@@ -1221,7 +1563,11 @@ export function TaskDetailSheet({
       </div>
 
       <div className="sheet-actions right">
-        <ActionButton onClick={() => onOpenFileCenterForTask(item)}>查看文件中心</ActionButton>
+        {!isTransferTask && otherTaskType === 'SCAN' ? (
+          <ActionButton onClick={() => onOpenStorageNodesForTask(item)}>查看存储节点</ActionButton>
+        ) : (
+          <ActionButton onClick={() => onOpenFileCenterForTask(item)}>查看文件中心</ActionButton>
+        )}
         <ActionButton onClick={() => onOpenIssueCenterForTask(item)}>查看异常中心</ActionButton>
       </div>
     </Sheet>

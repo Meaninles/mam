@@ -1198,6 +1198,22 @@ button {
   grid-template-columns: minmax(180px, 1fr) 110px 120px 1fr;
 }
 
+.other-task-detail-row {
+  grid-template-columns: minmax(240px, 1.2fr) 160px 120px 1fr;
+}
+
+.other-task-detail-row .row-main {
+  min-width: 0;
+}
+
+.task-detail-path {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .storage-capacity {
   min-width: 140px;
 }
@@ -1461,6 +1477,7 @@ button {
 }
 
 .transfer-link-pill,
+.transfer-task-type-pill,
 .transfer-priority-pill,
 .transfer-size-pill {
   display: inline-flex;
@@ -1476,6 +1493,10 @@ button {
 
 .transfer-link-pill {
   color: var(--mare-wave-main);
+}
+
+.transfer-task-type-pill {
+  color: var(--info);
 }
 
 .transfer-priority-pill {

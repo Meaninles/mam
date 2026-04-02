@@ -173,8 +173,8 @@ function extractImportBatchSize(summary: string) {
 
 function resolveTaskItemStatusTone(status: string): Severity {
   if (['失败', '已取消'].includes(status)) return 'critical';
-  if (['传输中', '导入中', '校验中', '提交中'].includes(status)) return 'warning';
-  if (['已暂停', '待执行', '已排队', '待导入'].includes(status)) return 'info';
+  if (['传输中', '导入中', '校验中', '提交中', '运行中', '扫描中', '解析中', '删除中', '清理中'].includes(status)) return 'warning';
+  if (['已暂停', '待执行', '已排队', '待导入', '等待确认', '等待清理'].includes(status)) return 'info';
   if (['已完成', '可执行'].includes(status)) return 'success';
   return 'info';
 }
@@ -197,6 +197,44 @@ function applyTaskItemStatusChange(item: PersistedState['taskItemRecords'][numbe
       status: nextStatus,
       phase: nextStatus,
       statusTone: resolveTaskItemStatusTone(nextStatus),
+    };
+  }
+
+  return {
+    ...item,
+    status: '已取消',
+    phase: '已取消',
+    statusTone: resolveTaskItemStatusTone('已取消'),
+    speed: '—',
+  };
+}
+
+function applyTaskItemStatusChangeForTask(
+  item: PersistedState['taskItemRecords'][number],
+  task: TaskRecord,
+  action: 'pause' | 'resume' | 'retry' | 'cancel',
+) {
+  if (task.kind === 'transfer') {
+    return applyTaskItemStatusChange(item, action === 'retry' ? 'resume' : action);
+  }
+
+  if (action === 'pause') {
+    return {
+      ...item,
+      status: '已暂停',
+      phase: '已暂停',
+      statusTone: resolveTaskItemStatusTone('已暂停'),
+      speed: '—',
+    };
+  }
+
+  if (action === 'resume' || action === 'retry') {
+    const nextPhase = action === 'retry' ? '重新进入队列' : item.phase === '等待时间窗' ? '快速校验' : item.phase ?? '运行中';
+    return {
+      ...item,
+      status: '运行中',
+      phase: nextPhase,
+      statusTone: resolveTaskItemStatusTone('运行中'),
     };
   }
 
@@ -1575,11 +1613,13 @@ export default function App() {
                   taskRecords: current.taskRecords.map((task) =>
                     taskIds.includes(task.id) ? applyTaskStatusChange(task, action) : task,
                   ),
-                  taskItemRecords: current.taskItemRecords.map((item) =>
-                    taskIds.includes(item.taskId)
-                      ? applyTaskItemStatusChange(item, action === 'retry' ? 'resume' : action)
-                      : item,
-                  ),
+                  taskItemRecords: current.taskItemRecords.map((item) => {
+                    if (!taskIds.includes(item.taskId)) {
+                      return item;
+                    }
+                    const parentTask = current.taskRecords.find((task) => task.id === item.taskId);
+                    return parentTask ? applyTaskItemStatusChangeForTask(item, parentTask, action) : item;
+                  }),
                 };
 
                 if (action === 'cancel') {
@@ -1757,11 +1797,13 @@ export default function App() {
                 taskRecords: current.taskRecords.map((task) =>
                   taskIds.includes(task.id) ? applyTaskStatusChange(task, action) : task,
                 ),
-                taskItemRecords: current.taskItemRecords.map((item) =>
-                  taskIds.includes(item.taskId)
-                    ? applyTaskItemStatusChange(item, action === 'retry' ? 'resume' : action)
-                    : item,
-                ),
+                taskItemRecords: current.taskItemRecords.map((item) => {
+                  if (!taskIds.includes(item.taskId)) {
+                    return item;
+                  }
+                  const parentTask = current.taskRecords.find((task) => task.id === item.taskId);
+                  return parentTask ? applyTaskItemStatusChangeForTask(item, parentTask, action) : item;
+                }),
               };
 
               if (action === 'cancel') {
@@ -1796,6 +1838,10 @@ export default function App() {
             // TODO: 后续异常中心实现时，在这里补上按异常记录自动勾选/高亮的导航参数。
             setIssueTaskFilter({ taskId: task.id, taskTitle: task.title });
             setActiveView('issues');
+          }}
+          onOpenStorageNodesForTask={() => {
+            setTaskDetail(null);
+            setActiveView('storage-nodes');
           }}
         />
       ) : null}
