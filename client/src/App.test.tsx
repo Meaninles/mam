@@ -2,6 +2,8 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import App from './App';
+import { TaskCenterPage } from './pages/TaskCenterPage';
+import { createInitialState } from './lib/clientState';
 import { resetFileCenterMock } from './lib/fileCenterApi';
 
 describe('MARE 客户端', () => {
@@ -42,6 +44,18 @@ describe('MARE 客户端', () => {
     expect(screen.getByText('访谈_环境底噪.wav')).toBeInTheDocument();
   });
 
+  it('任务状态筛选默认使用活跃中', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '任务中心' }));
+    await user.click(screen.getByRole('button', { name: '同步' }));
+
+    expect(screen.getByLabelText('任务状态')).toHaveValue('活跃中');
+    expect(screen.queryByText('片头配乐_v4_master.wav')).not.toBeInTheDocument();
+    expect(screen.queryByText('客户访谈_第一机位_精编版.mov')).not.toBeInTheDocument();
+  });
+
   it('传输任务默认只显示一级任务，可在列表展开二级任务并在详情中查看三级任务', async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -75,7 +89,7 @@ describe('MARE 客户端', () => {
     await user.click(screen.getByRole('button', { name: '同步' }));
 
     expect(screen.getByText('124 个文件 · 0 个文件夹')).toBeInTheDocument();
-    expect(await screen.findByText('96 MB')).toBeInTheDocument();
+    expect(await screen.findByText('124 项')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /展开 2026-03-29_上海发布会_A-cam_001\.RAW、2026-03-29_上海发布会_B-cam_018\.RAW/ }));
     const childRow = screen.getByText('2026-03-29_上海发布会_B-cam_018.RAW').closest('.transfer-child-task-row') as HTMLElement | null;
@@ -151,6 +165,94 @@ describe('MARE 客户端', () => {
     expect(inlinePath).toHaveAttribute('title', 'C:\\Mare\\Exports\\客户返签确认单_2026Q2.pdf');
   });
 
+  it('含二级任务的一级任务显示二级任务数量，其余任务显示大小', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '任务中心' }));
+    await user.click(screen.getByRole('button', { name: '同步' }));
+
+    const multiChildRow = screen.getByText(/2026-03-29_上海发布会_A-cam_001\.RAW.*2026-03-29_上海发布会_B-cam_018\.RAW/).closest('article') as HTMLElement | null;
+    expect(multiChildRow).not.toBeNull();
+    expect(within(multiChildRow!).getByText('124 项')).toBeInTheDocument();
+
+    const singleTaskRow = screen.getByText('客户返签确认单_2026Q2.pdf').closest('article') as HTMLElement | null;
+    expect(singleTaskRow).not.toBeNull();
+    expect(within(singleTaskRow!).getByText('6.2 MB')).toBeInTheDocument();
+  });
+
+  it('新增的跨目录任务展开后会显示多个不同路径的二级任务', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '任务中心' }));
+    await user.click(screen.getByRole('button', { name: '同步' }));
+
+    const mixedTaskRow = screen.getByText(/2026-03-29_上海发布会_A-cam_001\.RAW.*上海发布会_精选组图\.zip/).closest('article') as HTMLElement | null;
+    expect(mixedTaskRow).not.toBeNull();
+    await user.click(within(mixedTaskRow!).getByRole('button', { name: /展开 2026-03-29_上海发布会_A-cam_001\.RAW.*上海发布会_精选组图\.zip/ }));
+
+    const mixedChildRows = within(mixedTaskRow!).getAllByText(/2026-03-29_上海发布会_A-cam_001\.RAW|上海发布会_精选组图\.zip/);
+    expect(mixedChildRows.length).toBeGreaterThanOrEqual(2);
+    expect(within(mixedTaskRow!).getAllByText('商业摄影资产库 / 2026 / Shanghai Launch / 拍摄原片').length).toBeGreaterThanOrEqual(1);
+    expect(within(mixedTaskRow!).getByTitle('商业摄影资产库 / 2026 / Shanghai Launch / 精选交付 / 发布会资料包')).toBeInTheDocument();
+  });
+
+  it('文件夹类型一级任务展开后只显示递归提取出的文件，不显示文件夹节点', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '任务中心' }));
+    await user.click(screen.getByRole('button', { name: '同步' }));
+
+    const folderTaskRow = screen.getByText('精选交付').closest('article') as HTMLElement | null;
+    expect(folderTaskRow).not.toBeNull();
+    await user.click(within(folderTaskRow!).getByRole('button', { name: /展开 精选交付/ }));
+
+    expect(await within(folderTaskRow!).findByText('上海发布会_精选封面.jpg')).toBeInTheDocument();
+    expect(within(folderTaskRow!).getByText('上海发布会_精选组图.zip')).toBeInTheDocument();
+    expect(within(folderTaskRow!).queryByText('发布会资料包')).not.toBeInTheDocument();
+  });
+
+  it('二级任务关联文件被删除后显示为整行不可点击的失效状态', async () => {
+    const seed = createInitialState();
+    const brokenItems = seed.taskItemRecords.map((item) =>
+      item.id === 'task-item-2' ? { ...item, fileNodeId: 'missing-node' } : item,
+    );
+
+    render(
+      <TaskCenterPage
+        activeTab="transfer"
+        fileNodes={seed.fileNodes}
+        issues={seed.issueRecords}
+        libraries={seed.libraries}
+        preselectedTaskIds={null}
+        statusFilter="全部"
+        taskItems={brokenItems}
+        tasks={seed.taskRecords}
+        onChangeTaskPriority={() => {}}
+        onChangeTaskItemStatus={() => {}}
+        onChangeTaskStatus={() => {}}
+        onConsumePreselectedTaskIds={() => {}}
+        onOpenIssueCenterForIssue={() => {}}
+        onOpenIssueCenterForTask={() => {}}
+        onOpenTaskDetail={() => {}}
+        onSetActiveTab={() => {}}
+        onSetTaskStatusFilter={() => {}}
+      />,
+    );
+
+    const expandButton = screen.getByRole('button', { name: /展开 2026-03-29_上海发布会_A-cam_001\.RAW、文件已删除/ });
+    await userEvent.setup().click(expandButton);
+
+    const missingRow = screen.getByText('文件已删除').closest('.transfer-child-task-row') as HTMLElement | null;
+    expect(missingRow).not.toBeNull();
+    expect(missingRow).toHaveClass('missing');
+    expect(within(missingRow!).getByRole('button', { name: '详情' })).toBeDisabled();
+    expect(within(missingRow!).getByRole('button', { name: '取消' })).toBeDisabled();
+    expect(within(missingRow!).getByRole('checkbox')).toBeDisabled();
+  });
+
   it('传输任务支持异常浮窗，并可按任务跳转到异常中心', async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -177,13 +279,61 @@ describe('MARE 客户端', () => {
     await user.click(screen.getByLabelText(/选择 2026-03-29_上海发布会_A-cam_001\.RAW、2026-03-29_上海发布会_B-cam_018\.RAW/));
     await user.click(screen.getAllByLabelText('选择 精选交付')[0]);
 
-    expect(screen.getByText('已选择 3 个任务项')).toBeInTheDocument();
+    expect(screen.getByText('已选择 4 个任务项')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '批量暂停' }));
     expect((await screen.findAllByText('已暂停')).length).toBeGreaterThanOrEqual(2);
 
     await user.click(screen.getByRole('button', { name: '批量设为高优先级' }));
     const priorityPills = screen.getAllByText('高优先级');
     expect(priorityPills.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('已完成任务显示完成按钮且保持三个操作按钮', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '任务中心' }));
+    await user.click(screen.getByRole('button', { name: '同步' }));
+    await user.selectOptions(screen.getByLabelText('任务状态'), '全部');
+
+    const completedRow = screen.getByText('客户访谈_第一机位_精编版.mov').closest('article') as HTMLElement | null;
+    expect(completedRow).not.toBeNull();
+    expect(within(completedRow!).getByRole('button', { name: '详情' })).toBeInTheDocument();
+    expect(within(completedRow!).getByRole('button', { name: '完成' })).toBeInTheDocument();
+    expect(within(completedRow!).getByRole('button', { name: '取消' })).toBeInTheDocument();
+    expect(within(completedRow!).queryByRole('button', { name: '暂停' })).not.toBeInTheDocument();
+    expect(within(completedRow!).queryByRole('button', { name: '继续' })).not.toBeInTheDocument();
+    expect(within(completedRow!).queryByRole('button', { name: '重试' })).not.toBeInTheDocument();
+  });
+
+  it('已完成的二级任务显示完成按钮', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '任务中心' }));
+    await user.click(screen.getByRole('button', { name: '同步' }));
+    await user.click(screen.getByRole('button', { name: /展开 2026-03-29_上海发布会_A-cam_001\.RAW、2026-03-29_上海发布会_B-cam_018\.RAW/ }));
+
+    const completedChildRow = screen.getByText('2026-03-29_上海发布会_A-cam_001.RAW').closest('.transfer-child-task-row') as HTMLElement | null;
+    expect(completedChildRow).not.toBeNull();
+    expect(within(completedChildRow!).getByRole('button', { name: '详情' })).toBeInTheDocument();
+    expect(within(completedChildRow!).getByRole('button', { name: '完成' })).toBeInTheDocument();
+    expect(within(completedChildRow!).getByRole('button', { name: '取消' })).toBeInTheDocument();
+  });
+
+  it('失败任务只显示重试，不显示暂停或继续', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '任务中心' }));
+    await user.click(screen.getByRole('button', { name: '同步' }));
+    await user.selectOptions(screen.getByLabelText('任务状态'), '全部');
+
+    const failedRow = screen.getByText('片头配乐_v4_master.wav').closest('article') as HTMLElement | null;
+    expect(failedRow).not.toBeNull();
+    expect(within(failedRow!).getByRole('button', { name: '重试' })).toBeInTheDocument();
+    expect(within(failedRow!).queryByRole('button', { name: '暂停' })).not.toBeInTheDocument();
+    expect(within(failedRow!).queryByRole('button', { name: '继续' })).not.toBeInTheDocument();
   });
 
   it('支持按建议处理异常并生成修复任务', async () => {
@@ -216,6 +366,7 @@ describe('MARE 客户端', () => {
 
     await user.click(screen.getByRole('button', { name: '任务中心' }));
     await user.click(screen.getByRole('button', { name: '其它任务' }));
+    await user.selectOptions(screen.getByLabelText('任务状态'), '全部');
     expect(screen.getAllByText('删除资产：2026-03-29_上海发布会_A-cam_001.RAW').length).toBeGreaterThan(0);
   });
 
@@ -521,8 +672,8 @@ describe('MARE 客户端', () => {
     expect(childPath).toHaveAttribute('title', '商业摄影资产库 / 2026 / Shanghai Launch / 拍摄原片');
 
     await user.click(within(childRow!).getByRole('button', { name: '取消' }));
-    expect(await within(taskRow!).findByText('大小计算中')).toBeInTheDocument();
-    expect(await within(taskRow!).findByText('48.2 MB')).toBeInTheDocument();
+    expect(within(taskRow!).queryByText('大小计算中')).not.toBeInTheDocument();
+    expect(await within(taskRow!).findByText('124 项')).toBeInTheDocument();
 
     const singleTaskRow = screen.getByText('客户返签确认单_2026Q2.pdf').closest('article') as HTMLElement | null;
     expect(singleTaskRow).not.toBeNull();

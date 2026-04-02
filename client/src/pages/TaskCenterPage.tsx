@@ -31,8 +31,8 @@ const TRANSFER_BUSINESS_ITEMS = [
   { id: 'SYNC', label: '同步' },
 ];
 
-const TRANSFER_STATUS_OPTIONS = ['全部', '运行中', '等待确认', '暂停任务', '异常待处理', '部分成功', '失败', '已完成', '已取消'];
-const OTHER_STATUS_OPTIONS = ['全部', '运行中', '等待确认', '暂停任务', '失败', '已完成'];
+const TRANSFER_STATUS_OPTIONS = ['全部', '活跃中', '运行中', '等待确认', '暂停任务', '异常待处理', '部分成功', '失败', '已完成', '已取消'];
+const OTHER_STATUS_OPTIONS = ['全部', '活跃中', '运行中', '等待确认', '暂停任务', '失败', '已完成'];
 const SYNC_LINK_OPTIONS = ['全部', '复制', '上传', '下载'];
 const SORT_OPTIONS = ['默认排序', '优先级', '进度', '名称'];
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
@@ -130,6 +130,14 @@ function resolveTaskDisplayTitle(task: TaskRecord, items: TaskItemRecord[], file
     return task.title;
   }
 
+  const primaryFileNodeId = task.fileNodeIds?.[0];
+  if ((task.fileNodeIds ?? []).length === 1 && primaryFileNodeId) {
+    const primaryNode = fileNodeMap.get(primaryFileNodeId);
+    if (primaryNode?.type === 'folder') {
+      return primaryNode.name;
+    }
+  }
+
   const displayItems = getDisplayTaskItems(items, task.id);
   if (displayItems.length > 0) {
     return summarizeTaskNames(displayItems.map((item) => resolveTaskItemName(item, fileNodeMap)));
@@ -171,10 +179,7 @@ function getRelatedTaskItems(items: TaskItemRecord[], taskId: string) {
 
 function getDisplayTaskItems(items: TaskItemRecord[], taskId: string) {
   const fileItems = items.filter((item) => item.taskId === taskId && (item.kind === 'file' || item.kind === undefined));
-  if (fileItems.length > 0) {
-    return fileItems;
-  }
-  return items.filter((item) => item.taskId === taskId && !item.parentId);
+  return fileItems;
 }
 
 function matchesSearch(task: TaskRecord, items: TaskItemRecord[], query: string, fileNodeMap: Map<string, FileNode>) {
@@ -307,6 +312,29 @@ function resolveTaskItemPath(item: TaskItemRecord, fileNodeMap: Map<string, File
   };
 }
 
+function resolveTaskCardTone(task: TaskRecord) {
+  if (task.status === '运行中') return 'running';
+  if (task.status === '失败') return 'failed';
+  if (task.status === '已完成') return 'completed';
+  return 'default';
+}
+
+function resolveTaskMetricLabel(task: TaskRecord, hasSecondaryItems: boolean) {
+  if (hasSecondaryItems) {
+    return `${task.fileCount} 项`;
+  }
+
+  return task.totalSize ?? '大小计算中';
+}
+
+function isFolderTask(task: TaskRecord, fileNodeMap: Map<string, FileNode>) {
+  return (task.fileNodeIds ?? []).some((id) => fileNodeMap.get(id)?.type === 'folder');
+}
+
+function isTaskItemMissingFile(item: TaskItemRecord, fileNodeMap: Map<string, FileNode>) {
+  return item.fileNodeId !== undefined && !fileNodeMap.has(item.fileNodeId);
+}
+
 function canPause(task: TaskRecord) {
   return !['已完成', '已取消', '已暂停'].includes(task.status);
 }
@@ -333,6 +361,32 @@ function canResumeItem(item: TaskItemRecord) {
 
 function canCancelItem(item: TaskItemRecord) {
   return !['已完成', '已取消'].includes(item.status);
+}
+
+function matchesTaskStatusFilter(status: string, statusFilter: string) {
+  const normalizedStatusFilter = statusFilter === '暂停任务' ? '已暂停' : statusFilter;
+  if (normalizedStatusFilter === '全部') {
+    return true;
+  }
+
+  if (normalizedStatusFilter === '活跃中') {
+    return ['运行中', '已暂停', '等待确认'].includes(status);
+  }
+
+  return status === normalizedStatusFilter;
+}
+
+function resolvePrimaryTaskAction(task: TaskRecord): TaskStatusAction | null {
+  if (canResume(task)) return 'resume';
+  if (canRetry(task)) return 'retry';
+  if (canPause(task)) return 'pause';
+  return null;
+}
+
+function resolvePrimaryTaskItemAction(item: TaskItemRecord): TaskItemStatusAction | null {
+  if (canResumeItem(item)) return 'resume';
+  if (canPauseItem(item)) return 'pause';
+  return null;
 }
 
 function getEffectiveSelectedTransferCount(taskIds: string[], taskItemIds: string[], items: TaskItemRecord[]) {
@@ -478,8 +532,7 @@ export function TaskCenterPage(props: {
         if (task.kind !== 'other') {
           return false;
         }
-        const normalizedStatusFilter = statusFilter === '暂停任务' ? '已暂停' : statusFilter;
-        return normalizedStatusFilter === '全部' || task.status === normalizedStatusFilter;
+        return matchesTaskStatusFilter(task.status, statusFilter);
       }),
     [statusFilter, tasks],
   );
@@ -496,8 +549,7 @@ export function TaskCenterPage(props: {
           return false;
         }
 
-        const normalizedStatusFilter = statusFilter === '暂停任务' ? '已暂停' : statusFilter;
-        if (normalizedStatusFilter !== '全部' && task.status !== normalizedStatusFilter) {
+        if (!matchesTaskStatusFilter(task.status, statusFilter)) {
           return false;
         }
 
@@ -791,17 +843,20 @@ export function TaskCenterPage(props: {
             {pagedTransferTasks.map((task) => {
               const taskIssueRecords = getTaskIssues(task, issues);
               const relatedItems = getRelatedTaskItems(taskItems, task.id);
-              const listLevelItems = task.multiFile ? getDisplayTaskItems(taskItems, task.id) : [];
-              const hasSecondaryItems = listLevelItems.length > 0;
+              const listLevelItems = getDisplayTaskItems(taskItems, task.id);
+              const hasSecondaryItems = listLevelItems.length > 0 && (task.multiFile || isFolderTask(task, fileNodeMap));
               const expanded = hasSecondaryItems && expandedTaskIds.includes(task.id);
               const displayTitle = resolveTaskDisplayTitle(task, relatedItems, fileNodeMap);
               const linkLabel = resolveLinkLabel(resolveLinkType(task));
               const issueTone = resolveIssueTone(taskIssueRecords);
               const inlinePath = resolveTaskInlinePath(task, relatedItems, fileNodeMap);
               const progressMeta = resolveTaskProgressMeta(task);
+              const taskCardTone = resolveTaskCardTone(task);
+              const primaryTaskAction = resolvePrimaryTaskAction(task);
+              const taskMetricLabel = resolveTaskMetricLabel(task, hasSecondaryItems);
 
               return (
-                <article className="transfer-task-card" key={task.id}>
+                <article className={`transfer-task-card ${taskCardTone}`} key={task.id}>
                   <div className="transfer-task-row">
                     <label className="transfer-task-check">
                       <input
@@ -838,7 +893,7 @@ export function TaskCenterPage(props: {
                     <div className="transfer-task-metrics">
                       <div className="transfer-task-metric-head">
                         <div className="transfer-task-tag-group">
-                          <span className="transfer-size-pill">{task.totalSize ?? '大小计算中'}</span>
+                          <span className="transfer-size-pill">{taskMetricLabel}</span>
                           {linkLabel ? <span className="transfer-link-pill">{linkLabel}</span> : null}
                           <span className="transfer-priority-pill">{renderPriority(task.priority)}</span>
                         </div>
@@ -877,12 +932,18 @@ export function TaskCenterPage(props: {
 
                     <div className="row-actions transfer-task-actions">
                       <ActionButton onClick={() => onOpenTaskDetail({ ...task, title: displayTitle })}>详情</ActionButton>
-                      {canResume(task) ? (
+                      {task.status === '已完成' ? (
+                        <ActionButton disabled>完成</ActionButton>
+                      ) : null}
+                      {primaryTaskAction === 'resume' ? (
                         <ActionButton onClick={() => onChangeTaskStatus([task.id], 'resume')}>继续</ActionButton>
-                      ) : (
-                        <ActionButton disabled={!canPause(task)} onClick={() => onChangeTaskStatus([task.id], 'pause')}>暂停</ActionButton>
-                      )}
-                      {canRetry(task) ? <ActionButton onClick={() => onChangeTaskStatus([task.id], 'retry')}>重试</ActionButton> : null}
+                      ) : null}
+                      {primaryTaskAction === 'retry' ? (
+                        <ActionButton onClick={() => onChangeTaskStatus([task.id], 'retry')}>重试</ActionButton>
+                      ) : null}
+                      {primaryTaskAction === 'pause' ? (
+                        <ActionButton onClick={() => onChangeTaskStatus([task.id], 'pause')}>暂停</ActionButton>
+                      ) : null}
                       <ActionButton disabled={!canCancel(task)} tone="danger" onClick={() => onChangeTaskStatus([task.id], 'cancel')}>取消</ActionButton>
                     </div>
                   </div>
@@ -923,12 +984,15 @@ export function TaskCenterPage(props: {
                           const childName = resolveTaskItemName(item, fileNodeMap);
                           const childPath = resolveTaskItemPath(item, fileNodeMap);
                           const childSize = resolveTaskItemSize(item, fileNodeMap);
+                          const primaryTaskItemAction = resolvePrimaryTaskItemAction(item);
+                          const childFileMissing = isTaskItemMissingFile(item, fileNodeMap);
                           return (
-                            <div className="transfer-task-row transfer-child-task-row" key={item.id}>
+                            <div className={`transfer-task-row transfer-child-task-row${childFileMissing ? ' missing' : ''}`} key={item.id}>
                               <label className="transfer-task-check">
                                 <input
                                   aria-label={`选择 ${childName}`}
                                   checked={selectedTaskItemIds.includes(item.id)}
+                                  disabled={childFileMissing}
                                   type="checkbox"
                                   onChange={() => toggleTaskItemSelection(task.id, item.id)}
                                 />
@@ -974,13 +1038,15 @@ export function TaskCenterPage(props: {
                               </div>
 
                               <div className="row-actions transfer-task-actions transfer-child-actions">
-                                <ActionButton onClick={() => setTaskItemDetail(item)}>详情</ActionButton>
-                                {canResumeItem(item) ? (
-                                  <ActionButton onClick={() => onChangeTaskItemStatus([item.id], 'resume')}>继续</ActionButton>
-                                ) : (
-                                  <ActionButton disabled={!canPauseItem(item)} onClick={() => onChangeTaskItemStatus([item.id], 'pause')}>暂停</ActionButton>
-                                )}
-                                <ActionButton disabled={!canCancelItem(item)} tone="danger" onClick={() => onChangeTaskItemStatus([item.id], 'cancel')}>取消</ActionButton>
+                                <ActionButton disabled={childFileMissing} onClick={() => setTaskItemDetail(item)}>详情</ActionButton>
+                                {item.status === '已完成' ? <ActionButton disabled>完成</ActionButton> : null}
+                                {primaryTaskItemAction === 'resume' ? (
+                                  <ActionButton disabled={childFileMissing} onClick={() => onChangeTaskItemStatus([item.id], 'resume')}>继续</ActionButton>
+                                ) : null}
+                                {primaryTaskItemAction === 'pause' ? (
+                                  <ActionButton disabled={childFileMissing} onClick={() => onChangeTaskItemStatus([item.id], 'pause')}>暂停</ActionButton>
+                                ) : null}
+                                <ActionButton disabled={childFileMissing || !canCancelItem(item)} tone="danger" onClick={() => onChangeTaskItemStatus([item.id], 'cancel')}>取消</ActionButton>
                               </div>
                             </div>
                           );
@@ -1028,16 +1094,19 @@ function TaskItemDetailSheet({
   const itemSize = resolveTaskItemSize(item, fileNodeMap);
   const itemSourcePath = resolveTaskItemPathValue(item, fileNodeMap) ?? '—';
   const itemTargetPath = item.targetPath ?? '—';
+  const primaryTaskItemAction = resolvePrimaryTaskItemAction(item);
 
   return (
     <Sheet onClose={onClose} title={itemName}>
       <div className="sheet-section">
         <div className="row-actions">
-          {canResumeItem(item) ? (
+          {item.status === '已完成' ? <ActionButton disabled>完成</ActionButton> : null}
+          {primaryTaskItemAction === 'resume' ? (
             <ActionButton onClick={() => onChangeTaskItemStatus([item.id], 'resume')}>继续</ActionButton>
-          ) : (
-            <ActionButton disabled={!canPauseItem(item)} onClick={() => onChangeTaskItemStatus([item.id], 'pause')}>暂停</ActionButton>
-          )}
+          ) : null}
+          {primaryTaskItemAction === 'pause' ? (
+            <ActionButton onClick={() => onChangeTaskItemStatus([item.id], 'pause')}>暂停</ActionButton>
+          ) : null}
           <ActionButton disabled={!canCancelItem(item)} tone="danger" onClick={() => onChangeTaskItemStatus([item.id], 'cancel')}>取消</ActionButton>
         </div>
       </div>
@@ -1086,17 +1155,20 @@ export function TaskDetailSheet({
     .map((id) => fileNodeMap.get(id)?.path)
     .filter((value): value is string => Boolean(value));
   const taskSourcePath = linkedNodePaths[0] ?? item.sourcePath ?? '—';
+  const primaryTaskAction = resolvePrimaryTaskAction(item);
 
   return (
     <Sheet onClose={onClose} title={item.title}>
       <div className="sheet-section">
         <div className="row-actions">
-          {canResume(item) ? (
+          {item.status === '已完成' ? <ActionButton disabled>完成</ActionButton> : null}
+          {primaryTaskAction === 'resume' ? (
             <ActionButton onClick={() => onChangeTaskStatus([item.id], 'resume')}>继续</ActionButton>
-          ) : (
-            <ActionButton disabled={!canPause(item)} onClick={() => onChangeTaskStatus([item.id], 'pause')}>暂停</ActionButton>
-          )}
-          {canRetry(item) ? <ActionButton onClick={() => onChangeTaskStatus([item.id], 'retry')}>重试</ActionButton> : null}
+          ) : null}
+          {primaryTaskAction === 'retry' ? <ActionButton onClick={() => onChangeTaskStatus([item.id], 'retry')}>重试</ActionButton> : null}
+          {primaryTaskAction === 'pause' ? (
+            <ActionButton onClick={() => onChangeTaskStatus([item.id], 'pause')}>暂停</ActionButton>
+          ) : null}
           <ActionButton disabled={!canCancel(item)} tone="danger" onClick={() => onChangeTaskStatus([item.id], 'cancel')}>取消</ActionButton>
           {item.priority !== '高优先级' ? (
             <ActionButton onClick={() => onChangeTaskPriority([item.id], '高优先级')}>设为高优先级</ActionButton>

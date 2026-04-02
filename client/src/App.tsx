@@ -441,7 +441,7 @@ export default function App() {
   const [fileTypeFilter, setFileTypeFilter] = useState<FileTypeFilter>('全部');
   const [fileStatusFilter, setFileStatusFilter] = useState<FileCenterStatusFilter>('全部');
   const [partialSyncEndpointNames, setPartialSyncEndpointNames] = useState<string[]>([]);
-  const [taskStatusFilter, setTaskStatusFilter] = useState('全部');
+  const [taskStatusFilter, setTaskStatusFilter] = useState('活跃中');
   const [issueTypeFilter, setIssueTypeFilter] = useState('全部');
   const [issueTaskFilter, setIssueTaskFilter] = useState<IssueTaskFilterState>(null);
   const [searchText, setSearchText] = useState('');
