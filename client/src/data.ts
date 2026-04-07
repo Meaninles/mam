@@ -94,6 +94,149 @@ export interface ImportBatch {
   lastScannedAt: string;
 }
 
+export type ImportDeviceType = '读卡器' | '存储卡' | '移动硬盘' | 'U 盘';
+export type ImportDeviceScanStatus = '待识别' | '扫描中' | '已完成' | '扫描失败';
+export type ImportDeviceSessionStatus =
+  | '待识别'
+  | '扫描中'
+  | '可导入'
+  | '导入中'
+  | '部分完成'
+  | '异常待处理'
+  | '已拔出';
+export type ImportSessionStatus =
+  | '待扫描'
+  | '可导入'
+  | '预检失败'
+  | '待提交'
+  | '导入中'
+  | '部分成功'
+  | '已完成'
+  | '异常待处理'
+  | '已拔出';
+export type ImportDraftStatus = '草稿中' | '待提交' | '导入中' | '已提交';
+export type ImportFileStatus = '待导入' | '已排队' | '传输中' | '校验中' | '已完成' | '失败' | '冲突' | '已跳过';
+export type ImportCheckStatus = 'passed' | 'risk' | 'blocking';
+export type ImportTargetEndpointType = '本机磁盘' | 'NAS/SMB' | '115网盘';
+
+export interface ImportCapacitySummary {
+  total: string;
+  available: string;
+  usedPercent: number;
+}
+
+export interface ImportTargetEndpointRecord {
+  id: string;
+  endpointId: string;
+  label: string;
+  type: ImportTargetEndpointType;
+  writable: boolean;
+  availableSpace: string;
+  statusLabel: string;
+  tone: Severity;
+}
+
+export interface ImportDeviceSessionRecord {
+  id: string;
+  deviceKey: string;
+  deviceLabel: string;
+  deviceType: ImportDeviceType;
+  libraryId: string;
+  mountPath: string;
+  connectedAt: string;
+  connectedAtSortKey: number;
+  lastSeenAt: string;
+  capacitySummary: ImportCapacitySummary;
+  scanStatus: ImportDeviceScanStatus;
+  sessionStatus: ImportDeviceSessionStatus;
+  activeDraftId?: string;
+  latestReportId?: string;
+  issueIds: string[];
+  fileCount: number;
+  folderCount: number;
+  duplicateCount: number;
+  exceptionCount: number;
+  description: string;
+  availableTargetEndpointIds: string[];
+}
+
+export interface ImportPrecheckItem {
+  id: string;
+  label: string;
+  status: ImportCheckStatus;
+  detail: string;
+}
+
+export interface ImportPrecheckSummary {
+  blockingCount: number;
+  riskCount: number;
+  passedCount: number;
+  updatedAt: string;
+  checks: {
+    sourceReadable: ImportCheckStatus;
+    targetWritable: ImportCheckStatus;
+    capacityReady: ImportCheckStatus;
+    pathConflict: ImportCheckStatus;
+    deviceOnline: ImportCheckStatus;
+    executorReady: ImportCheckStatus;
+  };
+  items: ImportPrecheckItem[];
+}
+
+export interface ImportDraftRecord {
+  id: string;
+  deviceSessionId: string;
+  libraryId: string;
+  selectedFileIds: string[];
+  targetEndpointIds: string[];
+  targetStrategy: string;
+  precheckSummary: ImportPrecheckSummary;
+  lastEditedAt: string;
+  hasBlockingIssues: boolean;
+  status: ImportDraftStatus;
+}
+
+export interface ImportSourceNodeRecord {
+  id: string;
+  deviceSessionId: string;
+  name: string;
+  relativePath: string;
+  fileKind: FileTypeFilter;
+  size: string;
+  status: ImportFileStatus;
+  targetEndpointIds: string[];
+  issueIds: string[];
+  note?: string;
+}
+
+export interface ImportReportTargetSummary {
+  endpointId: string;
+  label: string;
+  status: string;
+  successCount: number;
+  failedCount: number;
+  transferredSize: string;
+}
+
+export interface ImportReportSnapshot {
+  id: string;
+  deviceSessionId: string;
+  taskId: string;
+  title: string;
+  status: '已排队' | '运行中' | '部分成功' | '失败' | '已完成';
+  submittedAt: string;
+  finishedAt?: string;
+  successCount: number;
+  failedCount: number;
+  partialCount: number;
+  verifySummary: string;
+  targetSummaries: ImportReportTargetSummary[];
+  issueIds: string[];
+  latestUpdatedAt: string;
+  fileCount: number;
+  note?: string;
+}
+
 export interface TaskRecord {
   id: string;
   kind: TaskTab;
@@ -677,6 +820,713 @@ export const importSourceFiles: ImportSourceFile[] = [
     relativePath: '/Audio/roomtone.wav',
     selectedTargets: ['本地NVMe', '影像NAS'],
     status: '待提交',
+  },
+];
+
+export const importTargetEndpoints: ImportTargetEndpointRecord[] = [
+  {
+    id: 'import-target-local',
+    endpointId: 'node-1',
+    label: '本地 NVMe 主盘',
+    type: '本机磁盘',
+    writable: true,
+    availableSpace: '3.4 TB 可用',
+    statusLabel: '可写',
+    tone: 'success',
+  },
+  {
+    id: 'import-target-nas',
+    endpointId: 'node-2',
+    label: '影像 NAS 01',
+    type: 'NAS/SMB',
+    writable: true,
+    availableSpace: '18.9 TB 可用',
+    statusLabel: '可写',
+    tone: 'success',
+  },
+  {
+    id: 'import-target-cloud',
+    endpointId: 'node-4',
+    label: '115 云归档',
+    type: '115网盘',
+    writable: false,
+    availableSpace: '鉴权异常',
+    statusLabel: '需修复鉴权',
+    tone: 'warning',
+  },
+  {
+    id: 'import-target-delivery',
+    endpointId: 'node-2',
+    label: '交付热目录',
+    type: 'NAS/SMB',
+    writable: true,
+    availableSpace: '6.8 TB 可用',
+    statusLabel: '可写',
+    tone: 'info',
+  },
+];
+
+export const importDeviceSessions: ImportDeviceSessionRecord[] = [
+  {
+    id: 'import-device-cfexpress-a',
+    deviceKey: 'cfexpress-a',
+    deviceLabel: 'CFexpress A 卡（A 机位）',
+    deviceType: '存储卡',
+    libraryId: 'photo',
+    mountPath: 'E:\\DCIM',
+    connectedAt: '今天 10:08',
+    connectedAtSortKey: 1008,
+    lastSeenAt: '刚刚',
+    capacitySummary: {
+      total: '960 GB',
+      available: '118 GB',
+      usedPercent: 88,
+    },
+    scanStatus: '已完成',
+    sessionStatus: '可导入',
+    activeDraftId: 'import-draft-cfexpress-a',
+    issueIds: [],
+    fileCount: 428,
+    folderCount: 36,
+    duplicateCount: 18,
+    exceptionCount: 2,
+    description: '现场主机位素材，目录扫描已完成，待确认最终分发目标。',
+    availableTargetEndpointIds: ['import-target-local', 'import-target-nas', 'import-target-cloud'],
+  },
+  {
+    id: 'import-device-t7',
+    deviceKey: 't7-shanghai',
+    deviceLabel: '现场移动硬盘 T7',
+    deviceType: '移动硬盘',
+    libraryId: 'photo',
+    mountPath: 'G:\\ShanghaiLaunch',
+    connectedAt: '今天 09:22',
+    connectedAtSortKey: 922,
+    lastSeenAt: '1 分钟前',
+    capacitySummary: {
+      total: '4 TB',
+      available: '1.2 TB',
+      usedPercent: 70,
+    },
+    scanStatus: '已完成',
+    sessionStatus: '导入中',
+    activeDraftId: 'import-draft-t7',
+    latestReportId: 'import-report-t7-running',
+    issueIds: ['issue-12'],
+    fileCount: 1824,
+    folderCount: 128,
+    duplicateCount: 64,
+    exceptionCount: 1,
+    description: '大批量现场素材导入中，建议转到任务中心持续观察。',
+    availableTargetEndpointIds: ['import-target-local', 'import-target-nas', 'import-target-cloud'],
+  },
+  {
+    id: 'import-device-audio',
+    deviceKey: 'audio-usb',
+    deviceLabel: '录音 U 盘（访谈音频）',
+    deviceType: 'U 盘',
+    libraryId: 'video',
+    mountPath: 'F:\\Audio',
+    connectedAt: '今天 08:34',
+    connectedAtSortKey: 834,
+    lastSeenAt: '2 分钟前',
+    capacitySummary: {
+      total: '256 GB',
+      available: '41 GB',
+      usedPercent: 84,
+    },
+    scanStatus: '已完成',
+    sessionStatus: '异常待处理',
+    activeDraftId: 'import-draft-audio',
+    issueIds: ['issue-6'],
+    fileCount: 94,
+    folderCount: 8,
+    duplicateCount: 4,
+    exceptionCount: 3,
+    description: '音频素材已扫描，但存在目标冲突和校验风险，提交前需要先处理。',
+    availableTargetEndpointIds: ['import-target-local', 'import-target-nas', 'import-target-delivery'],
+  },
+  {
+    id: 'import-device-microsd-b',
+    deviceKey: 'microsd-b',
+    deviceLabel: 'microSD 卡（B 机位）',
+    deviceType: '存储卡',
+    libraryId: 'photo',
+    mountPath: 'H:\\CardB',
+    connectedAt: '今天 07:42',
+    connectedAtSortKey: 742,
+    lastSeenAt: '5 分钟前',
+    capacitySummary: {
+      total: '512 GB',
+      available: '76 GB',
+      usedPercent: 85,
+    },
+    scanStatus: '已完成',
+    sessionStatus: '部分完成',
+    activeDraftId: 'import-draft-microsd-b',
+    latestReportId: 'import-report-microsd-partial',
+    issueIds: ['issue-1'],
+    fileCount: 312,
+    folderCount: 24,
+    duplicateCount: 12,
+    exceptionCount: 5,
+    description: '部分素材已完成入库，仍有失败与冲突待回看。',
+    availableTargetEndpointIds: ['import-target-local', 'import-target-nas'],
+  },
+  {
+    id: 'import-device-reader',
+    deviceKey: 'dual-reader',
+    deviceLabel: '双卡读卡器（新接入）',
+    deviceType: '读卡器',
+    libraryId: 'photo',
+    mountPath: 'I:\\',
+    connectedAt: '今天 11:06',
+    connectedAtSortKey: 1106,
+    lastSeenAt: '刚刚',
+    capacitySummary: {
+      total: '未知',
+      available: '检测中',
+      usedPercent: 0,
+    },
+    scanStatus: '扫描中',
+    sessionStatus: '扫描中',
+    activeDraftId: 'import-draft-reader',
+    issueIds: [],
+    fileCount: 0,
+    folderCount: 0,
+    duplicateCount: 0,
+    exceptionCount: 0,
+    description: '设备已识别，正在建立来源摘要和文件清单。',
+    availableTargetEndpointIds: ['import-target-local', 'import-target-nas'],
+  },
+  {
+    id: 'import-device-cfast-removed',
+    deviceKey: 'cfast-backup',
+    deviceLabel: 'CFast 卡（备机）',
+    deviceType: '存储卡',
+    libraryId: 'photo',
+    mountPath: 'J:\\DCIM',
+    connectedAt: '今天 06:58',
+    connectedAtSortKey: 658,
+    lastSeenAt: '22 分钟前',
+    capacitySummary: {
+      total: '256 GB',
+      available: '已拔出',
+      usedPercent: 0,
+    },
+    scanStatus: '已完成',
+    sessionStatus: '已拔出',
+    activeDraftId: 'import-draft-cfast-removed',
+    latestReportId: 'import-report-cfast-complete',
+    issueIds: [],
+    fileCount: 206,
+    folderCount: 14,
+    duplicateCount: 0,
+    exceptionCount: 0,
+    description: '设备已拔出，但保留最近一次导入结果和草稿快照。',
+    availableTargetEndpointIds: ['import-target-local', 'import-target-nas'],
+  },
+];
+
+export const importDrafts: ImportDraftRecord[] = [
+  {
+    id: 'import-draft-cfexpress-a',
+    deviceSessionId: 'import-device-cfexpress-a',
+    libraryId: 'photo',
+    selectedFileIds: ['import-node-cf-a-1', 'import-node-cf-a-2', 'import-node-cf-a-3', 'import-node-cf-a-4'],
+    targetEndpointIds: ['import-target-local', 'import-target-nas'],
+    targetStrategy: '原片入本地与 NAS，交付代理文件视情况补传云归档',
+    lastEditedAt: '今天 10:12',
+    hasBlockingIssues: false,
+    status: '待提交',
+    precheckSummary: {
+      blockingCount: 0,
+      riskCount: 1,
+      passedCount: 5,
+      updatedAt: '刚刚',
+      checks: {
+        sourceReadable: 'passed',
+        targetWritable: 'passed',
+        capacityReady: 'passed',
+        pathConflict: 'risk',
+        deviceOnline: 'passed',
+        executorReady: 'passed',
+      },
+      items: [
+        { id: 'cf-a-check-1', label: '来源可读', status: 'passed', detail: '设备在线，目录扫描与抽样读取正常。' },
+        { id: 'cf-a-check-2', label: '目标可写', status: 'passed', detail: '本地 NVMe 与影像 NAS 均可写。' },
+        { id: 'cf-a-check-3', label: '目标容量', status: 'passed', detail: '当前目标端容量足够本次导入。' },
+        { id: 'cf-a-check-4', label: '路径冲突', status: 'risk', detail: '发现 2 个同名代理文件，建议提交前确认保留策略。' },
+        { id: 'cf-a-check-5', label: '设备在线', status: 'passed', detail: '最近心跳为刚刚。' },
+        { id: 'cf-a-check-6', label: '执行器可用', status: 'passed', detail: '本地执行器与默认校验器均可用。' },
+      ],
+    },
+  },
+  {
+    id: 'import-draft-t7',
+    deviceSessionId: 'import-device-t7',
+    libraryId: 'photo',
+    selectedFileIds: ['import-node-t7-1', 'import-node-t7-2', 'import-node-t7-3', 'import-node-t7-4'],
+    targetEndpointIds: ['import-target-local', 'import-target-nas', 'import-target-cloud'],
+    targetStrategy: '现场硬盘全量入库，多目标同时分发并保留默认校验。',
+    lastEditedAt: '今天 09:23',
+    hasBlockingIssues: false,
+    status: '导入中',
+    precheckSummary: {
+      blockingCount: 0,
+      riskCount: 0,
+      passedCount: 6,
+      updatedAt: '今天 09:22',
+      checks: {
+        sourceReadable: 'passed',
+        targetWritable: 'passed',
+        capacityReady: 'passed',
+        pathConflict: 'passed',
+        deviceOnline: 'passed',
+        executorReady: 'passed',
+      },
+      items: [
+        { id: 't7-check-1', label: '来源可读', status: 'passed', detail: '现场移动硬盘随机抽样通过。' },
+        { id: 't7-check-2', label: '目标可写', status: 'passed', detail: '本地、NAS 与云归档均已完成写入测试。' },
+        { id: 't7-check-3', label: '目标容量', status: 'passed', detail: '三处目标端容量均满足。' },
+        { id: 't7-check-4', label: '路径冲突', status: 'passed', detail: '未检测到正式冲突。' },
+        { id: 't7-check-5', label: '设备在线', status: 'passed', detail: '设备仍保持在线。' },
+        { id: 't7-check-6', label: '执行器可用', status: 'passed', detail: '已分配原生传输执行器。' },
+      ],
+    },
+  },
+  {
+    id: 'import-draft-audio',
+    deviceSessionId: 'import-device-audio',
+    libraryId: 'video',
+    selectedFileIds: ['import-node-audio-1', 'import-node-audio-2', 'import-node-audio-3'],
+    targetEndpointIds: ['import-target-local', 'import-target-delivery'],
+    targetStrategy: '先入本地 NVMe，再按访谈目录策略同步到交付热目录。',
+    lastEditedAt: '今天 08:41',
+    hasBlockingIssues: true,
+    status: '草稿中',
+    precheckSummary: {
+      blockingCount: 2,
+      riskCount: 1,
+      passedCount: 3,
+      updatedAt: '2 分钟前',
+      checks: {
+        sourceReadable: 'passed',
+        targetWritable: 'passed',
+        capacityReady: 'passed',
+        pathConflict: 'blocking',
+        deviceOnline: 'passed',
+        executorReady: 'risk',
+      },
+      items: [
+        { id: 'audio-check-1', label: '来源可读', status: 'passed', detail: '音频目录读取正常。' },
+        { id: 'audio-check-2', label: '目标可写', status: 'passed', detail: '本地 NVMe 与交付热目录可写。' },
+        { id: 'audio-check-3', label: '目标容量', status: 'passed', detail: '容量满足当前 18.4 GB 导入。' },
+        { id: 'audio-check-4', label: '路径冲突', status: 'blocking', detail: '交付热目录已存在 3 个同名访谈音频文件。' },
+        { id: 'audio-check-5', label: '校验风险', status: 'risk', detail: '录音底噪文件最近一次归档后校验失败，建议强校验。' },
+        { id: 'audio-check-6', label: '执行器可用', status: 'blocking', detail: '目标目录目前被另一个整理任务占用。' },
+      ],
+    },
+  },
+  {
+    id: 'import-draft-microsd-b',
+    deviceSessionId: 'import-device-microsd-b',
+    libraryId: 'photo',
+    selectedFileIds: ['import-node-microsd-1', 'import-node-microsd-2', 'import-node-microsd-3', 'import-node-microsd-4'],
+    targetEndpointIds: ['import-target-local', 'import-target-nas'],
+    targetStrategy: '素材先入本地，NAS 作为正式备份端。',
+    lastEditedAt: '今天 07:50',
+    hasBlockingIssues: false,
+    status: '已提交',
+    precheckSummary: {
+      blockingCount: 0,
+      riskCount: 2,
+      passedCount: 4,
+      updatedAt: '今天 07:44',
+      checks: {
+        sourceReadable: 'passed',
+        targetWritable: 'passed',
+        capacityReady: 'passed',
+        pathConflict: 'risk',
+        deviceOnline: 'passed',
+        executorReady: 'risk',
+      },
+      items: [
+        { id: 'microsd-check-1', label: '来源可读', status: 'passed', detail: '设备读取正常。' },
+        { id: 'microsd-check-2', label: '目标可写', status: 'passed', detail: '本地 NVMe 与 NAS 均可写。' },
+        { id: 'microsd-check-3', label: '目标容量', status: 'passed', detail: '容量满足本次导入。' },
+        { id: 'microsd-check-4', label: '路径冲突', status: 'risk', detail: '存在旧版代理文件，已按跳过策略处理。' },
+        { id: 'microsd-check-5', label: '设备在线', status: 'passed', detail: '设备保持在线。' },
+        { id: 'microsd-check-6', label: '执行器可用', status: 'risk', detail: 'NAS 写入抖动，导致部分文件重试。' },
+      ],
+    },
+  },
+  {
+    id: 'import-draft-reader',
+    deviceSessionId: 'import-device-reader',
+    libraryId: 'photo',
+    selectedFileIds: [],
+    targetEndpointIds: ['import-target-local', 'import-target-nas'],
+    targetStrategy: '等待扫描完成后再选择导入目标。',
+    lastEditedAt: '刚刚',
+    hasBlockingIssues: false,
+    status: '草稿中',
+    precheckSummary: {
+      blockingCount: 0,
+      riskCount: 0,
+      passedCount: 1,
+      updatedAt: '刚刚',
+      checks: {
+        sourceReadable: 'passed',
+        targetWritable: 'passed',
+        capacityReady: 'passed',
+        pathConflict: 'passed',
+        deviceOnline: 'passed',
+        executorReady: 'passed',
+      },
+      items: [
+        { id: 'reader-check-1', label: '等待扫描完成', status: 'passed', detail: '设备已识别，正在生成来源摘要。' },
+      ],
+    },
+  },
+  {
+    id: 'import-draft-cfast-removed',
+    deviceSessionId: 'import-device-cfast-removed',
+    libraryId: 'photo',
+    selectedFileIds: ['import-node-cfast-1', 'import-node-cfast-2'],
+    targetEndpointIds: ['import-target-local', 'import-target-nas'],
+    targetStrategy: '最近一次导入已完成，保留只读草稿快照。',
+    lastEditedAt: '今天 07:06',
+    hasBlockingIssues: false,
+    status: '已提交',
+    precheckSummary: {
+      blockingCount: 0,
+      riskCount: 0,
+      passedCount: 6,
+      updatedAt: '今天 07:02',
+      checks: {
+        sourceReadable: 'passed',
+        targetWritable: 'passed',
+        capacityReady: 'passed',
+        pathConflict: 'passed',
+        deviceOnline: 'passed',
+        executorReady: 'passed',
+      },
+      items: [
+        { id: 'cfast-check-1', label: '预检快照', status: 'passed', detail: '最后一次导入提交前所有检查均通过。' },
+      ],
+    },
+  },
+];
+
+export const importSourceNodes: ImportSourceNodeRecord[] = [
+  {
+    id: 'import-node-cf-a-1',
+    deviceSessionId: 'import-device-cfexpress-a',
+    name: 'A001_C001_0329.mov',
+    relativePath: '/DCIM/CARD_A/CLIPS/A001_C001_0329.mov',
+    fileKind: '视频',
+    size: '16.2 GB',
+    status: '待导入',
+    targetEndpointIds: ['import-target-local', 'import-target-nas'],
+    issueIds: [],
+  },
+  {
+    id: 'import-node-cf-a-2',
+    deviceSessionId: 'import-device-cfexpress-a',
+    name: 'A001_C001_0329_proxy.mp4',
+    relativePath: '/DCIM/CARD_A/PROXY/A001_C001_0329_proxy.mp4',
+    fileKind: '视频',
+    size: '2.1 GB',
+    status: '待导入',
+    targetEndpointIds: ['import-target-local'],
+    issueIds: [],
+    note: '代理文件只需要先落到本地 NVMe。',
+  },
+  {
+    id: 'import-node-cf-a-3',
+    deviceSessionId: 'import-device-cfexpress-a',
+    name: 'RAW_0001.ARW',
+    relativePath: '/PHOTO/DAY1/RAW_0001.ARW',
+    fileKind: '图片',
+    size: '48.2 MB',
+    status: '冲突',
+    targetEndpointIds: ['import-target-local', 'import-target-nas'],
+    issueIds: [],
+    note: '目标目录存在同名代理产物，需要确认是否覆盖。',
+  },
+  {
+    id: 'import-node-cf-a-4',
+    deviceSessionId: 'import-device-cfexpress-a',
+    name: 'Thumbs.db',
+    relativePath: '/PHOTO/DAY1/Thumbs.db',
+    fileKind: '文档',
+    size: '64 KB',
+    status: '已跳过',
+    targetEndpointIds: [],
+    issueIds: [],
+    note: '系统临时文件默认跳过。',
+  },
+  {
+    id: 'import-node-t7-1',
+    deviceSessionId: 'import-device-t7',
+    name: '上海发布会_A-cam_001.RAW',
+    relativePath: '/ShanghaiLaunch/RAW/A-cam/001.RAW',
+    fileKind: '图片',
+    size: '48.2 MB',
+    status: '已完成',
+    targetEndpointIds: ['import-target-local', 'import-target-nas', 'import-target-cloud'],
+    issueIds: [],
+  },
+  {
+    id: 'import-node-t7-2',
+    deviceSessionId: 'import-device-t7',
+    name: '上海发布会_A-cam_002.RAW',
+    relativePath: '/ShanghaiLaunch/RAW/A-cam/002.RAW',
+    fileKind: '图片',
+    size: '48.6 MB',
+    status: '传输中',
+    targetEndpointIds: ['import-target-local', 'import-target-nas', 'import-target-cloud'],
+    issueIds: [],
+  },
+  {
+    id: 'import-node-t7-3',
+    deviceSessionId: 'import-device-t7',
+    name: '上海发布会_BTS.mp4',
+    relativePath: '/ShanghaiLaunch/BTS/上海发布会_BTS.mp4',
+    fileKind: '视频',
+    size: '14.8 GB',
+    status: '校验中',
+    targetEndpointIds: ['import-target-local', 'import-target-nas'],
+    issueIds: [],
+  },
+  {
+    id: 'import-node-t7-4',
+    deviceSessionId: 'import-device-t7',
+    name: '上海发布会_精选封面.jpg',
+    relativePath: '/ShanghaiLaunch/DELIVERY/上海发布会_精选封面.jpg',
+    fileKind: '图片',
+    size: '12.4 MB',
+    status: '已排队',
+    targetEndpointIds: ['import-target-local', 'import-target-cloud'],
+    issueIds: ['issue-12'],
+    note: '云归档需要等待鉴权修复后继续。',
+  },
+  {
+    id: 'import-node-audio-1',
+    deviceSessionId: 'import-device-audio',
+    name: '访谈_环境底噪.wav',
+    relativePath: '/Audio/roomtone.wav',
+    fileKind: '音频',
+    size: '218 MB',
+    status: '冲突',
+    targetEndpointIds: ['import-target-local', 'import-target-delivery'],
+    issueIds: ['issue-6'],
+    note: '交付热目录中已存在同名版本。',
+  },
+  {
+    id: 'import-node-audio-2',
+    deviceSessionId: 'import-device-audio',
+    name: '访谈_A 机位_主录.wav',
+    relativePath: '/Audio/interview-main.wav',
+    fileKind: '音频',
+    size: '3.8 GB',
+    status: '待导入',
+    targetEndpointIds: ['import-target-local', 'import-target-delivery'],
+    issueIds: [],
+  },
+  {
+    id: 'import-node-audio-3',
+    deviceSessionId: 'import-device-audio',
+    name: '访谈_A 机位_备份.wav',
+    relativePath: '/Audio/interview-backup.wav',
+    fileKind: '音频',
+    size: '3.8 GB',
+    status: '失败',
+    targetEndpointIds: ['import-target-local'],
+    issueIds: ['issue-6'],
+    note: '最近一次校验失败，建议重新强校验。',
+  },
+  {
+    id: 'import-node-microsd-1',
+    deviceSessionId: 'import-device-microsd-b',
+    name: 'B002_C003_1201.mov',
+    relativePath: '/DCIM/B_CAM/B002_C003_1201.mov',
+    fileKind: '视频',
+    size: '18.4 GB',
+    status: '已完成',
+    targetEndpointIds: ['import-target-local', 'import-target-nas'],
+    issueIds: [],
+  },
+  {
+    id: 'import-node-microsd-2',
+    deviceSessionId: 'import-device-microsd-b',
+    name: 'B002_C003_1202.mov',
+    relativePath: '/DCIM/B_CAM/B002_C003_1202.mov',
+    fileKind: '视频',
+    size: '17.9 GB',
+    status: '失败',
+    targetEndpointIds: ['import-target-local', 'import-target-nas'],
+    issueIds: ['issue-1'],
+    note: 'NAS 路径冲突导致写入失败。',
+  },
+  {
+    id: 'import-node-microsd-3',
+    deviceSessionId: 'import-device-microsd-b',
+    name: 'B002_C003_1202_proxy.mp4',
+    relativePath: '/DCIM/B_CAM/PROXY/B002_C003_1202_proxy.mp4',
+    fileKind: '视频',
+    size: '2.6 GB',
+    status: '已跳过',
+    targetEndpointIds: [],
+    issueIds: [],
+    note: '代理文件按策略跳过。',
+  },
+  {
+    id: 'import-node-microsd-4',
+    deviceSessionId: 'import-device-microsd-b',
+    name: 'B002_C003_1203.mov',
+    relativePath: '/DCIM/B_CAM/B002_C003_1203.mov',
+    fileKind: '视频',
+    size: '18.1 GB',
+    status: '已完成',
+    targetEndpointIds: ['import-target-local', 'import-target-nas'],
+    issueIds: [],
+  },
+  {
+    id: 'import-node-cfast-1',
+    deviceSessionId: 'import-device-cfast-removed',
+    name: '备机_主素材_001.RAW',
+    relativePath: '/DCIM/BACKUP/001.RAW',
+    fileKind: '图片',
+    size: '47.1 MB',
+    status: '已完成',
+    targetEndpointIds: ['import-target-local', 'import-target-nas'],
+    issueIds: [],
+  },
+  {
+    id: 'import-node-cfast-2',
+    deviceSessionId: 'import-device-cfast-removed',
+    name: '备机_主素材_002.RAW',
+    relativePath: '/DCIM/BACKUP/002.RAW',
+    fileKind: '图片',
+    size: '47.4 MB',
+    status: '已完成',
+    targetEndpointIds: ['import-target-local', 'import-target-nas'],
+    issueIds: [],
+  },
+];
+
+export const importReports: ImportReportSnapshot[] = [
+  {
+    id: 'import-report-t7-running',
+    deviceSessionId: 'import-device-t7',
+    taskId: 'task-import-running-t7',
+    title: '现场移动硬盘 T7 / 正在导入',
+    status: '运行中',
+    submittedAt: '今天 09:23',
+    successCount: 612,
+    failedCount: 1,
+    partialCount: 17,
+    verifySummary: '默认校验进行中，已有 612 个文件完成写账。',
+    targetSummaries: [
+      {
+        endpointId: 'import-target-local',
+        label: '本地 NVMe 主盘',
+        status: '已完成 58%',
+        successCount: 612,
+        failedCount: 0,
+        transferredSize: '812 GB',
+      },
+      {
+        endpointId: 'import-target-nas',
+        label: '影像 NAS 01',
+        status: '已完成 42%',
+        successCount: 448,
+        failedCount: 1,
+        transferredSize: '584 GB',
+      },
+      {
+        endpointId: 'import-target-cloud',
+        label: '115 云归档',
+        status: '等待恢复',
+        successCount: 116,
+        failedCount: 0,
+        transferredSize: '94 GB',
+      },
+    ],
+    issueIds: ['issue-12'],
+    latestUpdatedAt: '今天 11:06',
+    fileCount: 1824,
+    note: '云归档端因鉴权异常暂时停在等待恢复状态。',
+  },
+  {
+    id: 'import-report-microsd-partial',
+    deviceSessionId: 'import-device-microsd-b',
+    taskId: 'task-import-partial-microsd',
+    title: 'microSD 卡（B 机位） / 第 1 次导入',
+    status: '部分成功',
+    submittedAt: '今天 07:44',
+    finishedAt: '今天 08:16',
+    successCount: 286,
+    failedCount: 18,
+    partialCount: 8,
+    verifySummary: '已有 18 个文件待补处理，主要集中在 NAS 路径冲突。',
+    targetSummaries: [
+      {
+        endpointId: 'import-target-local',
+        label: '本地 NVMe 主盘',
+        status: '已完成',
+        successCount: 304,
+        failedCount: 0,
+        transferredSize: '1.4 TB',
+      },
+      {
+        endpointId: 'import-target-nas',
+        label: '影像 NAS 01',
+        status: '部分成功',
+        successCount: 286,
+        failedCount: 18,
+        transferredSize: '1.2 TB',
+      },
+    ],
+    issueIds: ['issue-1'],
+    latestUpdatedAt: '今天 08:16',
+    fileCount: 312,
+  },
+  {
+    id: 'import-report-cfast-complete',
+    deviceSessionId: 'import-device-cfast-removed',
+    taskId: 'task-import-complete-cfast',
+    title: 'CFast 卡（备机） / 最近一次导入',
+    status: '已完成',
+    submittedAt: '今天 07:02',
+    finishedAt: '今天 07:18',
+    successCount: 206,
+    failedCount: 0,
+    partialCount: 0,
+    verifySummary: '默认校验全部通过，可回到文件中心继续整理。',
+    targetSummaries: [
+      {
+        endpointId: 'import-target-local',
+        label: '本地 NVMe 主盘',
+        status: '已完成',
+        successCount: 206,
+        failedCount: 0,
+        transferredSize: '418 GB',
+      },
+      {
+        endpointId: 'import-target-nas',
+        label: '影像 NAS 01',
+        status: '已完成',
+        successCount: 206,
+        failedCount: 0,
+        transferredSize: '418 GB',
+      },
+    ],
+    issueIds: [],
+    latestUpdatedAt: '今天 07:18',
+    fileCount: 206,
   },
 ];
 

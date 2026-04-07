@@ -33,15 +33,16 @@ describe('MARE 客户端', () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole('button', { name: '导入中心' }));
-    await user.selectOptions(screen.getByLabelText('导入批次'), '录音卡 / 访谈音频');
-    await user.click(screen.getByRole('button', { name: '提交导入任务' }));
+    await user.click(screen.getByRole('button', { name: '已插入 5 个设备' }));
+    const deviceRow = (await screen.findByText('CFexpress A 卡（A 机位）')).closest('article');
+    expect(deviceRow).not.toBeNull();
+    await user.click(deviceRow!);
+    await user.click(screen.getByRole('button', { name: '提交导入' }));
+    await user.click(await screen.findByRole('button', { name: '确认提交' }));
 
-    expect(screen.getByText('已提交导入批次，任务已加入队列')).toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: '任务中心' }));
-    await user.click(screen.getByRole('button', { name: '导入' }));
-    expect(screen.getByText('访谈_环境底噪.wav')).toBeInTheDocument();
+    expect(await screen.findByText('已提交导入作业，任务已加入队列')).toBeInTheDocument();
+    expect(await screen.findByText('结果摘要')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '查看导入报告' })).toBeInTheDocument();
   });
 
   it('任务状态筛选默认使用活跃中', async () => {
@@ -627,16 +628,17 @@ describe('MARE 客户端', () => {
     expect(screen.getByText('挂载目录可达且当前配置可继续使用。')).toBeInTheDocument();
   });
 
-  it('页头展示设备接入绿色标签并可跳转到导入中心', async () => {
+  it('页头展示动态导入入口并可跳转到导入中心', async () => {
     const user = userEvent.setup();
     render(<App />);
 
-    const signalButton = screen.getByRole('button', { name: '现场移动硬盘 T7 已插入' });
+    const signalButton = screen.getByRole('button', { name: '已插入 5 个设备' });
     expect(signalButton).toBeInTheDocument();
 
     await user.click(signalButton);
 
-    expect(await screen.findByText('待导入文件')).toBeInTheDocument();
+    expect(await screen.findByRole('tab', { name: '导入中心' })).toBeInTheDocument();
+    expect(await screen.findByText('来源路径')).toBeInTheDocument();
   });
 
   it('打开通知中心会自动消费提醒类通知但保留处置类角标', async () => {

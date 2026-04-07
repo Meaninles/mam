@@ -43,6 +43,25 @@ describe('客户端顶层多标签工作区', () => {
     expect(await screen.findByRole('textbox', { name: '搜索存储项' })).toHaveValue('NAS');
   });
 
+  it('导入中心进入顶层标签后切换页面仍保留当前设备会话状态', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '已插入 5 个设备' }));
+    expect(await screen.findByRole('tab', { name: '导入中心' })).toBeInTheDocument();
+
+    const deviceRow = (await screen.findByText('CFexpress A 卡（A 机位）')).closest('article');
+    expect(deviceRow).not.toBeNull();
+    await user.click(deviceRow!);
+    expect(await screen.findByText('来源路径')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '任务中心' }));
+    await user.click(screen.getByRole('tab', { name: '导入中心' }));
+
+    expect(await screen.findByText('来源路径')).toBeInTheDocument();
+    expect(screen.getByText('E:\\DCIM')).toBeInTheDocument();
+  });
+
   it('支持标签右键关闭其它标签与最近关闭恢复', async () => {
     const user = userEvent.setup();
     render(<App />);

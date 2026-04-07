@@ -2,7 +2,12 @@ import type {
   FileNode,
   HeaderSignal,
   ImportBatch,
+  ImportDeviceSessionRecord,
+  ImportDraftRecord,
+  ImportReportSnapshot,
   ImportSourceFile,
+  ImportSourceNodeRecord,
+  ImportTargetEndpointRecord,
   IssueRecord,
   Library,
   NoticeRecord,
@@ -18,7 +23,12 @@ import {
   fileNodes,
   headerSignals,
   importBatches,
+  importDeviceSessions,
+  importDrafts,
+  importReports,
   importSourceFiles,
+  importSourceNodes,
+  importTargetEndpoints,
   issueRecords,
   libraries,
   noticeRecords,
@@ -31,7 +41,12 @@ export interface PersistedState {
   fileNodes: FileNode[];
   headerSignals: HeaderSignal[];
   importBatches: ImportBatch[];
+  importDeviceSessions: ImportDeviceSessionRecord[];
+  importDrafts: ImportDraftRecord[];
+  importReports: ImportReportSnapshot[];
   importSourceFiles: ImportSourceFile[];
+  importSourceNodes: ImportSourceNodeRecord[];
+  importTargetEndpoints: ImportTargetEndpointRecord[];
   issueRecords: IssueRecord[];
   libraries: Library[];
   noticeRecords: NoticeRecord[];
@@ -41,14 +56,19 @@ export interface PersistedState {
   taskRecords: TaskRecord[];
 }
 
-export const STORAGE_KEY = 'mare-client-state-v3';
+export const STORAGE_KEY = 'mare-client-state-v4';
 
 export function createInitialState(): PersistedState {
   return {
     fileNodes: structuredClone(fileNodes),
     headerSignals: structuredClone(headerSignals),
     importBatches: structuredClone(importBatches),
+    importDeviceSessions: structuredClone(importDeviceSessions),
+    importDrafts: structuredClone(importDrafts),
+    importReports: structuredClone(importReports),
     importSourceFiles: structuredClone(importSourceFiles),
+    importSourceNodes: structuredClone(importSourceNodes),
+    importTargetEndpoints: structuredClone(importTargetEndpoints),
     issueRecords: structuredClone(issueRecords),
     libraries: structuredClone(libraries),
     noticeRecords: structuredClone(noticeRecords),
@@ -62,7 +82,12 @@ export function createInitialState(): PersistedState {
 function createTaskStateSeeds() {
   return {
     importBatches: structuredClone(importBatches),
+    importDeviceSessions: structuredClone(importDeviceSessions),
+    importDrafts: structuredClone(importDrafts),
+    importReports: structuredClone(importReports),
     importSourceFiles: structuredClone(importSourceFiles),
+    importSourceNodes: structuredClone(importSourceNodes),
+    importTargetEndpoints: structuredClone(importTargetEndpoints),
     issueRecords: structuredClone(issueRecords),
     taskItemRecords: structuredClone(taskItemRecords),
     taskRecords: structuredClone(taskRecords),
@@ -82,7 +107,12 @@ export function loadPersistedState(): PersistedState {
       ...parsed,
       headerSignals: structuredClone(parsed.headerSignals ?? headerSignals),
       importBatches: taskSeeds.importBatches,
+      importDeviceSessions: taskSeeds.importDeviceSessions,
+      importDrafts: taskSeeds.importDrafts,
+      importReports: taskSeeds.importReports,
       importSourceFiles: taskSeeds.importSourceFiles,
+      importSourceNodes: taskSeeds.importSourceNodes,
+      importTargetEndpoints: taskSeeds.importTargetEndpoints,
       issueRecords: taskSeeds.issueRecords,
       noticeRecords: structuredClone(parsed.noticeRecords ?? noticeRecords),
       settings: parsed.settings ? cloneSettingsRecord(parsed.settings) : cloneSettingsContent(),

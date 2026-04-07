@@ -1,6 +1,6 @@
 import type { MainView } from '../data';
 
-export type WorkspaceView = Exclude<MainView, 'import-center'>;
+export type WorkspaceView = MainView;
 
 export const DEFAULT_WORKSPACE_VIEW: WorkspaceView = 'file-center';
 
