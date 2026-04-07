@@ -264,8 +264,8 @@ describe('MARE 客户端', () => {
     expect(await screen.findByText('令牌将在 12 小时内过期')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '处置所有异常' }));
 
-    expect(await screen.findByText('当前按任务查看异常：精选交付')).toBeInTheDocument();
-    expect(screen.getAllByText('115 云归档').length).toBeGreaterThan(0);
+    expect(await screen.findByText(/按任务查看异常：精选交付/)).toBeInTheDocument();
+    expect(screen.getByText('115 云归档鉴权即将过期')).toBeInTheDocument();
     expect(screen.queryByText('片头配乐_v4_master.wav')).not.toBeInTheDocument();
   });
 
@@ -336,18 +336,34 @@ describe('MARE 客户端', () => {
     expect(within(failedRow!).queryByRole('button', { name: '继续' })).not.toBeInTheDocument();
   });
 
-  it('支持按建议处理异常并生成修复任务', async () => {
+  it('支持在异常中心执行轻处理动作并更新异常状态', async () => {
     const user = userEvent.setup();
     render(<App />);
 
     await user.click(screen.getByRole('button', { name: '异常中心' }));
-    await user.click(screen.getByRole('button', { name: '按建议处理 客户访谈_第一机位_精编版.mov' }));
+    const issueRow = screen.getByText('115 云归档鉴权即将过期').closest('article') as HTMLElement | null;
+    expect(issueRow).not.toBeNull();
+    await user.click(within(issueRow!).getByRole('button', { name: '标记确认' }));
 
-    expect(screen.getByText('已创建异常处理任务')).toBeInTheDocument();
+    expect(await screen.findByText('已标记 当前异常 为已确认')).toBeInTheDocument();
+    expect(within(issueRow!).getByText('已解决')).toBeInTheDocument();
+  });
 
-    await user.click(screen.getByRole('button', { name: '任务中心' }));
-    await user.click(screen.getByRole('button', { name: '其它任务' }));
-    expect(screen.queryByText('修复：客户访谈_第一机位_精编版.mov')).not.toBeInTheDocument();
+  it('支持从异常中心跳转到具体任务并自动展开对应异常', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '异常中心' }));
+    const issueRow = screen.getByText('片头配乐_v4_master.wav 上传后校验失败').closest('article') as HTMLElement | null;
+    expect(issueRow).not.toBeNull();
+
+    await user.click(within(issueRow!).getByRole('button', { name: '更多' }));
+    await user.click(screen.getByRole('button', { name: '打开任务中心' }));
+
+    expect(await screen.findByRole('button', { name: '任务中心' })).toBeInTheDocument();
+    expect((await screen.findAllByText('片头配乐_v4_master.wav')).length).toBeGreaterThanOrEqual(1);
+    expect(await screen.findByText('当前任务异常')).toBeInTheDocument();
+    expect(screen.getByText('远端校验摘要与本地源文件不一致。')).toBeInTheDocument();
   });
 
   it('支持删除资产并进入等待清理状态', async () => {

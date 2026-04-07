@@ -558,7 +558,14 @@ export function TaskCenterPage(props: {
   fileNodes: FileNode[];
   issues: IssueRecord[];
   libraries: Library[];
-  preselectedTaskIds: string[] | null;
+  preselectedTaskIds:
+    | {
+        taskIds: string[];
+        issueId?: string;
+        taskItemId?: string;
+        openIssuePopover?: boolean;
+      }
+    | null;
   statusFilter: string;
   taskItems: TaskItemRecord[];
   tasks: TaskRecord[];
@@ -655,17 +662,24 @@ export function TaskCenterPage(props: {
   }, [taskItemDetail?.id, taskItems]);
 
   useEffect(() => {
-    if (!preselectedTaskIds || preselectedTaskIds.length === 0) {
+    if (!preselectedTaskIds || preselectedTaskIds.taskIds.length === 0) {
       return;
     }
 
-    const nextTaskIds = Array.from(new Set(preselectedTaskIds));
-    const nextTaskItemIds = taskItems
-      .filter((item) => nextTaskIds.includes(item.taskId))
-      .map((item) => item.id);
+    const nextTaskIds = Array.from(new Set(preselectedTaskIds.taskIds));
+    const nextTaskItemIds =
+      preselectedTaskIds.taskItemId
+        ? [preselectedTaskIds.taskItemId]
+        : taskItems.filter((item) => nextTaskIds.includes(item.taskId)).map((item) => item.id);
 
     setSelectedTaskIds(nextTaskIds);
     setSelectedTaskItemIds(nextTaskItemIds);
+    if (preselectedTaskIds.taskItemId || preselectedTaskIds.issueId) {
+      setExpandedTaskIds((current) => Array.from(new Set([...current, ...nextTaskIds])));
+    }
+    if (preselectedTaskIds.openIssuePopover || preselectedTaskIds.issueId) {
+      setIssuePopoverTaskId(nextTaskIds[0] ?? null);
+    }
     onConsumePreselectedTaskIds();
   }, [onConsumePreselectedTaskIds, preselectedTaskIds, taskItems]);
 

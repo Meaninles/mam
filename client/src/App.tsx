@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import type {
   FileTypeFilter,
+  IssueRecord,
   Library,
   MainView,
   SettingsTab,
@@ -60,7 +61,7 @@ import { WorkspaceTabBar } from './components/WorkspaceTabBar';
 import { FileCenterPage } from './pages/FileCenterPage';
 import { FileDetailSheet } from './pages/FileDetailSheet';
 import { ImportCenterPage } from './pages/ImportCenterPage';
-import { IssuesPage } from './pages/IssuesPage';
+import { IssuesPage, type IssueFocusRequest } from './pages/IssuesPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { StorageNodesPage } from './pages/StorageNodesPage';
 import { TagManagementPage } from './pages/TagManagementPage';
@@ -74,9 +75,14 @@ export type ContextMenuTarget =
   | null;
 
 type FeedbackState = { message: string; tone: Severity } | null;
-type IssueTaskFilterState = { taskId: string; taskTitle: string; issueId?: string } | null;
+type IssueFocusState = IssueFocusRequest;
 type PendingFileCenterJump = { libraryId: string; folderId: string | null; selectedIds: string[] } | null;
-type PendingTaskSelection = string[] | null;
+type PendingTaskFocus = {
+  taskIds: string[];
+  issueId?: string;
+  taskItemId?: string;
+  openIssuePopover?: boolean;
+} | null;
 type FileConfirmAction =
   | { kind: 'sync'; items: FileCenterEntry[]; endpointName: string; totalSelected: number }
   | { kind: 'delete-asset'; items: FileCenterEntry[] }
@@ -481,6 +487,188 @@ function resolveFileCenterJumpForTask(
   };
 }
 
+function resolveFileCenterJumpForIssue(
+  fileNodes: PersistedState['fileNodes'],
+  taskRecords: PersistedState['taskRecords'],
+  taskItems: PersistedState['taskItemRecords'],
+  issue: IssueRecord,
+) {
+  const sourceFileNodeId = issue.source.fileNodeId;
+  if (sourceFileNodeId) {
+    const node = fileNodes.find((item) => item.id === sourceFileNodeId);
+    if (node) {
+      return {
+        folderId: node.parentId,
+        selectedIds: [node.id],
+      };
+    }
+  }
+
+  const taskId = issue.source.taskId ?? issue.taskId;
+  if (taskId) {
+    const task = taskRecords.find((item) => item.id === taskId);
+    if (task) {
+      return resolveFileCenterJumpForTask(fileNodes, task, taskItems);
+    }
+  }
+
+  if (issue.source.path) {
+    const exactNode = fileNodes.find((node) => issue.source.path?.includes(node.path));
+    if (exactNode) {
+      return {
+        folderId: exactNode.parentId,
+        selectedIds: [exactNode.id],
+      };
+    }
+  }
+
+  return {
+    folderId: null,
+    selectedIds: [] as string[],
+  };
+}
+
+function appendIssueHistory(issue: IssueRecord, action: string, operatorLabel: string, result: string): IssueRecord['histories'] {
+  return [
+    ...issue.histories,
+    {
+      id: createId(`${issue.id}-history`),
+      issueId: issue.id,
+      action,
+      operatorLabel,
+      result,
+      createdAt: '刚刚',
+    },
+  ];
+}
+
+function applyIssueAction(issue: IssueRecord, action: 'retry' | 'confirm' | 'postpone' | 'ignore' | 'refresh' | 'archive'): IssueRecord {
+  if (action === 'retry') {
+    return {
+      ...issue,
+      status: '处理中',
+      updatedAt: '刚刚',
+      histories: appendIssueHistory(issue, '重试', '异常中心', '已重新发起处理，等待结果回写。'),
+    };
+  }
+
+  if (action === 'confirm') {
+    return {
+      ...issue,
+      status: '已解决',
+      updatedAt: '刚刚',
+      resolvedAt: '刚刚',
+      histories: appendIssueHistory(issue, '标记已确认', '异常中心', '已确认当前风险，主工作区不再继续提醒。'),
+    };
+  }
+
+  if (action === 'postpone') {
+    return {
+      ...issue,
+      status: '已延后',
+      updatedAt: '刚刚',
+      histories: appendIssueHistory(issue, '延后处理', '异常中心', '已延后到后续治理窗口继续处理。'),
+    };
+  }
+
+  if (action === 'ignore') {
+    return {
+      ...issue,
+      status: '已忽略',
+      updatedAt: '刚刚',
+      histories: appendIssueHistory(issue, '忽略', '异常中心', '已忽略当前异常，但历史记录仍保留。'),
+    };
+  }
+
+  if (action === 'refresh') {
+    return {
+      ...issue,
+      updatedAt: '刚刚',
+      histories: appendIssueHistory(issue, '刷新检测', '异常中心', '已重新拉取当前异常状态。'),
+    };
+  }
+
+  return {
+    ...issue,
+    status: '已归档',
+    updatedAt: '刚刚',
+    archivedAt: '刚刚',
+    histories: appendIssueHistory(issue, '归档', '异常中心', '已从主工作区归档，可在历史中回查。'),
+  };
+}
+
+function applyIssueActionToState(
+  current: PersistedState,
+  issueIds: string[],
+  action: 'retry' | 'confirm' | 'postpone' | 'ignore' | 'refresh' | 'archive',
+) {
+  const targetIds = new Set(issueIds);
+  const targetIssues = current.issueRecords.filter((issue) => targetIds.has(issue.id));
+  const relatedTaskIds = new Set(
+    targetIssues
+      .map((issue) => issue.source.taskId ?? issue.taskId)
+      .filter((value): value is string => Boolean(value)),
+  );
+  const relatedTaskItemIds = new Set(
+    targetIssues
+      .map((issue) => issue.source.taskItemId ?? issue.taskItemId)
+      .filter((value): value is string => Boolean(value)),
+  );
+
+  return {
+    ...current,
+    issueRecords: current.issueRecords.map((issue) => (targetIds.has(issue.id) ? applyIssueAction(issue, action) : issue)),
+    taskRecords:
+      action === 'retry' || action === 'refresh'
+        ? current.taskRecords.map((task) =>
+            relatedTaskIds.has(task.id)
+              ? {
+                  ...task,
+                  status: '运行中',
+                  statusTone: resolveTaskStatusTone('运行中'),
+                  updatedAt: '刚刚',
+                  eta: task.status === '已暂停' ? '继续处理中' : task.eta,
+                }
+              : task,
+          )
+        : current.taskRecords,
+    taskItemRecords:
+      action === 'retry' || action === 'refresh'
+        ? current.taskItemRecords.map((item) =>
+            relatedTaskItemIds.has(item.id)
+              ? {
+                  ...item,
+                  status: '运行中',
+                  phase: '运行中',
+                  statusTone: resolveTaskItemStatusTone('运行中'),
+                }
+              : item,
+          )
+        : current.taskItemRecords,
+  };
+}
+
+function resolveIssueActionFeedback(action: 'retry' | 'confirm' | 'postpone' | 'ignore' | 'refresh' | 'archive', count: number): FeedbackState {
+  const quantity = count > 1 ? `${count} 条异常` : '当前异常';
+
+  if (action === 'retry') {
+    return { message: `已重新发起 ${quantity} 的处理流程`, tone: 'warning' };
+  }
+  if (action === 'confirm') {
+    return { message: `已标记 ${quantity} 为已确认`, tone: 'success' };
+  }
+  if (action === 'postpone') {
+    return { message: `已延后 ${quantity}`, tone: 'info' };
+  }
+  if (action === 'ignore') {
+    return { message: `已忽略 ${quantity}`, tone: 'info' };
+  }
+  if (action === 'refresh') {
+    return { message: `已刷新 ${quantity} 的检测状态`, tone: 'info' };
+  }
+  return { message: `已归档 ${quantity}`, tone: 'success' };
+}
+
 export default function App() {
   const [persisted, setPersisted] = useState<PersistedState>(loadPersistedState);
   const [openWorkspaceViews, setOpenWorkspaceViews] = useState<WorkspaceView[]>([DEFAULT_WORKSPACE_VIEW]);
@@ -495,8 +683,7 @@ export default function App() {
   const [fileStatusFilter, setFileStatusFilter] = useState<FileCenterStatusFilter>('全部');
   const [partialSyncEndpointNames, setPartialSyncEndpointNames] = useState<string[]>([]);
   const [taskStatusFilter, setTaskStatusFilter] = useState('活跃中');
-  const [issueTypeFilter, setIssueTypeFilter] = useState('全部');
-  const [issueTaskFilter, setIssueTaskFilter] = useState<IssueTaskFilterState>(null);
+  const [issueFocusRequest, setIssueFocusRequest] = useState<IssueFocusState>(null);
   const [searchText, setSearchText] = useState('');
   const [fileSort, setFileSort] = useState<FileCenterSortValue>('修改时间');
   const [fileSortDirection, setFileSortDirection] = useState<FileCenterSortDirection>('desc');
@@ -533,7 +720,7 @@ export default function App() {
   const [selectedFileEntries, setSelectedFileEntries] = useState<FileCenterEntry[]>([]);
   const [folderDraft, setFolderDraft] = useState<string | null>(null);
   const [pendingFileCenterJump, setPendingFileCenterJump] = useState<PendingFileCenterJump>(null);
-  const [pendingTaskSelection, setPendingTaskSelection] = useState<PendingTaskSelection>(null);
+  const [pendingTaskSelection, setPendingTaskSelection] = useState<PendingTaskFocus>(null);
   const [workspaceRefreshTokens, setWorkspaceRefreshTokens] = useState<Record<WorkspaceView, number>>({
     'file-center': 0,
     'task-center': 0,
@@ -824,17 +1011,6 @@ export default function App() {
     () => persisted.importSourceFiles.filter((file) => file.batchId === selectedBatch?.id),
     [persisted.importSourceFiles, selectedBatch],
   );
-  const visibleIssues = useMemo(
-    () =>
-      persisted.issueRecords.filter(
-        (item) =>
-          (issueTypeFilter === '全部' || item.type === issueTypeFilter) &&
-          item.status !== '已处理' &&
-          (!issueTaskFilter?.taskId || item.taskId === issueTaskFilter.taskId) &&
-          (!issueTaskFilter?.issueId || item.id === issueTaskFilter.issueId),
-      ),
-    [issueTaskFilter?.issueId, issueTaskFilter?.taskId, issueTypeFilter, persisted.issueRecords],
-  );
   const commitState = (updater: (current: PersistedState) => PersistedState, nextFeedback?: FeedbackState) => {
     setPersisted((current) => {
       const updated = updater(current);
@@ -850,6 +1026,78 @@ export default function App() {
       return { ...updated, notifications: [notice, ...updated.notifications].slice(0, 20) };
     });
     if (nextFeedback) setFeedback(nextFeedback);
+  };
+
+  const openIssueCenterForIssue = (issue: IssueRecord) => {
+    setIssueFocusRequest({
+      issueId: issue.id,
+      taskId: issue.source.taskId ?? issue.taskId,
+      sourceDomain: issue.sourceDomain,
+      libraryId: issue.libraryId,
+      endpointId: issue.source.endpointId,
+      fileNodeId: issue.source.fileNodeId,
+      path: issue.source.path,
+      label:
+        issue.source.taskTitle
+          ? `按任务查看异常：${issue.source.taskTitle}`
+          : issue.source.endpointLabel
+            ? `按来源查看异常：${issue.source.endpointLabel}`
+            : `定位异常：${issue.title}`,
+    });
+    activateWorkspace('issues');
+  };
+
+  const openIssueCenterForTask = (task: TaskRecord) => {
+    setIssueFocusRequest({
+      taskId: task.id,
+      sourceDomain: task.kind === 'transfer' ? '传输任务' : '其他任务',
+      libraryId: task.libraryId,
+      label: `按任务查看异常：${task.title}`,
+    });
+    activateWorkspace('issues');
+  };
+
+  const openTaskCenterForIssue = (issue: IssueRecord) => {
+    const taskId = issue.source.taskId ?? issue.taskId;
+    if (taskId) {
+      const task = persisted.taskRecords.find((item) => item.id === taskId);
+      if (task) {
+        setTaskTab(task.kind);
+        setPendingTaskSelection({
+          taskIds: [task.id],
+          issueId: issue.id,
+          taskItemId: issue.source.taskItemId ?? issue.taskItemId,
+          openIssuePopover: true,
+        });
+        setTaskStatusFilter('全部');
+      }
+    }
+    activateWorkspace('task-center');
+  };
+
+  const openFileCenterForIssue = (issue: IssueRecord) => {
+    const jumpTarget = resolveFileCenterJumpForIssue(
+      persisted.fileNodes,
+      persisted.taskRecords,
+      persisted.taskItemRecords,
+      issue,
+    );
+
+    setActiveLibraryId(issue.libraryId);
+    setCurrentFolderId(jumpTarget.folderId);
+    setFolderHistory([jumpTarget.folderId]);
+    setHistoryIndex(0);
+    setSelectedFileIds(jumpTarget.selectedIds);
+    setPendingFileCenterJump({
+      libraryId: issue.libraryId,
+      folderId: jumpTarget.folderId,
+      selectedIds: jumpTarget.selectedIds,
+    });
+    activateWorkspace('file-center');
+  };
+
+  const openStorageNodesForIssue = () => {
+    activateWorkspace('storage-nodes');
   };
 
   const rememberClosedWorkspaces = (views: WorkspaceView[]) => {
@@ -1515,7 +1763,7 @@ export default function App() {
               onClick={() =>
                 startTransition(() => {
                   if (item.id === 'issues') {
-                    setIssueTaskFilter(null);
+                    setIssueFocusRequest(null);
                   }
                   activateWorkspace(item.id);
                 })
@@ -1832,12 +2080,10 @@ export default function App() {
               })
             }
             onOpenIssueCenterForIssue={(issue) => {
-              setIssueTaskFilter(issue.taskId ? { taskId: issue.taskId, taskTitle: persisted.taskRecords.find((task) => task.id === issue.taskId)?.title ?? issue.asset, issueId: issue.id } : { taskId: '', taskTitle: issue.asset, issueId: issue.id });
-              activateWorkspace('issues');
+              openIssueCenterForIssue(issue);
             }}
             onOpenIssueCenterForTask={(task) => {
-              setIssueTaskFilter({ taskId: task.id, taskTitle: task.title });
-              activateWorkspace('issues');
+              openIssueCenterForTask(task);
             }}
             onOpenTaskDetail={setTaskDetail}
             preselectedTaskIds={pendingTaskSelection}
@@ -1853,56 +2099,26 @@ export default function App() {
           createPortal(
             <IssuesPage
               key={`issues-${workspaceRefreshTokens.issues}`}
-            issueTypeFilter={issueTypeFilter}
-            items={visibleIssues}
-            taskFilterLabel={issueTaskFilter?.taskTitle ?? null}
-            onClearTaskFilter={() => setIssueTaskFilter(null)}
-            onIgnoreIssue={(id) =>
-              commitState(
-                (current) => ({
-                  ...current,
-                  issueRecords: current.issueRecords.map((item) =>
-                    item.id === id ? { ...item, status: '已忽略' } : item,
-                  ),
-                }),
-                { message: '异常已忽略', tone: 'info' },
-              )
-            }
-            onResolveIssue={(id) => {
-              const issue = persisted.issueRecords.find((item) => item.id === id);
-              if (!issue) return;
-              const taskId = createId('task');
-              commitState(
-                (current) => ({
-                  ...current,
-                  issueRecords: current.issueRecords.map((item) =>
-                    item.id === id ? { ...item, status: '处理中' } : item,
-                  ),
-                  taskRecords: [
-                    {
-                      id: taskId,
-                      kind: 'other',
-                      title: `修复：${issue.asset}`,
-                      type: 'REPAIR',
-                      status: '等待确认',
-                      statusTone: 'info',
-                      libraryId: issue.libraryId,
-                      source: '异常中心',
-                      target: issue.action,
-                      progress: 0,
-                      speed: '—',
-                      eta: '待人工确认',
-                      fileCount: 1,
-                      multiFile: false,
-                      updatedAt: '刚刚',
-                    },
-                    ...current.taskRecords,
-                  ],
-                }),
-                { message: '已创建异常处理任务', tone: 'success' },
-              );
-            }}
-            setIssueTypeFilter={setIssueTypeFilter}
+              issues={persisted.issueRecords}
+              libraries={persisted.libraries}
+              focusRequest={issueFocusRequest}
+              onClearFocusRequest={() => setIssueFocusRequest(null)}
+              onConsumeFocusRequest={() => setIssueFocusRequest(null)}
+              onIssueAction={(ids, action) =>
+                commitState((current) => applyIssueActionToState(current, ids, action), resolveIssueActionFeedback(action, ids.length))
+              }
+              onClearHistory={(ids) =>
+                commitState(
+                  (current) => ({
+                    ...current,
+                    issueRecords: current.issueRecords.filter((issue) => !ids.includes(issue.id)),
+                  }),
+                  { message: `已清理 ${ids.length} 条历史异常`, tone: 'success' },
+                )
+              }
+              onOpenTaskCenter={openTaskCenterForIssue}
+              onOpenFileCenter={openFileCenterForIssue}
+              onOpenStorageNodes={openStorageNodesForIssue}
             />,
             getWorkspaceContainer('issues'),
           )
@@ -1914,8 +2130,12 @@ export default function App() {
               key={`storage-nodes-${workspaceRefreshTokens['storage-nodes']}`}
             libraries={persisted.libraries}
             onFeedback={setFeedback}
-            onOpenIssueCenter={() => {
-              setIssueTaskFilter(null);
+            onOpenIssueCenter={(context) => {
+              setIssueFocusRequest({
+                sourceDomain: '存储节点',
+                path: context.path,
+                label: `按存储节点查看异常：${context.label}`,
+              });
               activateWorkspace('issues');
             }}
             onOpenTaskCenter={() => activateWorkspace('task-center')}
@@ -2047,9 +2267,7 @@ export default function App() {
           }}
           onOpenIssueCenterForTask={(task) => {
             setTaskDetail(null);
-            // TODO: 后续异常中心实现时，在这里补上按异常记录自动勾选/高亮的导航参数。
-            setIssueTaskFilter({ taskId: task.id, taskTitle: task.title });
-            activateWorkspace('issues');
+            openIssueCenterForTask(task);
           }}
           onOpenStorageNodesForTask={() => {
             setTaskDetail(null);
@@ -2109,7 +2327,7 @@ export default function App() {
             }
             setPendingAction(null);
             setTaskTab('transfer');
-            setPendingTaskSelection(pendingAction.blockingTaskIds);
+            setPendingTaskSelection({ taskIds: pendingAction.blockingTaskIds });
             activateWorkspace('task-center');
           }}
         />

@@ -122,7 +122,7 @@ export function StorageNodesPage({
 }: {
   libraries: Library[];
   onFeedback?: (value: FeedbackState) => void;
-  onOpenIssueCenter?: (id: string) => void;
+  onOpenIssueCenter?: (context: { id: string; label: string; path?: string }) => void;
   onOpenTaskCenter?: (id: string) => void;
 }) {
   const [loading, setLoading] = useState(true);
@@ -933,7 +933,7 @@ function MountFoldersTable({
   onEdit: (item: MountFolderRecord) => void;
   onMenuChange: (value: { type: 'mount' | 'nas' | 'cloud'; id: string } | null) => void;
   onOpenHistory: (item: MountFolderRecord) => void;
-  onOpenIssueCenter?: (id: string) => void;
+  onOpenIssueCenter?: (context: { id: string; label: string; path?: string }) => void;
   onOpenTaskCenter?: (id: string) => void;
   onRunConnectionTest: (id: string) => void;
   onRunScan: (id: string) => void;
@@ -1049,7 +1049,10 @@ function MountFoldersTable({
                         <button type="button" onClick={() => onOpenTaskCenter?.(item.id)}>
                           查看相关任务
                         </button>
-                        <button type="button" onClick={() => onOpenIssueCenter?.(item.id)}>
+                        <button
+                          type="button"
+                          onClick={() => onOpenIssueCenter?.({ id: item.id, label: item.name, path: item.address })}
+                        >
                           查看相关异常
                         </button>
                         <button className="danger-text" type="button" onClick={() => void onDelete(item.id)}>
