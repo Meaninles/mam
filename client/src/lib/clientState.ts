@@ -1,12 +1,13 @@
 import type {
   FileNode,
+  HeaderSignal,
   ImportBatch,
   ImportSourceFile,
   IssueRecord,
   Library,
+  NoticeRecord,
   SettingSection,
   SettingsTab,
-  Severity,
   StorageNode,
   TaskItemRecord,
   TaskRecord,
@@ -15,56 +16,42 @@ import type {
 import {
   cloneSettingsContent,
   fileNodes,
+  headerSignals,
   importBatches,
   importSourceFiles,
   issueRecords,
   libraries,
+  noticeRecords,
   storageNodes,
   taskItemRecords,
   taskRecords,
 } from '../data';
 
-export interface NotificationItem {
-  id: string;
-  title: string;
-  detail: string;
-  tone: Severity;
-  createdAt: string;
-  read?: boolean;
-}
-
 export interface PersistedState {
   fileNodes: FileNode[];
+  headerSignals: HeaderSignal[];
   importBatches: ImportBatch[];
   importSourceFiles: ImportSourceFile[];
   issueRecords: IssueRecord[];
   libraries: Library[];
-  notifications: NotificationItem[];
+  noticeRecords: NoticeRecord[];
   settings: Record<SettingsTab, SettingSection[]>;
   storageNodes: StorageNode[];
   taskItemRecords: TaskItemRecord[];
   taskRecords: TaskRecord[];
 }
 
-export const STORAGE_KEY = 'mare-client-state-v2';
+export const STORAGE_KEY = 'mare-client-state-v3';
 
 export function createInitialState(): PersistedState {
   return {
     fileNodes: structuredClone(fileNodes),
+    headerSignals: structuredClone(headerSignals),
     importBatches: structuredClone(importBatches),
     importSourceFiles: structuredClone(importSourceFiles),
     issueRecords: structuredClone(issueRecords),
     libraries: structuredClone(libraries),
-    notifications: [
-      {
-        id: 'notice-removable-1',
-        title: '检测到移动硬盘 SanDisk Extreme 2TB',
-        detail: '可加入为存储节点，也可先标记已读，后续在存储节点页继续处理。',
-        tone: 'info',
-        createdAt: '刚刚',
-        read: false,
-      },
-    ],
+    noticeRecords: structuredClone(noticeRecords),
     settings: cloneSettingsContent(),
     storageNodes: structuredClone(storageNodes),
     taskItemRecords: structuredClone(taskItemRecords),
@@ -93,10 +80,11 @@ export function loadPersistedState(): PersistedState {
     const taskSeeds = createTaskStateSeeds();
     return {
       ...parsed,
+      headerSignals: structuredClone(parsed.headerSignals ?? headerSignals),
       importBatches: taskSeeds.importBatches,
       importSourceFiles: taskSeeds.importSourceFiles,
       issueRecords: taskSeeds.issueRecords,
-      notifications: (parsed.notifications ?? []).map((item) => ({ ...item, read: item.read ?? true })),
+      noticeRecords: structuredClone(parsed.noticeRecords ?? noticeRecords),
       settings: parsed.settings ? cloneSettingsRecord(parsed.settings) : cloneSettingsContent(),
       taskItemRecords: taskSeeds.taskItemRecords,
       taskRecords: taskSeeds.taskRecords,

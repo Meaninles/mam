@@ -19,6 +19,9 @@ model_reasoning_effort = "high"
 model_verbosity = "high"
 network_access = true
 
+model_context_window = 850000
+model_auto_compact_token_limit = 750000
+
 [model_providers.custom]
 name = "custom"
 base_url = "http://192.168.110.17:8081/v1"

@@ -502,6 +502,51 @@ button {
   position: relative;
 }
 
+.header-signal-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 220px;
+  height: 38px;
+  padding: 0 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(62, 207, 142, 0.34);
+  background: rgba(62, 207, 142, 0.12);
+  color: var(--success);
+}
+
+.header-signal-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 0 4px rgba(62, 207, 142, 0.12);
+}
+
+.header-signal-text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.notification-badge {
+  position: absolute;
+  top: -3px;
+  right: -4px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--critical);
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  box-shadow: 0 0 0 2px var(--bg-card-strong);
+}
+
 .notification-dot {
   position: absolute;
   top: 2px;
@@ -1059,6 +1104,14 @@ button {
   .list-row {
     grid-template-columns: 1fr;
   }
+
+  .notification-center-toolbar-row {
+    grid-template-columns: 1fr;
+  }
+
+  .notification-filter-pill {
+    width: 100%;
+  }
 }
 
 @media (max-width: 720px) {
@@ -1068,7 +1121,26 @@ button {
 
   .page-header-actions {
     width: 100%;
+    flex-wrap: wrap;
     justify-content: flex-end;
+  }
+
+  .header-signal-chip {
+    max-width: 100%;
+  }
+
+  .notification-search-field {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .notification-center-footer {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .notification-center-footer .notification-time {
+    width: 100%;
   }
 }
 
@@ -1297,6 +1369,138 @@ button {
   flex-direction: column;
   align-items: flex-end;
   gap: 8px;
+}
+
+.notification-center-toolbar {
+  gap: 12px;
+}
+
+.notification-center-toolbar-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 116px;
+  gap: 12px;
+  align-items: center;
+}
+
+.notification-search-field {
+  min-width: 0;
+}
+
+.notification-filter-pill .select-pill {
+  min-width: 0;
+  width: 100%;
+  justify-content: center;
+}
+
+.notification-filter-pill .select-pill select {
+  text-align: center;
+  text-align-last: center;
+}
+
+.notification-center-list {
+  gap: 12px;
+}
+
+.notification-center-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-control);
+}
+
+.notification-center-card.unread {
+  border-color: rgba(243, 198, 81, 0.38);
+  box-shadow: inset 0 0 0 1px rgba(243, 198, 81, 0.18);
+}
+
+.notification-center-card-main {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.notification-center-title {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  line-height: 1.35;
+}
+
+.notification-time {
+  color: var(--text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.notification-center-summary {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.notification-center-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+}
+
+.notification-center-object,
+.notification-center-route {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notification-center-row-actions {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.notification-center-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.notification-center-menu-anchor {
+  position: relative;
+}
+
+.notification-center-menu {
+  position: absolute;
+  top: 50%;
+  right: calc(100% + 8px);
+  left: auto;
+  transform: translateY(-50%);
+  min-width: 168px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .empty-state {

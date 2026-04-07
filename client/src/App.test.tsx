@@ -627,20 +627,63 @@ describe('MARE 客户端', () => {
     expect(screen.getByText('挂载目录可达且当前配置可继续使用。')).toBeInTheDocument();
   });
 
-  it('支持通知标记已读并清除红点', async () => {
+  it('页头展示设备接入绿色标签并可跳转到导入中心', async () => {
     const user = userEvent.setup();
     render(<App />);
 
-    expect(document.querySelector('.notification-dot')).toBeTruthy();
+    const signalButton = screen.getByRole('button', { name: '现场移动硬盘 T7 已插入' });
+    expect(signalButton).toBeInTheDocument();
+
+    await user.click(signalButton);
+
+    expect(await screen.findByText('待导入文件')).toBeInTheDocument();
+  });
+
+  it('打开通知中心会自动消费提醒类通知但保留处置类角标', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(screen.getByLabelText('未消费通知 8 条')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: '通知' }));
-    expect(await screen.findByText('检测到移动硬盘 SanDisk Extreme 2TB')).toBeInTheDocument();
 
+    const reminderRow = (await screen.findByText('115 云归档鉴权即将过期')).closest('article');
+    const actionRow = screen.getByText('影像 NAS 01 共享目录写入权限异常').closest('article');
+
+    expect(reminderRow).not.toBeNull();
+    expect(actionRow).not.toBeNull();
+
+    await waitFor(() => expect(screen.getByLabelText('未消费通知 5 条')).toBeInTheDocument());
+
+    expect(within(reminderRow!).getByText('提醒类')).toBeInTheDocument();
+    expect(within(reminderRow!).getByText('已读')).toBeInTheDocument();
+    expect(within(actionRow!).getByText('处置类')).toBeInTheDocument();
+    expect(within(actionRow!).getByText('未消费')).toBeInTheDocument();
+  });
+
+  it('处置类通知支持手动已读和点击跳转后消角标', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '通知' }));
+    await waitFor(() => expect(screen.getByLabelText('未消费通知 5 条')).toBeInTheDocument());
+
+    const conflictRow = (await screen.findByText('客户访谈_第一机位_精编版.mov 路径冲突')).closest('article');
+    expect(conflictRow).not.toBeNull();
+
+    await user.click(within(conflictRow!).getByRole('button', { name: '更多操作 客户访谈_第一机位_精编版.mov 路径冲突' }));
     await user.click(screen.getByRole('button', { name: '标记已读' }));
+    await waitFor(() => expect(screen.getByLabelText('未消费通知 4 条')).toBeInTheDocument());
+    expect(within(conflictRow!).getByText('已读')).toBeInTheDocument();
 
-    expect(screen.getByText('已读')).toBeInTheDocument();
-    expect(screen.getByText('检测到移动硬盘 SanDisk Extreme 2TB')).toBeInTheDocument();
-    expect(document.querySelector('.notification-dot')).toBeFalsy();
+    const storageRow = screen.getByText('影像 NAS 01 共享目录写入权限异常').closest('article');
+    expect(storageRow).not.toBeNull();
+
+    await user.click(within(storageRow!).getByRole('button', { name: '去处理 影像 NAS 01 共享目录写入权限异常' }));
+
+    expect(await screen.findByRole('button', { name: '异常中心' })).toBeInTheDocument();
+    expect(await screen.findByText('影像 NAS 01 共享目录写入权限异常')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText('未消费通知 3 条')).toBeInTheDocument());
   });
 
   it('支持在设置中进入标签管理并让新标签出现在文件中心标签选择器中', async () => {
