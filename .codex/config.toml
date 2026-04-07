@@ -13,6 +13,18 @@
 # Leave `model` and `model_provider` unset so Codex CLI uses its current
 # built-in defaults. Uncomment and pin them only if you intentionally want
 # repo-local or global model overrides.
+model_provider = "custom"
+model = "gpt-5.4"
+model_reasoning_effort = "high"
+model_verbosity = "high"
+network_access = true
+
+[model_providers.custom]
+name = "custom"
+base_url = "http://192.168.110.17:8081/v1"
+# env_key = "sk-7eKHDoTXHmRhVlKZ9"  # 保持我们专属的 Key 变量名，防止冲突
+wire_api = "chat"             # CPA 走标准 chat 协议最稳妥
+requires_openai_auth = true
 
 # Top-level runtime settings (current Codex schema)
 approval_policy = "on-request"

@@ -1,4 +1,5 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   AlertTriangle,
   Bell,
@@ -34,6 +35,15 @@ import {
   type PersistedState,
 } from './lib/clientState';
 import {
+  closeWorkspaceTab,
+  DEFAULT_WORKSPACE_VIEW,
+  insertWorkspaceTab,
+  moveWorkspaceTab,
+  reopenLastClosedWorkspace,
+  reorderWorkspaceTab,
+  type WorkspaceView,
+} from './lib/workspaceTabs';
+import {
   canSyncFileCenterEndpoint,
   canDeleteFileCenterEndpoint,
   fileCenterApi,
@@ -46,6 +56,7 @@ import {
   type FileCenterTagSuggestion,
 } from './lib/fileCenterApi';
 import { ActionButton, IconButton, LibraryManagerSheet, Sheet } from './components/Shared';
+import { WorkspaceTabBar } from './components/WorkspaceTabBar';
 import { FileCenterPage } from './pages/FileCenterPage';
 import { FileDetailSheet } from './pages/FileDetailSheet';
 import { ImportCenterPage } from './pages/ImportCenterPage';
@@ -472,7 +483,11 @@ function resolveFileCenterJumpForTask(
 
 export default function App() {
   const [persisted, setPersisted] = useState<PersistedState>(loadPersistedState);
-  const [activeView, setActiveView] = useState<MainView>('file-center');
+  const [openWorkspaceViews, setOpenWorkspaceViews] = useState<WorkspaceView[]>([DEFAULT_WORKSPACE_VIEW]);
+  const [mountedWorkspaceViews, setMountedWorkspaceViews] = useState<WorkspaceView[]>([DEFAULT_WORKSPACE_VIEW]);
+  const [activeWorkspaceView, setActiveWorkspaceView] = useState<WorkspaceView>(DEFAULT_WORKSPACE_VIEW);
+  const [recentlyClosedWorkspaceViews, setRecentlyClosedWorkspaceViews] = useState<WorkspaceView[]>([]);
+  const [auxView, setAuxView] = useState<'import-center' | null>(null);
   const [activeLibraryId, setActiveLibraryId] = useState(persisted.libraries[0]?.id ?? 'photo');
   const [taskTab, setTaskTab] = useState<TaskTab>('transfer');
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('general');
@@ -519,10 +534,33 @@ export default function App() {
   const [folderDraft, setFolderDraft] = useState<string | null>(null);
   const [pendingFileCenterJump, setPendingFileCenterJump] = useState<PendingFileCenterJump>(null);
   const [pendingTaskSelection, setPendingTaskSelection] = useState<PendingTaskSelection>(null);
+  const [workspaceRefreshTokens, setWorkspaceRefreshTokens] = useState<Record<WorkspaceView, number>>({
+    'file-center': 0,
+    'task-center': 0,
+    issues: 0,
+    'storage-nodes': 0,
+    settings: 0,
+  });
   const pendingTaskSizeCalcIdsRef = useRef<Set<string>>(new Set());
+  const workspaceStageRef = useRef<HTMLDivElement | null>(null);
+  const workspaceContainersRef = useRef<Partial<Record<WorkspaceView, HTMLDivElement>>>({});
+  const activeView: MainView = auxView ?? activeWorkspaceView;
   const unreadNotificationCount = useMemo(
     () => persisted.notifications.filter((item) => item.read === false).length,
     [persisted.notifications],
+  );
+  const workspaceLabels = useMemo(
+    () =>
+      Object.fromEntries(
+        navigationItems.map((item) => [
+          item.id,
+          {
+            title: item.label,
+            icon: navIcons[item.id],
+          },
+        ]),
+      ) as Record<WorkspaceView, { icon: React.ReactNode; title: string }>,
+    [],
   );
 
   useEffect(() => {
@@ -813,6 +851,140 @@ export default function App() {
     });
     if (nextFeedback) setFeedback(nextFeedback);
   };
+
+  const rememberClosedWorkspaces = (views: WorkspaceView[]) => {
+    if (views.length === 0) {
+      return;
+    }
+
+    setRecentlyClosedWorkspaceViews((current) => {
+      const next = [...views, ...current.filter((view) => !views.includes(view))];
+      return next.slice(0, 8);
+    });
+  };
+
+  const ensureWorkspaceMounted = (view: WorkspaceView) => {
+    setMountedWorkspaceViews((current) => (current.includes(view) ? current : [...current, view]));
+  };
+
+  const activateWorkspace = (view: WorkspaceView) => {
+    ensureWorkspaceMounted(view);
+    setOpenWorkspaceViews((current) =>
+      current.includes(view) ? current : insertWorkspaceTab(current, activeWorkspaceView, view),
+    );
+    setRecentlyClosedWorkspaceViews((current) => current.filter((item) => item !== view));
+    setActiveWorkspaceView(view);
+    setAuxView(null);
+  };
+
+  const closeWorkspace = (view: WorkspaceView) => {
+    if (openWorkspaceViews.length === 1 && openWorkspaceViews[0] === DEFAULT_WORKSPACE_VIEW && view === DEFAULT_WORKSPACE_VIEW) {
+      setAuxView(null);
+      setActiveWorkspaceView(DEFAULT_WORKSPACE_VIEW);
+      return;
+    }
+
+    const result = closeWorkspaceTab(openWorkspaceViews, activeWorkspaceView, view);
+    const nextOrder = result.nextOrder.length > 0 ? result.nextOrder : [DEFAULT_WORKSPACE_VIEW];
+    const nextActive = result.nextActive ?? DEFAULT_WORKSPACE_VIEW;
+
+    setOpenWorkspaceViews(nextOrder);
+    ensureWorkspaceMounted(nextActive);
+    rememberClosedWorkspaces([view]);
+    setActiveWorkspaceView(nextActive);
+  };
+
+  const closeOtherWorkspaces = (view: WorkspaceView) => {
+    const closingViews = openWorkspaceViews.filter((item) => item !== view);
+    if (closingViews.length === 0) {
+      return;
+    }
+
+    setOpenWorkspaceViews([view]);
+    rememberClosedWorkspaces([...closingViews].reverse());
+    setActiveWorkspaceView(view);
+  };
+
+  const closeWorkspaceSide = (view: WorkspaceView, direction: 'left' | 'right') => {
+    const currentIndex = openWorkspaceViews.indexOf(view);
+    if (currentIndex === -1) {
+      return;
+    }
+
+    const closingViews =
+      direction === 'left'
+        ? openWorkspaceViews.slice(0, currentIndex)
+        : openWorkspaceViews.slice(currentIndex + 1);
+
+    if (closingViews.length === 0) {
+      return;
+    }
+
+    setOpenWorkspaceViews(openWorkspaceViews.filter((item) => !closingViews.includes(item)));
+    rememberClosedWorkspaces(direction === 'left' ? [...closingViews].reverse() : closingViews);
+    if (closingViews.includes(activeWorkspaceView)) {
+      setActiveWorkspaceView(view);
+    }
+  };
+
+  const moveWorkspace = (view: WorkspaceView, direction: 'left' | 'right') => {
+    setOpenWorkspaceViews((current) => moveWorkspaceTab(current, view, direction));
+  };
+
+  const reopenLastClosedWorkspaceTab = () => {
+    const result = reopenLastClosedWorkspace(openWorkspaceViews, recentlyClosedWorkspaceViews);
+    if (!result.reopened || !result.nextActive) {
+      return;
+    }
+
+    ensureWorkspaceMounted(result.reopened);
+    setOpenWorkspaceViews(result.nextOrder);
+    setRecentlyClosedWorkspaceViews(result.nextClosedStack);
+    setActiveWorkspaceView(result.nextActive);
+    setAuxView(null);
+  };
+
+  const reorderWorkspace = (source: WorkspaceView, target: WorkspaceView) => {
+    setOpenWorkspaceViews((current) => reorderWorkspaceTab(current, source, target));
+  };
+
+  const refreshWorkspace = (view: WorkspaceView) => {
+    if (view === 'file-center') {
+      setFileCenterVersion((current) => current + 1);
+    }
+
+    setWorkspaceRefreshTokens((current) => ({
+      ...current,
+      [view]: current[view] + 1,
+    }));
+  };
+
+  const getWorkspaceContainer = (view: WorkspaceView) => {
+    const existing = workspaceContainersRef.current[view];
+    if (existing) {
+      return existing;
+    }
+
+    const container = document.createElement('div');
+    container.className = 'workspace-view';
+    container.dataset.workspaceView = view;
+    workspaceContainersRef.current[view] = container;
+    return container;
+  };
+
+  useEffect(() => {
+    const stage = workspaceStageRef.current;
+    if (!stage) {
+      return;
+    }
+
+    stage.replaceChildren();
+    if (auxView !== null) {
+      return;
+    }
+
+    stage.appendChild(getWorkspaceContainer(activeWorkspaceView));
+  }, [activeWorkspaceView, auxView, mountedWorkspaceViews]);
 
   const openFolder = (folderId: string | null, pushHistory = true) => {
     setCurrentFolderId(folderId);
@@ -1338,14 +1510,14 @@ export default function App() {
             <button
               key={item.id}
               aria-label={item.label}
-              className={`nav-item${item.id === activeView ? ' active' : ''}`}
+              className={`nav-item${item.id === activeWorkspaceView && auxView === null ? ' active' : ''}`}
               type="button"
               onClick={() =>
                 startTransition(() => {
                   if (item.id === 'issues') {
                     setIssueTaskFilter(null);
                   }
-                  setActiveView(item.id);
+                  activateWorkspace(item.id);
                 })
               }
             >
@@ -1358,12 +1530,30 @@ export default function App() {
       </aside>
 
       <main className="content-shell">
-        <header className="page-header">
-          <div className={`page-header-feedback${feedback ? ` ${feedback.tone}` : ''}`}>
-            {feedback ? feedback.message : null}
+        <header className="page-header workspace-page-header">
+          <div className="page-header-main">
+            <div className={`page-header-feedback${feedback ? ` ${feedback.tone}` : ''}`}>
+              {feedback ? feedback.message : null}
+            </div>
+            <WorkspaceTabBar
+              activeTab={activeWorkspaceView}
+              canReopenClosed={recentlyClosedWorkspaceViews.length > 0}
+              labels={workspaceLabels}
+              tabs={openWorkspaceViews}
+              onActivate={activateWorkspace}
+              onClose={closeWorkspace}
+              onCloseLeft={(view) => closeWorkspaceSide(view, 'left')}
+              onCloseOthers={closeOtherWorkspaces}
+              onCloseRight={(view) => closeWorkspaceSide(view, 'right')}
+              onMoveLeft={(view) => moveWorkspace(view, 'left')}
+              onMoveRight={(view) => moveWorkspace(view, 'right')}
+              onRefresh={refreshWorkspace}
+              onReopenLastClosed={reopenLastClosedWorkspaceTab}
+              onReorder={reorderWorkspace}
+            />
           </div>
           <div className="page-header-actions">
-            <IconButton ariaLabel="导入中心" onClick={() => setActiveView('import-center')}>
+            <IconButton ariaLabel="导入中心" onClick={() => setAuxView('import-center')}>
               <FolderInput size={16} />
             </IconButton>
             <div className="notification-trigger">
@@ -1375,8 +1565,12 @@ export default function App() {
           </div>
         </header>
 
-        {activeView === 'file-center' ? (
-          <FileCenterPage
+        <div className="workspace-stage" ref={workspaceStageRef} />
+
+        {mountedWorkspaceViews.includes('file-center') ? (
+          createPortal(
+            <FileCenterPage
+              key={`file-center-${workspaceRefreshTokens['file-center']}`}
             breadcrumbs={breadcrumbs}
             canGoBack={historyIndex > 0}
             canGoForward={historyIndex < folderHistory.length - 1}
@@ -1468,7 +1662,9 @@ export default function App() {
                 allSelected ? current.filter((id) => !ids.includes(id)) : Array.from(new Set([...current, ...ids])),
               );
             }}
-          />
+            />,
+            getWorkspaceContainer('file-center'),
+          )
         ) : null}
 
         {activeView === 'import-center' ? (
@@ -1572,8 +1768,10 @@ export default function App() {
           />
         ) : null}
 
-        {activeView === 'task-center' ? (
-          <TaskCenterPage
+        {mountedWorkspaceViews.includes('task-center') ? (
+          createPortal(
+            <TaskCenterPage
+              key={`task-center-${workspaceRefreshTokens['task-center']}`}
             activeTab={taskTab}
             fileNodes={persisted.fileNodes}
             issues={persisted.issueRecords}
@@ -1635,22 +1833,26 @@ export default function App() {
             }
             onOpenIssueCenterForIssue={(issue) => {
               setIssueTaskFilter(issue.taskId ? { taskId: issue.taskId, taskTitle: persisted.taskRecords.find((task) => task.id === issue.taskId)?.title ?? issue.asset, issueId: issue.id } : { taskId: '', taskTitle: issue.asset, issueId: issue.id });
-              setActiveView('issues');
+              activateWorkspace('issues');
             }}
             onOpenIssueCenterForTask={(task) => {
               setIssueTaskFilter({ taskId: task.id, taskTitle: task.title });
-              setActiveView('issues');
+              activateWorkspace('issues');
             }}
             onOpenTaskDetail={setTaskDetail}
             preselectedTaskIds={pendingTaskSelection}
             onConsumePreselectedTaskIds={() => setPendingTaskSelection(null)}
             onSetActiveTab={setTaskTab}
             onSetTaskStatusFilter={setTaskStatusFilter}
-          />
+            />,
+            getWorkspaceContainer('task-center'),
+          )
         ) : null}
 
-        {activeView === 'issues' ? (
-          <IssuesPage
+        {mountedWorkspaceViews.includes('issues') ? (
+          createPortal(
+            <IssuesPage
+              key={`issues-${workspaceRefreshTokens.issues}`}
             issueTypeFilter={issueTypeFilter}
             items={visibleIssues}
             taskFilterLabel={issueTaskFilter?.taskTitle ?? null}
@@ -1701,23 +1903,31 @@ export default function App() {
               );
             }}
             setIssueTypeFilter={setIssueTypeFilter}
-          />
+            />,
+            getWorkspaceContainer('issues'),
+          )
         ) : null}
 
-        {activeView === 'storage-nodes' ? (
-          <StorageNodesPage
+        {mountedWorkspaceViews.includes('storage-nodes') ? (
+          createPortal(
+            <StorageNodesPage
+              key={`storage-nodes-${workspaceRefreshTokens['storage-nodes']}`}
             libraries={persisted.libraries}
             onFeedback={setFeedback}
             onOpenIssueCenter={() => {
               setIssueTaskFilter(null);
-              setActiveView('issues');
+              activateWorkspace('issues');
             }}
-            onOpenTaskCenter={() => setActiveView('task-center')}
-          />
+            onOpenTaskCenter={() => activateWorkspace('task-center')}
+            />,
+            getWorkspaceContainer('storage-nodes'),
+          )
         ) : null}
 
-        {activeView === 'settings' ? (
-          <SettingsPage
+        {mountedWorkspaceViews.includes('settings') ? (
+          createPortal(
+            <SettingsPage
+              key={`settings-${workspaceRefreshTokens.settings}`}
             customContent={
               <TagManagementPage
                 libraries={persisted.libraries}
@@ -1744,11 +1954,13 @@ export default function App() {
                 tone: 'success',
               })
             }
-          />
+            />,
+            getWorkspaceContainer('settings'),
+          )
         ) : null}
       </main>
 
-      {fileDetail ? (
+      {activeView === 'file-center' && fileDetail ? (
         <FileDetailSheet
           item={fileDetail}
           onClose={() => setFileDetail(null)}
@@ -1756,7 +1968,7 @@ export default function App() {
         />
       ) : null}
 
-      {tagEditorState ? (
+      {activeView === 'file-center' && tagEditorState ? (
         <TagEditorDialog
           availableTags={availableTags}
           item={tagEditorState.item}
@@ -1765,7 +1977,7 @@ export default function App() {
         />
       ) : null}
 
-      {batchAnnotationState ? (
+      {activeView === 'file-center' && batchAnnotationState ? (
         <BatchAnnotationDialog
           count={batchAnnotationState.items.length}
           onClose={() => setBatchAnnotationState(null)}
@@ -1773,7 +1985,7 @@ export default function App() {
         />
       ) : null}
 
-      {taskDetail ? (
+      {activeView === 'task-center' && taskDetail ? (
         <TaskDetailSheet
           fileNodes={persisted.fileNodes}
           item={taskDetail}
@@ -1831,17 +2043,17 @@ export default function App() {
               folderId: jumpTarget.folderId,
               selectedIds: jumpTarget.selectedIds,
             });
-            setActiveView('file-center');
+            activateWorkspace('file-center');
           }}
           onOpenIssueCenterForTask={(task) => {
             setTaskDetail(null);
             // TODO: 后续异常中心实现时，在这里补上按异常记录自动勾选/高亮的导航参数。
             setIssueTaskFilter({ taskId: task.id, taskTitle: task.title });
-            setActiveView('issues');
+            activateWorkspace('issues');
           }}
           onOpenStorageNodesForTask={() => {
             setTaskDetail(null);
-            setActiveView('storage-nodes');
+            activateWorkspace('storage-nodes');
           }}
         />
       ) : null}
@@ -1886,7 +2098,7 @@ export default function App() {
         </Sheet>
       ) : null}
 
-      {pendingAction ? (
+      {activeView === 'file-center' && pendingAction ? (
         <FileActionDialog
           action={pendingAction}
           onCancel={() => setPendingAction(null)}
@@ -1898,12 +2110,12 @@ export default function App() {
             setPendingAction(null);
             setTaskTab('transfer');
             setPendingTaskSelection(pendingAction.blockingTaskIds);
-            setActiveView('task-center');
+            activateWorkspace('task-center');
           }}
         />
       ) : null}
 
-      {folderDraft !== null ? (
+      {activeView === 'file-center' && folderDraft !== null ? (
         <Sheet onClose={() => setFolderDraft(null)} title="新建目录">
           <div className="sheet-form">
             <label className="form-field">
