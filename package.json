@@ -8,10 +8,10 @@
     "dev:pg:up": "powershell -ExecutionPolicy Bypass -File ./scripts/dev/up-postgres.ps1",
     "dev:pg:down": "powershell -ExecutionPolicy Bypass -File ./scripts/dev/down-postgres.ps1",
     "dev:pg:reset": "powershell -ExecutionPolicy Bypass -File ./scripts/dev/reset-postgres.ps1",
-    "dev": "cnpm --prefix client run dev",
-    "build": "cnpm --prefix client run build",
-    "test": "cnpm --prefix client run test",
-    "tauri:dev": "cnpm --prefix client run tauri:dev",
-    "tauri:build": "cnpm --prefix client run tauri:build"
+    "dev": "powershell -ExecutionPolicy Bypass -File ./scripts/dev/run-client-script.ps1 dev",
+    "build": "powershell -ExecutionPolicy Bypass -File ./scripts/dev/run-client-script.ps1 build",
+    "test": "powershell -ExecutionPolicy Bypass -File ./scripts/dev/run-client-script.ps1 test",
+    "tauri:dev": "powershell -ExecutionPolicy Bypass -File ./scripts/dev/run-client-script.ps1 tauri:dev",
+    "tauri:build": "powershell -ExecutionPolicy Bypass -File ./scripts/dev/run-client-script.ps1 tauri:build"
   }
 }
