@@ -34,10 +34,18 @@ type LocalFolderService interface {
 	DeleteLocalFolder(ctx context.Context, id string) (storagedto.DeleteLocalFolderResponse, error)
 }
 
+type LocalNodeService interface {
+	ListLocalNodes(ctx context.Context) ([]storagedto.LocalNodeRecord, error)
+	SaveLocalNode(ctx context.Context, request storagedto.SaveLocalNodeRequest) (storagedto.SaveLocalNodeResponse, error)
+	RunLocalNodeConnectionTest(ctx context.Context, ids []string) (storagedto.RunLocalNodeConnectionTestResponse, error)
+	DeleteLocalNode(ctx context.Context, id string) (storagedto.DeleteLocalNodeResponse, error)
+}
+
 type Dependencies struct {
 	Logger       *slog.Logger
 	Runtime      RuntimeService
 	Agents       AgentService
+	LocalNodes   LocalNodeService
 	LocalFolders LocalFolderService
 }
 
@@ -105,6 +113,54 @@ func NewRouter(deps Dependencies) http.Handler {
 			return
 		}
 		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("GET /api/storage/local-nodes", func(w http.ResponseWriter, r *http.Request) {
+		payload, err := deps.LocalNodes.ListLocalNodes(r.Context())
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("POST /api/storage/local-nodes", func(w http.ResponseWriter, r *http.Request) {
+		var payload storagedto.SaveLocalNodeRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("本地文件夹保存请求格式无效"))
+			return
+		}
+
+		result, err := deps.LocalNodes.SaveLocalNode(r.Context(), payload)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("POST /api/storage/local-nodes/connection-test", func(w http.ResponseWriter, r *http.Request) {
+		var payload storagedto.RunLocalNodeConnectionTestRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("本地文件夹连接测试请求格式无效"))
+			return
+		}
+
+		result, err := deps.LocalNodes.RunLocalNodeConnectionTest(r.Context(), payload.IDs)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("DELETE /api/storage/local-nodes/{id}", func(w http.ResponseWriter, r *http.Request) {
+		result, err := deps.LocalNodes.DeleteLocalNode(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
 	})
 
 	mux.HandleFunc("POST /api/storage/local-folders", func(w http.ResponseWriter, r *http.Request) {

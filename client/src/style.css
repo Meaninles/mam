@@ -1897,6 +1897,17 @@ button {
   gap: 12px;
 }
 
+.storage-header-tabs {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.storage-mode-switch {
+  flex: 0 0 auto;
+}
+
 .selection-toolbar {
   display: flex;
   align-items: center;
@@ -3224,15 +3235,15 @@ button {
   position: absolute;
   top: calc(100% + 8px);
   right: 0;
-  min-width: 180px;
-  width: max-content;
-  max-width: 220px;
-  display: flex;
-  flex-direction: column;
+  width: 196px;
+  min-width: 196px;
+  max-width: 196px;
+  display: block;
   z-index: 120;
 }
 
 .storage-menu-inline button {
+  display: block;
   white-space: nowrap;
 }
 

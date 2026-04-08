@@ -60,6 +60,7 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 		Logger:       logger,
 		Runtime:      runtimeService,
 		Agents:       agentService,
+		LocalNodes:   localFolderService,
 		LocalFolders: localFolderService,
 	})
 

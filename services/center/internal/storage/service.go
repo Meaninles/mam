@@ -33,6 +33,10 @@ func (s *LocalFolderService) ListLocalFolders(ctx context.Context) ([]storagedto
 			m.name,
 			m.library_id,
 			m.library_name,
+			sn.id,
+			sn.name,
+			sn.address,
+			m.relative_root_path,
 			m.source_path,
 			m.mount_mode,
 			m.enabled,
@@ -66,6 +70,10 @@ func (s *LocalFolderService) ListLocalFolders(ctx context.Context) ([]storagedto
 			name             string
 			libraryID        string
 			libraryName      string
+			nodeID           string
+			nodeName         string
+			nodeRootPath     string
+			relativePath     string
 			sourcePath       string
 			mountMode        string
 			enabled          bool
@@ -85,6 +93,10 @@ func (s *LocalFolderService) ListLocalFolders(ctx context.Context) ([]storagedto
 			&name,
 			&libraryID,
 			&libraryName,
+			&nodeID,
+			&nodeName,
+			&nodeRootPath,
+			&relativePath,
 			&sourcePath,
 			&mountMode,
 			&enabled,
@@ -108,8 +120,8 @@ func (s *LocalFolderService) ListLocalFolders(ctx context.Context) ([]storagedto
 				availableBytes = &free
 				_, _ = s.pool.Exec(ctx, `
 					UPDATE mount_runtime
-					SET capacity_bytes = $2,
-					    available_bytes = $3,
+					SET capacity_bytes = $2::bigint,
+					    available_bytes = $3::bigint,
 					    updated_at = $4
 					WHERE mount_id = $1
 				`, id, total, free, s.now().UTC())
@@ -121,6 +133,10 @@ func (s *LocalFolderService) ListLocalFolders(ctx context.Context) ([]storagedto
 			Name:             name,
 			LibraryID:        libraryID,
 			LibraryName:      libraryName,
+			NodeID:           nodeID,
+			NodeName:         nodeName,
+			NodeRootPath:     nodeRootPath,
+			RelativePath:     relativePath,
 			FolderType:       "本地",
 			Address:          sourcePath,
 			MountMode:        uiMountMode(mountMode),
@@ -158,8 +174,11 @@ func (s *LocalFolderService) SaveLocalFolder(ctx context.Context, request storag
 	if strings.TrimSpace(request.LibraryName) == "" {
 		return storagedto.SaveLocalFolderResponse{}, apperrors.BadRequest("所属资产库名称不能为空")
 	}
-	if strings.TrimSpace(request.LocalPath) == "" {
-		return storagedto.SaveLocalFolderResponse{}, apperrors.BadRequest("本地目录不能为空")
+	if strings.TrimSpace(request.NodeID) == "" {
+		return storagedto.SaveLocalFolderResponse{}, apperrors.BadRequest("所属节点不能为空")
+	}
+	if strings.TrimSpace(request.RelativePath) == "" {
+		return storagedto.SaveLocalFolderResponse{}, apperrors.BadRequest("挂载子目录不能为空")
 	}
 
 	mountMode := dbMountMode(request.MountMode)
@@ -173,6 +192,15 @@ func (s *LocalFolderService) SaveLocalFolder(ctx context.Context, request storag
 
 	now := s.now().UTC()
 	nextHeartbeat := computeNextHeartbeat(now, heartbeatPolicy)
+	nodeRootPath, _, err := s.loadLocalNodePath(ctx, request.NodeID)
+	if err != nil {
+		return storagedto.SaveLocalFolderResponse{}, err
+	}
+	relativePath := strings.TrimLeft(strings.TrimSpace(request.RelativePath), `/\`)
+	sourcePath := buildLocalMountPath(nodeRootPath, relativePath)
+	if mkdirErr := os.MkdirAll(sourcePath, 0o755); mkdirErr != nil {
+		return storagedto.SaveLocalFolderResponse{}, apperrors.BadRequest("挂载目录创建失败")
+	}
 
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -181,23 +209,6 @@ func (s *LocalFolderService) SaveLocalFolder(ctx context.Context, request storag
 	defer tx.Rollback(ctx)
 
 	if strings.TrimSpace(request.ID) == "" {
-		storageNodeID := buildCode("local-node-id", now)
-		_, err = tx.Exec(ctx, `
-			INSERT INTO storage_nodes (
-				id, code, name, node_type, address, access_mode, enabled, description, created_at, updated_at
-			) VALUES ($1, $2, $3, 'LOCAL', $4, 'DIRECT', true, $5, $6, $6)
-		`,
-			storageNodeID,
-			buildCode("local-node", now),
-			request.Name,
-			request.LocalPath,
-			request.Notes,
-			now,
-		)
-		if err != nil {
-			return storagedto.SaveLocalFolderResponse{}, err
-		}
-
 		mountID := buildCode("local-mount-id", now)
 		_, err = tx.Exec(ctx, `
 			INSERT INTO mounts (
@@ -209,10 +220,10 @@ func (s *LocalFolderService) SaveLocalFolder(ctx context.Context, request storag
 			buildCode("local-mount", now),
 			request.LibraryID,
 			request.LibraryName,
-			storageNodeID,
+			request.NodeID,
 			request.Name,
 			mountMode,
-			request.LocalPath,
+			sourcePath,
 			heartbeatPolicy,
 			now,
 		)
@@ -231,35 +242,20 @@ func (s *LocalFolderService) SaveLocalFolder(ctx context.Context, request storag
 
 		request.ID = mountID
 	} else {
-		commandTag, err := tx.Exec(ctx, `
-			UPDATE storage_nodes
-			SET name = $2,
-			    address = $3,
-			    description = $4,
-			    updated_at = $5
-			WHERE id = (
-				SELECT storage_node_id FROM mounts WHERE id = $1::uuid AND deleted_at IS NULL
-			)
-		`, request.ID, request.Name, request.LocalPath, request.Notes, now)
-		if err != nil {
-			return storagedto.SaveLocalFolderResponse{}, err
-		}
-		if commandTag.RowsAffected() == 0 {
-			return storagedto.SaveLocalFolderResponse{}, apperrors.NotFound("挂载文件夹不存在")
-		}
-
 		_, err = tx.Exec(ctx, `
 			UPDATE mounts
 			SET name = $2,
 			    library_id = $3,
 			    library_name = $4,
-			    mount_mode = $5,
-			    source_path = $6,
-			    heartbeat_policy = $7,
-			    updated_at = $8
+			    storage_node_id = $5,
+			    mount_mode = $6,
+			    source_path = $7,
+			    relative_root_path = $8,
+			    heartbeat_policy = $9,
+			    updated_at = $10
 			WHERE id = $1
 			  AND deleted_at IS NULL
-		`, request.ID, request.Name, request.LibraryID, request.LibraryName, mountMode, request.LocalPath, heartbeatPolicy, now)
+		`, request.ID, request.Name, request.LibraryID, request.LibraryName, request.NodeID, mountMode, sourcePath, relativePath, heartbeatPolicy, now)
 		if err != nil {
 			return storagedto.SaveLocalFolderResponse{}, err
 		}
@@ -331,8 +327,8 @@ func (s *LocalFolderService) RunLocalFolderScan(ctx context.Context, ids []strin
 			    health_status = $5,
 			    last_error_code = NULLIF($6, ''),
 			    last_error_message = NULLIF($7, ''),
-			    capacity_bytes = NULLIF($8, 0),
-			    available_bytes = NULLIF($9, 0),
+			    capacity_bytes = CASE WHEN $8::bigint > 0 THEN $8::bigint ELSE NULL END,
+			    available_bytes = CASE WHEN $9::bigint > 0 THEN $9::bigint ELSE NULL END,
 			    updated_at = $3
 			WHERE mount_id = $1
 		`, id, scanStatus, finishedAt, summary, healthStatus, lastErrorCode, lastErrorMessage, capacityBytes, availableBytes)
@@ -365,7 +361,22 @@ func (s *LocalFolderService) RunLocalFolderConnectionTest(ctx context.Context, i
 	for _, id := range ids {
 		path, name, err := s.loadLocalFolderPath(ctx, id)
 		if err != nil {
-			return storagedto.RunLocalFolderConnectionTestResponse{}, err
+			results = append(results, storagedto.ConnectionTestResult{
+				ID:          id,
+				Name:        "未知挂载",
+				OverallTone: "critical",
+				Summary:     "挂载记录读取失败。",
+				Checks: []storagedto.ConnectionCheck{
+					{
+						Label:  "挂载读取",
+						Status: "critical",
+						Detail: err.Error(),
+					},
+				},
+				Suggestion: "检查挂载记录是否仍存在",
+				TestedAt:   "刚刚",
+			})
+			continue
 		}
 
 		tone := "success"
@@ -427,13 +438,28 @@ func (s *LocalFolderService) RunLocalFolderConnectionTest(ctx context.Context, i
 			    last_check_at = $3,
 			    last_error_code = NULLIF($4, ''),
 			    last_error_message = NULLIF($5, ''),
-			    capacity_bytes = NULLIF($6, 0),
-			    available_bytes = NULLIF($7, 0),
+			    capacity_bytes = CASE WHEN $6::bigint > 0 THEN $6::bigint ELSE NULL END,
+			    available_bytes = CASE WHEN $7::bigint > 0 THEN $7::bigint ELSE NULL END,
 			    updated_at = $3
 			WHERE mount_id = $1
 		`, id, healthStatus, now, lastErrorCode, lastErrorMessage, capacityBytes, availableBytes)
 		if err != nil {
-			return storagedto.RunLocalFolderConnectionTestResponse{}, err
+			results = append(results, storagedto.ConnectionTestResult{
+				ID:          id,
+				Name:        name,
+				OverallTone: "critical",
+				Summary:     "检测结果生成后写入运行状态失败。",
+				Checks: []storagedto.ConnectionCheck{
+					{
+						Label:  "状态写回",
+						Status: "critical",
+						Detail: err.Error(),
+					},
+				},
+				Suggestion: "检查中心服务数据库状态",
+				TestedAt:   "刚刚",
+			})
+			continue
 		}
 
 		results = append(results, storagedto.ConnectionTestResult{
@@ -551,18 +577,6 @@ func (s *LocalFolderService) DeleteLocalFolder(ctx context.Context, id string) (
 		return storagedto.DeleteLocalFolderResponse{}, apperrors.NotFound("挂载文件夹不存在")
 	}
 
-	_, err = s.pool.Exec(ctx, `
-		UPDATE storage_nodes
-		SET deleted_at = $2,
-		    updated_at = $2
-		WHERE id = (
-			SELECT storage_node_id FROM mounts WHERE id = $1
-		)
-	`, id, now)
-	if err != nil {
-		return storagedto.DeleteLocalFolderResponse{}, err
-	}
-
 	return storagedto.DeleteLocalFolderResponse{Message: "挂载文件夹已删除"}, nil
 }
 
@@ -597,6 +611,35 @@ func (s *LocalFolderService) loadLocalFolderPath(ctx context.Context, id string)
 		return "", "", err
 	}
 	return path, name, nil
+}
+
+func (s *LocalFolderService) loadLocalNodePath(ctx context.Context, id string) (string, string, error) {
+	var (
+		path string
+		name string
+	)
+	err := s.pool.QueryRow(ctx, `
+		SELECT address, name
+		FROM storage_nodes
+		WHERE id = $1
+		  AND node_type = 'LOCAL'
+		  AND deleted_at IS NULL
+	`, id).Scan(&path, &name)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return "", "", apperrors.NotFound("所属节点不存在")
+		}
+		return "", "", err
+	}
+	return path, name, nil
+}
+
+func buildLocalMountPath(rootPath string, relativePath string) string {
+	root := strings.TrimRight(rootPath, `\/`)
+	if relativePath == "" {
+		return root
+	}
+	return root + string(os.PathSeparator) + strings.ReplaceAll(relativePath, `\`, string(os.PathSeparator))
 }
 
 func buildCode(prefix string, now time.Time) string {

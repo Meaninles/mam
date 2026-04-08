@@ -1,11 +1,55 @@
 package storage
 
+type LocalNodeRecord struct {
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	RootPath         string `json:"rootPath"`
+	Enabled          bool   `json:"enabled"`
+	HealthStatus     string `json:"healthStatus"`
+	HealthTone       string `json:"healthTone"`
+	LastCheckAt      string `json:"lastCheckAt"`
+	CapacitySummary  string `json:"capacitySummary"`
+	FreeSpaceSummary string `json:"freeSpaceSummary"`
+	CapacityPercent  int    `json:"capacityPercent"`
+	MountCount       int    `json:"mountCount"`
+	Notes            string `json:"notes"`
+}
+
+type SaveLocalNodeRequest struct {
+	ID       string `json:"id,omitempty"`
+	Name     string `json:"name"`
+	RootPath string `json:"rootPath"`
+	Notes    string `json:"notes"`
+}
+
+type SaveLocalNodeResponse struct {
+	Message string          `json:"message"`
+	Record  LocalNodeRecord `json:"record"`
+}
+
+type RunLocalNodeConnectionTestRequest struct {
+	IDs []string `json:"ids"`
+}
+
+type RunLocalNodeConnectionTestResponse struct {
+	Message string                 `json:"message"`
+	Results []ConnectionTestResult `json:"results"`
+}
+
+type DeleteLocalNodeResponse struct {
+	Message string `json:"message"`
+}
+
 type LocalFolderRecord struct {
 	ID               string   `json:"id"`
 	Name             string   `json:"name"`
 	LibraryID        string   `json:"libraryId"`
 	LibraryName      string   `json:"libraryName"`
 	FolderType       string   `json:"folderType"`
+	NodeID           string   `json:"nodeId"`
+	NodeName         string   `json:"nodeName"`
+	NodeRootPath     string   `json:"nodeRootPath"`
+	RelativePath     string   `json:"relativePath"`
 	Address          string   `json:"address"`
 	MountMode        string   `json:"mountMode"`
 	Enabled          bool     `json:"enabled"`
@@ -29,9 +73,10 @@ type SaveLocalFolderRequest struct {
 	Name            string `json:"name"`
 	LibraryID       string `json:"libraryId"`
 	LibraryName     string `json:"libraryName"`
+	NodeID          string `json:"nodeId"`
 	MountMode       string `json:"mountMode"`
 	HeartbeatPolicy string `json:"heartbeatPolicy"`
-	LocalPath       string `json:"localPath"`
+	RelativePath    string `json:"relativePath"`
 	Notes           string `json:"notes"`
 }
 

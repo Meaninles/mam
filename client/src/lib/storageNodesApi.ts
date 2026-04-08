@@ -7,12 +7,16 @@ export type MountFolderType = '本地' | 'NAS' | '网盘';
 export type StorageCloudAccessMethod = '填入 Token' | '扫码登录获取 Token';
 export type StorageCloudQrChannel = '微信小程序' | '支付宝小程序' | '电视端';
 
-export type MountFolderRecord = {
+export type MountRecord = {
   id: string;
   name: string;
   libraryId: string;
   libraryName: string;
   folderType: MountFolderType;
+  nodeId: string;
+  nodeName: string;
+  nodeRootPath: string;
+  relativePath: string;
   sourceRefId?: string;
   sourceName?: string;
   address: string;
@@ -30,6 +34,23 @@ export type MountFolderRecord = {
   badges: string[];
   authStatus: string;
   authTone: StorageTone;
+  notes: string;
+};
+
+export type MountFolderRecord = MountRecord;
+
+export type LocalNodeRecord = {
+  id: string;
+  name: string;
+  rootPath: string;
+  enabled: boolean;
+  healthStatus: string;
+  healthTone: StorageTone;
+  lastCheckAt: string;
+  capacitySummary: string;
+  freeSpaceSummary: string;
+  capacityPercent: number;
+  mountCount: number;
   notes: string;
 };
 
@@ -61,22 +82,35 @@ export type CloudRecord = {
 };
 
 export type StorageNodesDashboard = {
-  mountFolders: MountFolderRecord[];
+  localNodes: LocalNodeRecord[];
   nasNodes: NasRecord[];
   cloudNodes: CloudRecord[];
+  mounts: MountRecord[];
+  mountFolders: MountRecord[];
 };
 
-export type MountFolderDraft = {
+export type MountDraft = {
   id?: string;
   name: string;
   libraryId: string;
-  folderType: MountFolderType;
+  nodeId: string;
   mountMode: StorageMountMode;
   heartbeatPolicy: StorageHeartbeatPolicy;
-  localPath: string;
-  nasId: string;
-  cloudId: string;
-  targetFolder: string;
+  relativePath: string;
+  notes: string;
+  folderType?: MountFolderType;
+  localPath?: string;
+  nasId?: string;
+  cloudId?: string;
+  targetFolder?: string;
+};
+
+export type MountFolderDraft = MountDraft;
+
+export type LocalNodeDraft = {
+  id?: string;
+  name: string;
+  rootPath: string;
   notes: string;
 };
 
@@ -127,7 +161,8 @@ export type StorageScanHistoryItem = {
 type StorageBrowserDb = {
   cloudNodes: CloudRecord[];
   histories: Record<string, StorageScanHistoryItem[]>;
-  mountFolders: MountFolderRecord[];
+  localNodes: LocalNodeRecord[];
+  mounts: MountRecord[];
   nasNodes: NasRecord[];
 };
 
@@ -137,35 +172,58 @@ const LOCAL_FOLDERS_API_PATH = '/api/storage/local-folders';
 export const storageNodesApi = {
   async loadDashboard(): Promise<StorageNodesDashboard> {
     const fallback = runBrowserFallback<StorageNodesDashboard>('storage_nodes_load_dashboard', {});
-    let localFolders: MountFolderRecord[] = [];
+    let localNodes: LocalNodeRecord[] = [];
+    let mounts: MountRecord[] = [];
     try {
-      localFolders = await fetchCenterData<MountFolderRecord[]>(LOCAL_FOLDERS_API_PATH);
+      localNodes = await fetchCenterData<LocalNodeRecord[]>('/api/storage/local-nodes');
+      mounts = await fetchCenterData<MountRecord[]>(LOCAL_FOLDERS_API_PATH);
     } catch {
-      localFolders = [];
+      localNodes = [];
+      mounts = [];
     }
 
     return {
-      mountFolders: localFolders,
+      localNodes,
       nasNodes: fallback.nasNodes,
       cloudNodes: fallback.cloudNodes,
+      mounts,
+      mountFolders: mounts,
     };
   },
 
-  async saveMountFolder(draft: MountFolderDraft): Promise<{ message: string }> {
-    const result = await fetchCenterData<{ message: string; record: MountFolderRecord }>(LOCAL_FOLDERS_API_PATH, {
+  async saveLocalNode(draft: LocalNodeDraft): Promise<{ message: string }> {
+    const result = await fetchCenterData<{ message: string; record: LocalNodeRecord }>('/api/storage/local-nodes', {
       method: 'POST',
       body: JSON.stringify({
         id: draft.id,
         name: draft.name,
-        libraryId: draft.libraryId,
-        libraryName: resolveLibraryName(draft.libraryId),
-        mountMode: draft.mountMode,
-        heartbeatPolicy: draft.heartbeatPolicy,
-        localPath: draft.localPath,
+        rootPath: draft.rootPath,
         notes: draft.notes,
       }),
     });
     return { message: result.message };
+  },
+
+  async saveMount(draft: MountDraft): Promise<{ message: string }> {
+    const result = await fetchCenterData<{ message: string; record: MountRecord }>(LOCAL_FOLDERS_API_PATH, {
+      method: 'POST',
+      body: JSON.stringify({
+        id: draft.id,
+        name: draft.name,
+        nodeId: draft.nodeId,
+        libraryId: draft.libraryId,
+        libraryName: resolveLibraryName(draft.libraryId),
+        mountMode: draft.mountMode,
+        heartbeatPolicy: draft.heartbeatPolicy,
+        relativePath: draft.relativePath,
+        notes: draft.notes,
+      }),
+    });
+    return { message: result.message };
+  },
+
+  async saveMountFolder(draft: MountDraft): Promise<{ message: string }> {
+    return this.saveMount(draft);
   },
 
   async saveNasNode(draft: NasDraft): Promise<{ message: string }> {
@@ -194,6 +252,23 @@ export const storageNodesApi = {
     );
   },
 
+  async runLocalNodeConnectionTest(ids: string[]): Promise<{ message: string; results: StorageConnectionTestResult[] }> {
+    return fetchCenterData<{ message: string; results: StorageConnectionTestResult[] }>(
+      '/api/storage/local-nodes/connection-test',
+      {
+        method: 'POST',
+        body: JSON.stringify({ ids }),
+      },
+    );
+  },
+
+  async deleteLocalNode(id: string): Promise<{ message: string }> {
+    const result = await fetchCenterData<{ message: string }>(`/api/storage/local-nodes/${id}`, {
+      method: 'DELETE',
+    });
+    return { message: result.message };
+  },
+
   async runNasConnectionTest(ids: string[]): Promise<{ message: string; results: StorageConnectionTestResult[] }> {
     return invokeStorageCommand<{ message: string; results: StorageConnectionTestResult[] }>(
       'storage_nodes_run_nas_connection_test',
@@ -209,7 +284,7 @@ export const storageNodesApi = {
   },
 
   async updateMountHeartbeat(ids: string[], heartbeatPolicy: StorageHeartbeatPolicy): Promise<{ message: string }> {
-    const result = await fetchCenterData<{ message: string }>(`${LOCAL_FOLDERS_API_PATH}/heartbeat`, {
+    const result = await fetchCenterData<{ message: string; record: MountFolderRecord }>(LOCAL_FOLDERS_API_PATH, {
       method: 'PATCH',
       body: JSON.stringify({ ids, heartbeatPolicy }),
     });
@@ -294,12 +369,14 @@ function runBrowserFallback<T>(command: string, payload: Record<string, unknown>
   switch (command) {
     case 'storage_nodes_load_dashboard':
       return structuredClone({
-        mountFolders: db.mountFolders,
+        localNodes: db.localNodes,
         nasNodes: db.nasNodes,
         cloudNodes: db.cloudNodes,
+        mounts: db.mounts,
+        mountFolders: db.mounts,
       }) as T;
     case 'storage_nodes_save_mount_folder':
-      saveMountFolderInBrowser(db, payload.draft as MountFolderDraft);
+      saveMountFolderInBrowser(db, payload.draft as MountDraft);
       persistBrowserDb(db);
       return { message: '挂载文件夹已保存' } as T;
     case 'storage_nodes_save_nas_node':
@@ -336,18 +413,18 @@ function runBrowserFallback<T>(command: string, payload: Record<string, unknown>
         items: structuredClone(db.histories[payload.id as string] ?? []),
       } as T;
     case 'storage_nodes_delete_mount_folder':
-      db.mountFolders = db.mountFolders.filter((item) => item.id !== payload.id);
+      db.mounts = db.mounts.filter((item) => item.id !== payload.id);
       delete db.histories[payload.id as string];
       persistBrowserDb(db);
       return { message: '挂载文件夹已删除' } as T;
     case 'storage_nodes_delete_nas_node':
       db.nasNodes = db.nasNodes.filter((item) => item.id !== payload.id);
-      db.mountFolders = db.mountFolders.filter((item) => item.sourceRefId !== payload.id);
+      db.mounts = db.mounts.filter((item) => item.sourceRefId !== payload.id);
       persistBrowserDb(db);
       return { message: 'NAS 已删除' } as T;
     case 'storage_nodes_delete_cloud_node':
       db.cloudNodes = db.cloudNodes.filter((item) => item.id !== payload.id);
-      db.mountFolders = db.mountFolders.filter((item) => item.sourceRefId !== payload.id);
+      db.mounts = db.mounts.filter((item) => item.sourceRefId !== payload.id);
       persistBrowserDb(db);
       return { message: '网盘已删除' } as T;
     case 'storage_nodes_browse_local_folder':
@@ -371,7 +448,7 @@ function loadBrowserDb(): StorageBrowserDb {
 
   try {
     const parsed = JSON.parse(raw) as StorageBrowserDb;
-    if (!Array.isArray(parsed.mountFolders) || !Array.isArray(parsed.nasNodes) || !Array.isArray(parsed.cloudNodes)) {
+    if (!Array.isArray(parsed.localNodes) || !Array.isArray(parsed.mounts) || !Array.isArray(parsed.nasNodes) || !Array.isArray(parsed.cloudNodes)) {
       throw new Error('invalid storage db');
     }
     return parsed;
@@ -390,11 +467,9 @@ function persistBrowserDb(db: StorageBrowserDb) {
   window.localStorage.setItem(BROWSER_STORAGE_KEY, JSON.stringify(db));
 }
 
-function saveMountFolderInBrowser(db: StorageBrowserDb, draft: MountFolderDraft) {
+function saveMountFolderInBrowser(db: StorageBrowserDb, draft: MountDraft) {
   const record = draftToMountFolderRecord(db, draft);
-  db.mountFolders = draft.id
-    ? db.mountFolders.map((item) => (item.id === draft.id ? record : item))
-    : [record, ...db.mountFolders];
+  db.mounts = draft.id ? db.mounts.map((item) => (item.id === draft.id ? record : item)) : [record, ...db.mounts];
 
   if (!db.histories[record.id]) {
     db.histories[record.id] = [];
@@ -441,7 +516,7 @@ function saveCloudNodeInBrowser(db: StorageBrowserDb, draft: CloudDraft) {
 }
 
 function runMountScanInBrowser(db: StorageBrowserDb, ids: string[]) {
-  db.mountFolders = db.mountFolders.map((item) =>
+  db.mounts = db.mounts.map((item) =>
     ids.includes(item.id)
       ? {
           ...item,
@@ -453,7 +528,7 @@ function runMountScanInBrowser(db: StorageBrowserDb, ids: string[]) {
   );
 
   ids.forEach((id) => {
-    const item = db.mountFolders.find((mount) => mount.id === id);
+    const item = db.mounts.find((mount) => mount.id === id);
     const next = db.histories[id] ?? [];
     db.histories[id] = [
       {
@@ -474,7 +549,7 @@ function updateMountHeartbeatInBrowser(
   ids: string[],
   heartbeatPolicy: StorageHeartbeatPolicy,
 ) {
-  db.mountFolders = db.mountFolders.map((item) =>
+  db.mounts = db.mounts.map((item) =>
     ids.includes(item.id)
       ? {
           ...item,
@@ -494,8 +569,8 @@ function updateMountHeartbeatInBrowser(
 
 function buildMountConnectionResults(db: StorageBrowserDb, ids: string[]): StorageConnectionTestResult[] {
   return ids
-    .map((id) => db.mountFolders.find((item) => item.id === id))
-    .filter((item): item is MountFolderRecord => Boolean(item))
+    .map((id) => db.mounts.find((item) => item.id === id))
+    .filter((item): item is MountRecord => Boolean(item))
     .map((item) => ({
       id: item.id,
       name: item.name,
@@ -589,7 +664,7 @@ function runCloudConnectionTestInBrowser(
   };
 }
 
-function draftToMountFolderRecord(db: StorageBrowserDb, draft: MountFolderDraft): MountFolderRecord {
+function draftToMountFolderRecord(db: StorageBrowserDb, draft: MountDraft): MountRecord {
   const libraryMap = new Map(
     [
       ['photo', '商业摄影资产库'],
@@ -598,74 +673,22 @@ function draftToMountFolderRecord(db: StorageBrowserDb, draft: MountFolderDraft)
     ] as Array<[string, string]>,
   );
 
-  if (draft.folderType === '本地') {
-    return {
-      id: draft.id ?? `mount-${Math.random().toString(36).slice(2, 8)}`,
-      name: draft.name,
-      libraryId: draft.libraryId,
-      libraryName: libraryMap.get(draft.libraryId) ?? draft.libraryId,
-      folderType: draft.folderType,
-      address: draft.localPath,
-      mountMode: draft.mountMode,
-      enabled: true,
-      scanStatus: '未扫描',
-      scanTone: 'info',
-      lastScanAt: '未扫描',
-      heartbeatPolicy: draft.heartbeatPolicy,
-      nextHeartbeatAt: draft.heartbeatPolicy === '从不' ? '—' : '待首次执行',
-      capacitySummary: '待首次检测',
-      freeSpaceSummary: '待首次检测',
-      capacityPercent: 0,
-      riskTags: [],
-      badges: ['本地', draft.mountMode].filter(Boolean) as string[],
-      authStatus: '无需鉴权',
-      authTone: 'info',
-      notes: draft.notes,
-    };
-  }
-
-  if (draft.folderType === 'NAS') {
-    const nas = db.nasNodes.find((item) => item.id === draft.nasId);
-    const folder = draft.targetFolder.trim().replace(/^[/\\]+/, '');
-    return {
-      id: draft.id ?? `mount-${Math.random().toString(36).slice(2, 8)}`,
-      name: draft.name,
-      libraryId: draft.libraryId,
-      libraryName: libraryMap.get(draft.libraryId) ?? draft.libraryId,
-      folderType: draft.folderType,
-      sourceRefId: nas?.id,
-      sourceName: nas?.name,
-      address: folder ? `${nas?.address ?? ''}\\${folder}` : nas?.address ?? '',
-      mountMode: draft.mountMode,
-      enabled: true,
-      scanStatus: '未扫描',
-      scanTone: 'info',
-      lastScanAt: '未扫描',
-      heartbeatPolicy: draft.heartbeatPolicy,
-      nextHeartbeatAt: draft.heartbeatPolicy === '从不' ? '—' : '待首次执行',
-      capacitySummary: '待首次检测',
-      freeSpaceSummary: '待首次检测',
-      capacityPercent: 0,
-      riskTags: [],
-      badges: [draft.mountMode, 'SMB'],
-      authStatus: nas?.status ?? '待鉴权',
-      authTone: nas?.tone ?? 'warning',
-      notes: draft.notes,
-    };
-  }
-
-  const cloud = db.cloudNodes.find((item) => item.id === draft.cloudId);
-  const folder = draft.targetFolder.trim().replace(/^[/\\]+/, '');
-
+  const localNode = db.localNodes.find((item) => item.id === draft.nodeId);
+  const folder = draft.relativePath.trim().replace(/^[/\\]+/, '');
+  const address = localNode
+    ? `${localNode.rootPath.replace(/[\\/]+$/, '')}${folder ? `\\${folder}` : ''}`
+    : folder;
   return {
     id: draft.id ?? `mount-${Math.random().toString(36).slice(2, 8)}`,
     name: draft.name,
     libraryId: draft.libraryId,
     libraryName: libraryMap.get(draft.libraryId) ?? draft.libraryId,
-    folderType: draft.folderType,
-    sourceRefId: cloud?.id,
-    sourceName: cloud?.name,
-    address: folder ? `${cloud?.mountDirectory ?? ''}/${folder}`.replace(/\/+/g, '/') : cloud?.mountDirectory ?? '',
+    folderType: '本地',
+    nodeId: draft.nodeId,
+    nodeName: localNode?.name ?? '',
+    nodeRootPath: localNode?.rootPath ?? '',
+    relativePath: draft.relativePath,
+    address,
     mountMode: draft.mountMode,
     enabled: true,
     scanStatus: '未扫描',
@@ -677,9 +700,9 @@ function draftToMountFolderRecord(db: StorageBrowserDb, draft: MountFolderDraft)
     freeSpaceSummary: '待首次检测',
     capacityPercent: 0,
     riskTags: [],
-    badges: [draft.mountMode, cloud?.vendor ?? '网盘'],
-    authStatus: cloud?.status ?? '待鉴权',
-    authTone: cloud?.tone ?? 'warning',
+    badges: ['本地', draft.mountMode],
+    authStatus: '无需鉴权',
+    authTone: 'info',
     notes: draft.notes,
   };
 }
@@ -767,12 +790,33 @@ function createSeedBrowserDb(): StorageBrowserDb {
     }));
   const cloudNodes: CloudRecord[] = baseCloudNodes.concat(extraCloudNodes);
 
-  const baseMountFolders: MountFolderRecord[] = [
+  const localNodes: LocalNodeRecord[] = [
+    {
+      id: 'local-node-main',
+      name: '商业摄影本地素材根',
+      rootPath: 'D:\\Mare\\Assets',
+      enabled: true,
+      healthStatus: '可用',
+      healthTone: 'success',
+      lastCheckAt: '今天 09:12',
+      capacitySummary: '已用 64% · 3.4 TB 可用',
+      freeSpaceSummary: '3.4 TB 可用',
+      capacityPercent: 64,
+      mountCount: 1,
+      notes: '商业摄影本地素材根目录',
+    },
+  ];
+
+  const baseMountFolders: MountRecord[] = [
     {
       id: 'mount-local-main',
       name: '商业摄影原片库',
       libraryId: 'photo',
       libraryName: '商业摄影资产库',
+      nodeId: 'local-node-main',
+      nodeName: '商业摄影本地素材根',
+      nodeRootPath: 'D:\\Mare\\Assets',
+      relativePath: 'PhotoRaw',
       folderType: '本地',
       address: 'D:\\Mare\\Assets\\PhotoRaw',
       mountMode: '可写',
@@ -791,56 +835,6 @@ function createSeedBrowserDb(): StorageBrowserDb {
       authTone: 'info',
       notes: '商业摄影本地主挂载目录',
     },
-    {
-      id: 'mount-nas-main',
-      name: '视频工作流 NAS 挂载',
-      libraryId: 'video',
-      libraryName: '视频工作流资产库',
-      folderType: 'NAS',
-      sourceRefId: 'nas-main',
-      sourceName: '影像 NAS 01',
-      address: '\\\\192.168.10.20\\media\\video_workflow',
-      mountMode: '可写',
-      enabled: true,
-      scanStatus: '等待队列',
-      scanTone: 'info',
-      lastScanAt: '2 分钟前',
-      heartbeatPolicy: '每日（深夜）',
-      nextHeartbeatAt: '今晚 02:00',
-      capacitySummary: '已用 48% · 18.9 TB 可用',
-      freeSpaceSummary: '18.9 TB 可用',
-      capacityPercent: 48,
-      riskTags: [],
-      badges: ['可写', 'SMB'],
-      authStatus: '鉴权正常',
-      authTone: 'success',
-      notes: '视频资产库主挂载目录',
-    },
-    {
-      id: 'mount-cloud-archive',
-      name: '家庭照片网盘归档',
-      libraryId: 'family',
-      libraryName: '家庭照片资产库',
-      folderType: '网盘',
-      sourceRefId: 'cloud-archive',
-      sourceName: '115 云归档',
-      address: '/MareArchive/family_album',
-      mountMode: '可写',
-      enabled: true,
-      scanStatus: '最近扫描失败',
-      scanTone: 'critical',
-      lastScanAt: '今天 07:40',
-      heartbeatPolicy: '每周（深夜）',
-      nextHeartbeatAt: '周六 02:00',
-      capacitySummary: '远端容量正常 · 约 37% 已使用',
-      freeSpaceSummary: '远端容量正常',
-      capacityPercent: 37,
-      riskTags: ['扫描失败', '鉴权异常'],
-      badges: ['115', '可写'],
-      authStatus: 'Token 48 小时内过期',
-      authTone: 'warning',
-      notes: '家庭照片网盘归档目录',
-    },
   ];
   const extraMountFolders: MountFolderRecord[] = Array.from({ length: 24 }, (_, index): MountFolderRecord => ({
       id: `mount-extra-${index + 1}`,
@@ -848,8 +842,12 @@ function createSeedBrowserDb(): StorageBrowserDb {
       libraryId: index % 3 === 0 ? 'photo' : index % 3 === 1 ? 'video' : 'family',
       libraryName: index % 3 === 0 ? '商业摄影资产库' : index % 3 === 1 ? '视频工作流资产库' : '家庭照片资产库',
       folderType: index % 3 === 0 ? '本地' as const : index % 3 === 1 ? 'NAS' as const : '网盘' as const,
-      sourceRefId: index % 3 === 1 ? `nas-extra-${(index % 22) + 1}` : index % 3 === 2 ? `cloud-extra-${(index % 22) + 1}` : undefined,
-      sourceName: index % 3 === 1 ? `项目 NAS ${(index % 22) + 1}` : index % 3 === 2 ? `115 分区 ${(index % 22) + 1}` : undefined,
+      nodeId: 'local-node-main',
+      nodeName: '商业摄影本地素材根',
+      nodeRootPath: 'D:\\Mare\\Assets',
+      relativePath: `Library_${index + 1}`,
+      sourceRefId: undefined,
+      sourceName: undefined,
       address:
         index % 3 === 0
           ? `D:\\Mare\\Assets\\Library_${index + 1}`
@@ -872,10 +870,11 @@ function createSeedBrowserDb(): StorageBrowserDb {
       authTone: index % 3 === 0 ? 'info' : index % 5 === 0 ? 'warning' : 'success',
       notes: `扩展挂载记录 ${index + 1}`,
     }));
-  const mountFolders: MountFolderRecord[] = baseMountFolders.concat(extraMountFolders);
+  const mounts: MountRecord[] = baseMountFolders.concat(extraMountFolders);
 
   return {
-    mountFolders,
+    localNodes,
+    mounts,
     nasNodes,
     cloudNodes,
     histories: {
