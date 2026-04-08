@@ -1,0 +1,37 @@
+openapi: 3.1.0
+info:
+  title: MARE Center Runtime API
+  version: 0.1.0
+servers:
+  - url: http://localhost:8080
+paths:
+  /healthz:
+    get:
+      summary: 中心服务存活检查
+      responses:
+        "200":
+          description: 服务存活
+  /readyz:
+    get:
+      summary: 中心服务就绪检查
+      responses:
+        "200":
+          description: 返回数据库与 migration 状态
+  /api/runtime/status:
+    get:
+      summary: 返回系统运行状态摘要
+      responses:
+        "200":
+          description: 返回中心服务、数据库、migration、本地执行器状态
+  /agent/register:
+    post:
+      summary: 本地执行器注册
+      responses:
+        "200":
+          description: 注册成功
+  /agent/heartbeat:
+    post:
+      summary: 本地执行器心跳
+      responses:
+        "200":
+          description: 心跳成功

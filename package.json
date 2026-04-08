@@ -2,10 +2,16 @@
   "name": "mare",
   "private": true,
   "scripts": {
-    "dev": "npm --prefix client run dev",
-    "build": "npm --prefix client run build",
-    "test": "npm --prefix client run test",
-    "tauri:dev": "npm --prefix client run tauri:dev",
-    "tauri:build": "npm --prefix client run tauri:build"
+    "center:dev": "powershell -ExecutionPolicy Bypass -File ./scripts/dev/start-center.ps1",
+    "center:migrate": "powershell -ExecutionPolicy Bypass -File ./scripts/dev/migrate-center.ps1",
+    "center:test": "go test ./services/center/...",
+    "dev:pg:up": "powershell -ExecutionPolicy Bypass -File ./scripts/dev/up-postgres.ps1",
+    "dev:pg:down": "powershell -ExecutionPolicy Bypass -File ./scripts/dev/down-postgres.ps1",
+    "dev:pg:reset": "powershell -ExecutionPolicy Bypass -File ./scripts/dev/reset-postgres.ps1",
+    "dev": "cnpm --prefix client run dev",
+    "build": "cnpm --prefix client run build",
+    "test": "cnpm --prefix client run test",
+    "tauri:dev": "cnpm --prefix client run tauri:dev",
+    "tauri:build": "cnpm --prefix client run tauri:build"
   }
 }

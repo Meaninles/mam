@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:15-alpine}
+    container_name: mare-postgres-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mare
+      POSTGRES_PASSWORD: mare
+      POSTGRES_DB: mare_dev
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mare -d mare_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - mare-postgres-data:/var/lib/postgresql/data
+
+volumes:
+  mare-postgres-data:
