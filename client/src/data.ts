@@ -10,10 +10,14 @@ export type ThemeMode = 'light' | 'dark';
 export type Severity = 'success' | 'warning' | 'critical' | 'info';
 export type SettingsTab =
   | 'general'
+  | 'workspace'
   | 'file-overview'
   | 'tag-management'
+  | 'import-archive'
+  | 'notifications'
+  | 'issue-governance'
   | 'verification'
-  | 'performance'
+  | 'background-tasks'
   | 'appearance';
 export type TaskTab = 'transfer' | 'other';
 export type TransferBusinessType = 'IMPORT' | 'SYNC';
@@ -3770,18 +3774,22 @@ export const storageNodes: StorageNode[] = [
 
 export const settingsTabs: Array<{ id: SettingsTab; label: string }> = [
   { id: 'general', label: '通用' },
+  { id: 'workspace', label: '工作区' },
   { id: 'file-overview', label: '文件总览' },
   { id: 'tag-management', label: '标签管理' },
+  { id: 'import-archive', label: '导入与归档' },
+  { id: 'notifications', label: '通知与提醒' },
+  { id: 'issue-governance', label: '异常治理' },
   { id: 'verification', label: '校验恢复' },
-  { id: 'performance', label: '性能' },
+  { id: 'background-tasks', label: '后台任务与性能' },
   { id: 'appearance', label: '外观' },
 ];
 
 export const settingsContent: Record<SettingsTab, SettingSection[]> = {
   general: [
     {
-      id: 'library',
-      title: '资产库',
+      id: 'launch',
+      title: '启动与默认项',
       rows: [
         {
           id: 'default-library',
@@ -3795,6 +3803,78 @@ export const settingsContent: Record<SettingsTab, SettingSection[]> = {
           label: '新建目录命名规则',
           value: 'yyyy-MM-dd 项目名',
           control: 'input',
+          description: '影响文件中心与导入中心中的目录命名建议。',
+        },
+        {
+          id: 'capacity-unit',
+          label: '容量显示单位',
+          value: '自动',
+          control: 'segmented',
+          options: ['自动', 'GB', 'TB'],
+        },
+        {
+          id: 'danger-confirmation',
+          label: '危险操作二次确认',
+          value: '始终提醒',
+          control: 'select',
+          options: ['始终提醒', '仅高风险操作', '保持当前原型口径'],
+        },
+      ],
+    },
+  ],
+  workspace: [
+    {
+      id: 'workspace-defaults',
+      title: '工作区默认行为',
+      rows: [
+        {
+          id: 'startup-page',
+          label: '默认打开页面',
+          value: '文件中心',
+          control: 'select',
+          options: ['文件中心', '任务中心', '异常中心', '存储节点', '设置', '导入中心'],
+          description: '决定客户端启动后默认聚焦的一级页面。',
+        },
+        {
+          id: 'close-fallback',
+          label: '关闭当前标签后的回退页',
+          value: '优先右侧标签',
+          control: 'select',
+          options: ['优先右侧标签', '优先左侧标签', '保持当前客户端口径'],
+        },
+        {
+          id: 'preserve-context',
+          label: '切换页面时保留筛选与草稿',
+          value: '开启',
+          control: 'toggle',
+          options: ['关闭', '开启'],
+        },
+      ],
+    },
+    {
+      id: 'workspace-focus',
+      title: '跳转与聚焦',
+      rows: [
+        {
+          id: 'notice-open-detail',
+          label: '通知跳转时自动打开详情',
+          value: '开启',
+          control: 'toggle',
+          options: ['关闭', '开启'],
+        },
+        {
+          id: 'import-open-target',
+          label: '导入入口默认聚焦',
+          value: '最近活跃会话',
+          control: 'select',
+          options: ['最近活跃会话', '待导入设备池', '保持当前实现'],
+        },
+        {
+          id: 'global-density',
+          label: '全局列表密度',
+          value: '紧凑',
+          control: 'segmented',
+          options: ['舒展', '紧凑', '高密'],
         },
       ],
     },
@@ -3802,7 +3882,7 @@ export const settingsContent: Record<SettingsTab, SettingSection[]> = {
   'file-overview': [
     {
       id: 'overview',
-      title: '文件总览',
+      title: '默认浏览体验',
       rows: [
         {
           id: 'default-columns',
@@ -3827,38 +3907,156 @@ export const settingsContent: Record<SettingsTab, SettingSection[]> = {
         },
       ],
     },
-  ],
-  'tag-management': [],
-  verification: [
     {
-      id: 'verify',
-      title: '校验与恢复',
+      id: 'overview-detail',
+      title: '搜索与详情偏好',
       rows: [
         {
-          id: 'verify-mode',
-          label: '默认校验',
-          value: '大小 + 修改时间',
-          control: 'segmented',
-          options: ['大小 + 修改时间', '强校验', '快速校验'],
+          id: 'default-search-scope',
+          label: '默认搜索范围',
+          value: '名称 / 路径 / 来源端',
+          control: 'select',
+          options: ['名称 / 路径 / 来源端', '名称 / 标签 / 路径', '名称 / 路径 / 标签 / 来源端'],
         },
         {
-          id: 'verify-window',
-          label: '强校验窗口',
-          value: '22:00 - 06:00',
+          id: 'folder-open-mode',
+          label: '目录默认打开方式',
+          value: '双击进入',
+          control: 'segmented',
+          options: ['双击进入', '单击选中'],
+        },
+        {
+          id: 'detail-default-block',
+          label: '详情抽屉默认焦点区块',
+          value: '基础信息',
+          control: 'select',
+          options: ['基础信息', '元数据', '最近任务', '标签与备注'],
+        },
+      ],
+    },
+  ],
+  'tag-management': [],
+  'import-archive': [
+    {
+      id: 'import-defaults',
+      title: '导入默认策略',
+      rows: [
+        {
+          id: 'default-import-targets',
+          label: '默认导入目标策略',
+          value: '按资产库推荐目标端',
+          control: 'select',
+          options: ['按资产库推荐目标端', '沿用最近一次选择', '仅应用主目标端'],
+        },
+        {
+          id: 'default-import-folder-pattern',
+          label: '导入目录命名规则',
+          value: 'yyyy-MM-dd_项目名_机位',
           control: 'input',
         },
         {
-          id: 'retry-count',
-          label: '失败自动重试',
-          value: '2 次',
+          id: 'auto-precheck',
+          label: '进入会话时自动预检',
+          value: '开启',
+          control: 'toggle',
+          options: ['关闭', '开启'],
+        },
+        {
+          id: 'blocking-policy',
+          label: '提交前阻塞规则',
+          value: '存在阻塞项时禁止提交',
           control: 'select',
-          options: ['不重试', '1 次', '2 次', '3 次'],
+          options: ['存在阻塞项时禁止提交', '仅提醒但允许继续', '保持当前实现'],
         },
       ],
     },
     {
+      id: 'archive-defaults',
+      title: '归档与结果保留',
+      rows: [
+        {
+          id: 'post-import-verify',
+          label: '导入后默认校验',
+          value: '大小 + 修改时间',
+          control: 'segmented',
+          options: ['大小 + 修改时间', '强校验', '不自动校验'],
+        },
+        {
+          id: 'import-report-retention',
+          label: '导入摘要保留时长',
+          value: '30 天',
+          control: 'select',
+          options: ['7 天', '30 天', '90 天', '永久保留'],
+        },
+        {
+          id: 'device-session-retention',
+          label: '设备拔出后会话保留',
+          value: '24 小时',
+          control: 'select',
+          options: ['立即关闭', '24 小时', '7 天', '直到手动清理'],
+        },
+      ],
+    },
+  ],
+  notifications: [
+    {
+      id: 'notice-thresholds',
+      title: '提醒阈值',
+      rows: [
+        {
+          id: 'capacity-warning-threshold',
+          label: '容量预警阈值',
+          value: '剩余 15%',
+          control: 'select',
+          options: ['剩余 10%', '剩余 15%', '剩余 20%', '仅阻塞时提醒'],
+        },
+        {
+          id: 'auth-expiry-lead',
+          label: '鉴权到期提前提醒',
+          value: '12 小时',
+          control: 'select',
+          options: ['6 小时', '12 小时', '24 小时', '48 小时'],
+        },
+        {
+          id: 'metadata-reminder',
+          label: '元数据缺失进入提醒',
+          value: '开启',
+          control: 'toggle',
+          options: ['关闭', '开启'],
+        },
+      ],
+    },
+    {
+      id: 'notice-display',
+      title: '展示与保留',
+      rows: [
+        {
+          id: 'reminder-retention',
+          label: '提醒类通知保留时长',
+          value: '7 天',
+          control: 'select',
+          options: ['1 天', '7 天', '30 天', '直到手动清理'],
+        },
+        {
+          id: 'quiet-hours',
+          label: '安静时段',
+          value: '23:00 - 08:00',
+          control: 'input',
+        },
+        {
+          id: 'signal-style',
+          label: '系统提示方式',
+          value: '页头角标 + 浮窗',
+          control: 'select',
+          options: ['页头角标 + 浮窗', '仅页头角标', '仅右侧浮窗'],
+        },
+      ],
+    },
+  ],
+  'issue-governance': [
+    {
       id: 'issue-retention',
-      title: '异常历史保留',
+      title: '历史保留策略',
       rows: [
         {
           id: 'issue-history-count',
@@ -3892,19 +4090,80 @@ export const settingsContent: Record<SettingsTab, SettingSection[]> = {
         },
       ],
     },
-  ],
-  performance: [
     {
-      id: 'perf',
-      title: '性能',
+      id: 'issue-rhythm',
+      title: '治理节奏',
       rows: [
         {
-          id: 'list-page-size',
-          label: '列表分页',
-          value: '每页 200 项',
+          id: 'postpone-remind',
+          label: '延后项再次提醒',
+          value: '24 小时后',
           control: 'select',
-          options: ['每页 100 项', '每页 200 项', '每页 500 项'],
+          options: ['4 小时后', '24 小时后', '72 小时后', '仅手动回查'],
         },
+        {
+          id: 'history-visibility',
+          label: '忽略项历史显示',
+          value: '保留在历史视图',
+          control: 'select',
+          options: ['保留在历史视图', '仅统计不展示', '保持当前实现'],
+        },
+      ],
+    },
+  ],
+  verification: [
+    {
+      id: 'verify',
+      title: '校验与恢复',
+      rows: [
+        {
+          id: 'verify-mode',
+          label: '默认校验',
+          value: '大小 + 修改时间',
+          control: 'segmented',
+          options: ['大小 + 修改时间', '强校验', '快速校验'],
+        },
+        {
+          id: 'verify-window',
+          label: '强校验窗口',
+          value: '22:00 - 06:00',
+          control: 'input',
+        },
+        {
+          id: 'retry-count',
+          label: '失败自动重试',
+          value: '2 次',
+          control: 'select',
+          options: ['不重试', '1 次', '2 次', '3 次'],
+        },
+      ],
+    },
+    {
+      id: 'verify-recovery',
+      title: '恢复策略',
+      rows: [
+        {
+          id: 'verify-resume-policy',
+          label: '时间窗结束后的恢复方式',
+          value: '下一窗口继续上次进度',
+          control: 'select',
+          options: ['下一窗口继续上次进度', '暂停并等待人工继续', '保持当前架构口径'],
+        },
+        {
+          id: 'verify-result-retention',
+          label: '强校验结果缓存保留',
+          value: '180 天',
+          control: 'select',
+          options: ['30 天', '90 天', '180 天', '永久保留'],
+        },
+      ],
+    },
+  ],
+  'background-tasks': [
+    {
+      id: 'background-concurrency',
+      title: '后台并发',
+      rows: [
         {
           id: 'parallel-jobs',
           label: '并行任务',
@@ -3913,9 +4172,43 @@ export const settingsContent: Record<SettingsTab, SettingSection[]> = {
           options: ['2 个任务 / 6 个子项', '4 个任务 / 12 个子项', '6 个任务 / 20 个子项'],
         },
         {
+          id: 'scan-frequency',
+          label: '后台扫描频率',
+          value: '每 30 分钟',
+          control: 'select',
+          options: ['仅手动触发', '每 30 分钟', '每 2 小时', '每日一次'],
+        },
+        {
+          id: 'cleanup-schedule',
+          label: '删除清理调度',
+          value: '系统空闲时优先执行',
+          control: 'select',
+          options: ['系统空闲时优先执行', '夜间时间窗执行', '立即进入队列'],
+        },
+      ],
+    },
+    {
+      id: 'background-processing',
+      title: '解析与性能',
+      rows: [
+        {
           id: 'metadata-parse',
           label: '元数据解析',
           value: '开启',
+          control: 'toggle',
+          options: ['关闭', '开启'],
+        },
+        {
+          id: 'verify-priority',
+          label: '校验任务优先级',
+          value: '普通优先级',
+          control: 'segmented',
+          options: ['低优先级', '普通优先级', '高优先级'],
+        },
+        {
+          id: 'low-performance-mode',
+          label: '低性能模式',
+          value: '关闭',
           control: 'toggle',
           options: ['关闭', '开启'],
         },
@@ -3930,7 +4223,7 @@ export const settingsContent: Record<SettingsTab, SettingSection[]> = {
         {
           id: 'theme',
           label: '主题',
-          value: '深色主题',
+          value: '浅色主题',
           control: 'segmented',
           options: ['跟随系统', '浅色主题', '深色主题'],
         },
@@ -3956,10 +4249,14 @@ export const settingsContent: Record<SettingsTab, SettingSection[]> = {
 export function cloneSettingsContent(): Record<SettingsTab, SettingSection[]> {
   return {
     general: settingsContent.general.map(cloneSection),
+    workspace: settingsContent.workspace.map(cloneSection),
     'file-overview': settingsContent['file-overview'].map(cloneSection),
     'tag-management': settingsContent['tag-management'].map(cloneSection),
+    'import-archive': settingsContent['import-archive'].map(cloneSection),
+    notifications: settingsContent.notifications.map(cloneSection),
+    'issue-governance': settingsContent['issue-governance'].map(cloneSection),
     verification: settingsContent.verification.map(cloneSection),
-    performance: settingsContent.performance.map(cloneSection),
+    'background-tasks': settingsContent['background-tasks'].map(cloneSection),
     appearance: settingsContent.appearance.map(cloneSection),
   };
 }

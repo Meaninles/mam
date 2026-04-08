@@ -44,7 +44,7 @@ export function SettingsPage({
         ) : null}
       </div>
 
-      {settingsTab === 'tag-management' ? (
+      {customContent ? (
         customContent
       ) : (
         <div className="settings-layout single-column">

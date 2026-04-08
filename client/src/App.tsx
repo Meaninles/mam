@@ -27,6 +27,8 @@ import type {
 import { navigationItems } from './data';
 import {
   cloneSettingsRecord,
+  resolveDefaultLibraryId,
+  resolveStartupWorkspace,
   collectNodeIds,
   createId,
   getDefaultPageSize,
@@ -73,6 +75,13 @@ import { ImportCenterPage } from './pages/ImportCenterPage';
 import { IssuesPage, type IssueFocusRequest } from './pages/IssuesPage';
 import { NotificationCenterSheet } from './pages/NotificationCenterSheet';
 import { SettingsPage } from './pages/SettingsPage';
+import {
+  BackgroundTaskSettingsPanel,
+  ImportArchiveSettingsPanel,
+  IssueGovernanceSettingsPanel,
+  NotificationSettingsPanel,
+  WorkspaceSettingsPanel,
+} from './pages/SettingsPanels';
 import { StorageNodesPage } from './pages/StorageNodesPage';
 import { TagManagementPage } from './pages/TagManagementPage';
 import { TaskCenterPage, TaskDetailSheet } from './pages/TaskCenterPage';
@@ -670,11 +679,12 @@ function resolveIssueActionFeedback(action: 'retry' | 'confirm' | 'postpone' | '
 
 export default function App() {
   const [persisted, setPersisted] = useState<PersistedState>(loadPersistedState);
-  const [openWorkspaceViews, setOpenWorkspaceViews] = useState<WorkspaceView[]>([DEFAULT_WORKSPACE_VIEW]);
-  const [mountedWorkspaceViews, setMountedWorkspaceViews] = useState<WorkspaceView[]>([DEFAULT_WORKSPACE_VIEW]);
-  const [activeWorkspaceView, setActiveWorkspaceView] = useState<WorkspaceView>(DEFAULT_WORKSPACE_VIEW);
+  const startupWorkspaceViewRef = useRef<WorkspaceView>(resolveStartupWorkspace(persisted.settings));
+  const [openWorkspaceViews, setOpenWorkspaceViews] = useState<WorkspaceView[]>([startupWorkspaceViewRef.current]);
+  const [mountedWorkspaceViews, setMountedWorkspaceViews] = useState<WorkspaceView[]>([startupWorkspaceViewRef.current]);
+  const [activeWorkspaceView, setActiveWorkspaceView] = useState<WorkspaceView>(startupWorkspaceViewRef.current);
   const [recentlyClosedWorkspaceViews, setRecentlyClosedWorkspaceViews] = useState<WorkspaceView[]>([]);
-  const [activeLibraryId, setActiveLibraryId] = useState(persisted.libraries[0]?.id ?? 'photo');
+  const [activeLibraryId, setActiveLibraryId] = useState(resolveDefaultLibraryId(persisted.settings, persisted.libraries));
   const [taskTab, setTaskTab] = useState<TaskTab>('transfer');
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('general');
   const [fileTypeFilter, setFileTypeFilter] = useState<FileTypeFilter>('全部');
@@ -740,6 +750,122 @@ export default function App() {
     }) as Record<WorkspaceView, { icon: React.ReactNode; title: string }>,
     [],
   );
+  const settingsCustomContent = useMemo(() => {
+    if (settingsTab === 'tag-management') {
+      return <TagManagementPage libraries={persisted.libraries} onFeedback={setFeedback} />;
+    }
+
+    if (settingsTab === 'workspace') {
+      return (
+        <WorkspaceSettingsPanel
+          activeViewLabel={workspaceLabels[activeWorkspaceView].title}
+          openViews={openWorkspaceViews.map((view) => workspaceLabels[view].title)}
+          sections={settingsDraft.workspace}
+          onChangeSetting={(sectionId, rowId, value) =>
+            setSettingsDraft((current) => ({
+              ...current,
+              workspace: current.workspace.map((section) =>
+                section.id === sectionId
+                  ? { ...section, rows: section.rows.map((row) => (row.id === rowId ? { ...row, value } : row)) }
+                  : section,
+              ),
+            }))
+          }
+        />
+      );
+    }
+
+    if (settingsTab === 'import-archive') {
+      return (
+        <ImportArchiveSettingsPanel
+          deviceSessions={persisted.importDeviceSessions}
+          reports={persisted.importReports}
+          sections={settingsDraft['import-archive']}
+          onChangeSetting={(sectionId, rowId, value) =>
+            setSettingsDraft((current) => ({
+              ...current,
+              'import-archive': current['import-archive'].map((section) =>
+                section.id === sectionId
+                  ? { ...section, rows: section.rows.map((row) => (row.id === rowId ? { ...row, value } : row)) }
+                  : section,
+              ),
+            }))
+          }
+        />
+      );
+    }
+
+    if (settingsTab === 'notifications') {
+      return (
+        <NotificationSettingsPanel
+          notices={persisted.noticeRecords}
+          sections={settingsDraft.notifications}
+          onChangeSetting={(sectionId, rowId, value) =>
+            setSettingsDraft((current) => ({
+              ...current,
+              notifications: current.notifications.map((section) =>
+                section.id === sectionId
+                  ? { ...section, rows: section.rows.map((row) => (row.id === rowId ? { ...row, value } : row)) }
+                  : section,
+              ),
+            }))
+          }
+        />
+      );
+    }
+
+    if (settingsTab === 'issue-governance') {
+      return (
+        <IssueGovernanceSettingsPanel
+          issues={persisted.issueRecords}
+          sections={settingsDraft['issue-governance']}
+          onChangeSetting={(sectionId, rowId, value) =>
+            setSettingsDraft((current) => ({
+              ...current,
+              'issue-governance': current['issue-governance'].map((section) =>
+                section.id === sectionId
+                  ? { ...section, rows: section.rows.map((row) => (row.id === rowId ? { ...row, value } : row)) }
+                  : section,
+              ),
+            }))
+          }
+        />
+      );
+    }
+
+    if (settingsTab === 'background-tasks') {
+      return (
+        <BackgroundTaskSettingsPanel
+          sections={settingsDraft['background-tasks']}
+          tasks={persisted.taskRecords}
+          onChangeSetting={(sectionId, rowId, value) =>
+            setSettingsDraft((current) => ({
+              ...current,
+              'background-tasks': current['background-tasks'].map((section) =>
+                section.id === sectionId
+                  ? { ...section, rows: section.rows.map((row) => (row.id === rowId ? { ...row, value } : row)) }
+                  : section,
+              ),
+            }))
+          }
+        />
+      );
+    }
+
+    return null;
+  }, [
+    activeWorkspaceView,
+    openWorkspaceViews,
+    persisted.importDeviceSessions,
+    persisted.importReports,
+    persisted.issueRecords,
+    persisted.libraries,
+    persisted.noticeRecords,
+    persisted.taskRecords,
+    settingsDraft,
+    settingsTab,
+    workspaceLabels,
+  ]);
 
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
@@ -2451,32 +2577,27 @@ export default function App() {
           createPortal(
             <SettingsPage
               key={`settings-${workspaceRefreshTokens.settings}`}
-            customContent={
-              <TagManagementPage
-                libraries={persisted.libraries}
-                onFeedback={setFeedback}
-              />
-            }
-            sections={settingsDraft[settingsTab]}
-            settingsTab={settingsTab}
-            setSettingsTab={setSettingsTab}
-            onChangeSetting={(sectionId, rowId, value) =>
-              setSettingsDraft((current) => ({
-                ...current,
-                [settingsTab]: current[settingsTab].map((section) =>
-                  section.id === sectionId
-                    ? { ...section, rows: section.rows.map((row) => (row.id === rowId ? { ...row, value } : row)) }
-                    : section,
-                ),
-              }))
-            }
-            onResetSettings={() => setSettingsDraft(cloneSettingsRecord(loadPersistedState().settings))}
-            onSaveSettings={() =>
-              commitState((current) => ({ ...current, settings: cloneSettingsRecord(settingsDraft) }), {
-                message: '设置已保存',
-                tone: 'success',
-              })
-            }
+              customContent={settingsCustomContent}
+              sections={settingsDraft[settingsTab]}
+              settingsTab={settingsTab}
+              setSettingsTab={setSettingsTab}
+              onChangeSetting={(sectionId, rowId, value) =>
+                setSettingsDraft((current) => ({
+                  ...current,
+                  [settingsTab]: current[settingsTab].map((section) =>
+                    section.id === sectionId
+                      ? { ...section, rows: section.rows.map((row) => (row.id === rowId ? { ...row, value } : row)) }
+                      : section,
+                  ),
+                }))
+              }
+              onResetSettings={() => setSettingsDraft(cloneSettingsRecord(loadPersistedState().settings))}
+              onSaveSettings={() =>
+                commitState((current) => ({ ...current, settings: cloneSettingsRecord(settingsDraft) }), {
+                  message: '设置已保存',
+                  tone: 'success',
+                })
+              }
             />,
             getWorkspaceContainer('settings'),
           )

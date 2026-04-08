@@ -519,6 +519,45 @@ describe('MARE 客户端', () => {
     expect(document.querySelector('.app-shell')).toHaveClass('theme-light');
   });
 
+  it('设置页展示新的策略页签并提供与现有工作台一致的预览信息', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '设置' }));
+
+    expect(await screen.findByRole('button', { name: '工作区' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '导入与归档' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '通知与提醒' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '异常治理' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '后台任务与性能' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '通知与提醒' }));
+    expect(await screen.findByText('通知示例')).toBeInTheDocument();
+    expect(screen.getByText('影像 NAS 01 共享目录写入权限异常')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '异常治理' }));
+    expect(await screen.findByText('治理快照')).toBeInTheDocument();
+    expect(screen.getAllByText('待处理').length).toBeGreaterThan(0);
+  });
+
+  it('支持保存工作区默认打开页，并在重新打开客户端后直接进入对应页面', async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '设置' }));
+    await user.click(await screen.findByRole('button', { name: '工作区' }));
+    await user.selectOptions(screen.getByLabelText('默认打开页面'), '任务中心');
+    await user.click(screen.getByRole('button', { name: '保存设置' }));
+
+    expect(await screen.findByText('设置已保存')).toBeInTheDocument();
+
+    unmount();
+    render(<App />);
+
+    expect(await screen.findByLabelText('任务状态')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '传输任务' })).toBeInTheDocument();
+  });
+
   it('支持从指定端点删除且保留资产', async () => {
     const user = userEvent.setup();
     render(<App />);

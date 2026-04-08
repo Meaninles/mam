@@ -16,6 +16,7 @@ import type {
   StorageNode,
   TaskItemRecord,
   TaskRecord,
+  MainView,
   ThemeMode,
 } from '../data';
 import {
@@ -130,10 +131,14 @@ export function cloneSettingsRecord(
   const fallback = cloneSettingsContent();
   return {
     general: structuredClone(settings.general ?? fallback.general),
+    workspace: structuredClone(settings.workspace ?? fallback.workspace),
     'file-overview': structuredClone(settings['file-overview'] ?? fallback['file-overview']),
     'tag-management': structuredClone(settings['tag-management'] ?? fallback['tag-management']),
+    'import-archive': structuredClone(settings['import-archive'] ?? fallback['import-archive']),
+    notifications: structuredClone(settings.notifications ?? fallback.notifications),
+    'issue-governance': structuredClone(settings['issue-governance'] ?? fallback['issue-governance']),
     verification: structuredClone(settings.verification ?? fallback.verification),
-    performance: structuredClone(settings.performance ?? fallback.performance),
+    'background-tasks': structuredClone(settings['background-tasks'] ?? fallback['background-tasks']),
     appearance: structuredClone(settings.appearance ?? fallback.appearance),
   };
 }
@@ -141,6 +146,27 @@ export function cloneSettingsRecord(
 export function resolveThemeMode(settings: Record<SettingsTab, SettingSection[]>): ThemeMode {
   const value = findSettingValue(settings, 'appearance', 'appearance', 'theme');
   return value === '浅色主题' ? 'light' : 'dark';
+}
+
+export function resolveStartupWorkspace(settings: Record<SettingsTab, SettingSection[]>): MainView {
+  const value = findSettingValue(settings, 'workspace', 'workspace-defaults', 'startup-page');
+  if (value === '任务中心') return 'task-center';
+  if (value === '异常中心') return 'issues';
+  if (value === '存储节点') return 'storage-nodes';
+  if (value === '设置') return 'settings';
+  if (value === '导入中心') return 'import-center';
+  return 'file-center';
+}
+
+export function resolveDefaultLibraryId(
+  settings: Record<SettingsTab, SettingSection[]>,
+  availableLibraries: Library[],
+): string {
+  const value = findSettingValue(settings, 'general', 'launch', 'default-library');
+  if (value === '上次使用') {
+    return availableLibraries[0]?.id ?? 'photo';
+  }
+  return availableLibraries.find((library) => library.name === value)?.id ?? availableLibraries[0]?.id ?? 'photo';
 }
 
 export function getDefaultPageSize(settings: Record<SettingsTab, SettingSection[]>): 10 | 20 | 50 | 100 {

@@ -1135,6 +1135,78 @@ button {
   gap: 16px;
 }
 
+.settings-strategy-page {
+  gap: 14px;
+}
+
+.settings-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.settings-policy-banner {
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.settings-policy-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-policy-copy p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.settings-strategy-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
+  gap: 16px;
+  min-height: 0;
+}
+
+.settings-preview-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-preview-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-preview-item {
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-control);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-preview-item.subtle {
+  background: color-mix(in srgb, var(--bg-control) 76%, var(--bg-card));
+}
+
+.settings-preview-item p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.settings-preview-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .setting-list {
   display: flex;
   flex-direction: column;
@@ -3274,8 +3346,10 @@ button {
   }
 
   .tag-management-stats,
+  .settings-summary-grid,
   .tag-management-layout,
-  .tag-management-browser {
+  .tag-management-browser,
+  .settings-strategy-layout {
     grid-template-columns: 1fr;
   }
 }
