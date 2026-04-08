@@ -57,31 +57,6 @@ describe('StorageNodesPage', () => {
           authTone: 'info',
           notes: '',
         },
-        {
-          id: 'mount-2',
-          name: '视频工作流 NAS 挂载',
-          libraryId: 'video',
-          libraryName: '视频工作流资产库',
-          folderType: 'NAS',
-          sourceRefId: 'nas-1',
-          sourceName: '影像 NAS 01',
-          address: '\\\\192.168.10.20\\media\\video_workflow',
-          mountMode: '可写',
-          enabled: true,
-          scanStatus: '等待队列',
-          scanTone: 'info',
-          lastScanAt: '2 分钟前',
-          heartbeatPolicy: '每日（深夜）',
-          nextHeartbeatAt: '今晚 02:00',
-          capacitySummary: '已用 48% · 18.9 TB 可用',
-          freeSpaceSummary: '18.9 TB 可用',
-          capacityPercent: 48,
-          riskTags: [],
-          badges: ['SMB', '可写'],
-          authStatus: '鉴权正常',
-          authTone: 'success',
-          notes: '',
-        },
       ],
       nasNodes: [
         {
@@ -114,15 +89,15 @@ describe('StorageNodesPage', () => {
     mockedApi.saveMountFolder.mockResolvedValue({ message: '挂载文件夹已保存' });
     mockedApi.saveNasNode.mockResolvedValue({ message: 'NAS 已保存' });
     mockedApi.saveCloudNode.mockResolvedValue({ message: '网盘已保存' });
-    mockedApi.runMountScan.mockResolvedValue({ message: '已为 2 个挂载文件夹创建扫描任务' });
+    mockedApi.runMountScan.mockResolvedValue({ message: '已为 1 个挂载文件夹创建扫描任务' });
     mockedApi.runMountConnectionTest.mockResolvedValue({
       message: '连接测试已完成',
       results: [
         {
-          id: 'mount-2',
-          name: '视频工作流 NAS 挂载',
+          id: 'mount-1',
+          name: '商业摄影原片库',
           overallTone: 'success',
-          summary: '挂载目录可达且当前配置可继续使用。',
+          summary: '目录可访问。',
           checks: [{ label: '可达性', status: 'success', detail: '目录可访问。' }],
           testedAt: '刚刚',
         },
@@ -156,7 +131,7 @@ describe('StorageNodesPage', () => {
     });
     mockedApi.updateMountHeartbeat.mockResolvedValue({ message: '心跳策略已更新' });
     mockedApi.loadMountScanHistory.mockResolvedValue({
-      id: 'mount-2',
+      id: 'mount-1',
       items: [{ id: 'history-1', startedAt: '2026-03-31 02:00', finishedAt: '2026-03-31 02:18', status: '成功', summary: '新增 218 项。', trigger: '计划扫描' }],
     });
     mockedApi.deleteMountFolder.mockResolvedValue({ message: '挂载文件夹已删除' });
@@ -169,22 +144,16 @@ describe('StorageNodesPage', () => {
     vi.clearAllMocks();
   });
 
-  it('支持挂载文件夹页的筛选和批量操作，且顶部只有一个批量操作区', async () => {
+  it('第一页已收敛为本地文件夹管理，不再显示混合类型筛选', async () => {
     const user = userEvent.setup();
     render(<StorageNodesPage libraries={libraries as any} />);
 
-    expect(await screen.findByText('挂载文件夹管理')).toBeInTheDocument();
+    expect(await screen.findByText('本地文件夹管理')).toBeInTheDocument();
     expect(screen.getByText('商业摄影原片库')).toBeInTheDocument();
-    expect(screen.queryAllByRole('button', { name: '批量扫描' })).toHaveLength(0);
-    expect(screen.getByText(/页 1\/1/)).toBeInTheDocument();
-    expect(screen.getByLabelText('每页数量')).toHaveValue('20');
+    expect(screen.queryByLabelText('挂载类型筛选')).not.toBeInTheDocument();
 
-    await user.click(screen.getByLabelText('选择挂载文件夹 商业摄影原片库'));
-    await user.click(screen.getByLabelText('选择挂载文件夹 视频工作流 NAS 挂载'));
-
-    expect(screen.getAllByRole('button', { name: '批量扫描' })).toHaveLength(1);
-    expect(screen.getAllByRole('button', { name: '批量连接测试' })).toHaveLength(1);
-    expect(screen.queryByRole('button', { name: '批量设置心跳' })).not.toBeInTheDocument();
+    await user.click(screen.getByLabelText('选择本地文件夹 商业摄影原片库'));
+    expect(screen.getByText('已选择 1 个本地文件夹')).toBeInTheDocument();
   });
 
   it('支持切换到 NAS 管理和网盘管理子页', async () => {
@@ -224,22 +193,22 @@ describe('StorageNodesPage', () => {
     expect(await screen.findByText('网盘可达，但 Token 需要重新确认。')).toBeInTheDocument();
   });
 
-  it('支持新增挂载文件夹，并按类型切换字段', async () => {
+  it('支持新增本地文件夹', async () => {
     const user = userEvent.setup();
     const handleFeedback = vi.fn();
     render(<StorageNodesPage libraries={libraries as any} onFeedback={handleFeedback} />);
 
     await screen.findByText('商业摄影原片库');
-    await user.click(screen.getByRole('button', { name: '新增挂载文件夹' }));
+    await user.click(screen.getByRole('button', { name: '新增本地文件夹' }));
 
-    const sheet = await screen.findByRole('region', { name: '新增挂载文件夹' });
-    await user.type(within(sheet).getByLabelText('挂载名称'), '新本地挂载');
+    const sheet = await screen.findByRole('region', { name: '新增本地文件夹' });
+    await user.type(within(sheet).getByLabelText('文件夹名称'), '新本地文件夹');
     await user.selectOptions(within(sheet).getByLabelText('所属资产库'), 'photo');
     await user.click(within(sheet).getByRole('button', { name: '浏览目录' }));
     expect(mockedApi.browseLocalFolder).toHaveBeenCalled();
     expect(within(sheet).getByLabelText('本地目录')).toHaveValue('D:\\Mare\\NewMount');
 
-    await user.click(within(sheet).getByRole('button', { name: '保存挂载文件夹' }));
+    await user.click(within(sheet).getByRole('button', { name: '保存本地文件夹' }));
     expect(mockedApi.saveMountFolder).toHaveBeenCalled();
     expect(handleFeedback).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -247,21 +216,5 @@ describe('StorageNodesPage', () => {
         tone: 'success',
       }),
     );
-  });
-
-  it('支持新增 NAS 挂载时选择已配置 NAS 并填写共享文件夹', async () => {
-    const user = userEvent.setup();
-    render(<StorageNodesPage libraries={libraries as any} />);
-
-    await screen.findByText('商业摄影原片库');
-    await user.click(screen.getByRole('button', { name: '新增挂载文件夹' }));
-    const sheet = await screen.findByRole('region', { name: '新增挂载文件夹' });
-    await user.type(within(sheet).getByLabelText('挂载名称'), 'NAS 新挂载');
-    await user.selectOptions(within(sheet).getByLabelText('所属资产库'), 'video');
-    await user.click(within(sheet).getByRole('button', { name: 'NAS' }));
-    await user.selectOptions(within(sheet).getByLabelText('NAS 来源'), 'nas-1');
-    await user.type(within(sheet).getByLabelText('NAS 共享文件夹'), 'project_a');
-    await user.click(within(sheet).getByRole('button', { name: '保存挂载文件夹' }));
-    expect(mockedApi.saveMountFolder).toHaveBeenCalled();
   });
 });

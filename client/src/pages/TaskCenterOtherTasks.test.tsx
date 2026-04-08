@@ -69,7 +69,7 @@ describe('任务中心其它任务子页面', () => {
     expect(within(detailSheet).getByRole('button', { name: '查看存储节点' })).toBeInTheDocument();
 
     await user.click(within(detailSheet).getByRole('button', { name: '查看存储节点' }));
-    expect(await screen.findByRole('button', { name: '挂载文件夹管理' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: '本地文件夹管理' })).toBeInTheDocument();
   });
 
   it('支持其它任务的批量暂停、批量继续，以及删除清理的等待清理状态展示', async () => {

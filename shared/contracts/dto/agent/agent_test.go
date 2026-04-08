@@ -15,6 +15,9 @@ func TestRegisterRequestJSONShape(t *testing.T) {
 		Platform:  "windows/amd64",
 		Mode:      "attached",
 		ProcessID: 1024,
+		Capabilities: []string{
+			"localfs",
+		},
 	}
 
 	raw, err := json.Marshal(payload)
@@ -22,7 +25,7 @@ func TestRegisterRequestJSONShape(t *testing.T) {
 		t.Fatalf("marshal register request: %v", err)
 	}
 
-	expected := `{"agentId":"agent-dev-1","version":"dev","hostname":"workstation","platform":"windows/amd64","mode":"attached","processId":1024}`
+	expected := `{"agentId":"agent-dev-1","version":"dev","hostname":"workstation","platform":"windows/amd64","mode":"attached","processId":1024,"capabilities":["localfs"]}`
 	if string(raw) != expected {
 		t.Fatalf("unexpected json: %s", string(raw))
 	}
@@ -38,6 +41,10 @@ func TestHeartbeatRequestSupportsUnicodeHostname(t *testing.T) {
 		Platform:  "windows/amd64",
 		Mode:      "attached",
 		ProcessID: 2048,
+		Capabilities: []string{
+			"localfs",
+			"storage-report",
+		},
 	}
 
 	raw, err := json.Marshal(payload)
@@ -45,7 +52,7 @@ func TestHeartbeatRequestSupportsUnicodeHostname(t *testing.T) {
 		t.Fatalf("marshal heartbeat request: %v", err)
 	}
 
-	expected := `{"agentId":"agent-dev-1","version":"dev","hostname":"工作站-A","platform":"windows/amd64","mode":"attached","processId":2048}`
+	expected := `{"agentId":"agent-dev-1","version":"dev","hostname":"工作站-A","platform":"windows/amd64","mode":"attached","processId":2048,"capabilities":["localfs","storage-report"]}`
 	if string(raw) != expected {
 		t.Fatalf("unexpected json: %s", string(raw))
 	}

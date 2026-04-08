@@ -1,3 +1,5 @@
+import { getRuntimeConfig } from './runtimeConfig';
+
 export type StorageTone = 'success' | 'warning' | 'critical' | 'info';
 export type StorageHeartbeatPolicy = '从不' | '每周（深夜）' | '每日（深夜）' | '每小时';
 export type StorageMountMode = '只读' | '可写';
@@ -130,14 +132,40 @@ type StorageBrowserDb = {
 };
 
 const BROWSER_STORAGE_KEY = 'mare-storage-nodes-browser-v3';
+const LOCAL_FOLDERS_API_PATH = '/api/storage/local-folders';
 
 export const storageNodesApi = {
   async loadDashboard(): Promise<StorageNodesDashboard> {
-    return invokeStorageCommand<StorageNodesDashboard>('storage_nodes_load_dashboard', {});
+    const fallback = runBrowserFallback<StorageNodesDashboard>('storage_nodes_load_dashboard', {});
+    let localFolders: MountFolderRecord[] = [];
+    try {
+      localFolders = await fetchCenterData<MountFolderRecord[]>(LOCAL_FOLDERS_API_PATH);
+    } catch {
+      localFolders = [];
+    }
+
+    return {
+      mountFolders: localFolders,
+      nasNodes: fallback.nasNodes,
+      cloudNodes: fallback.cloudNodes,
+    };
   },
 
   async saveMountFolder(draft: MountFolderDraft): Promise<{ message: string }> {
-    return invokeStorageCommand<{ message: string }>('storage_nodes_save_mount_folder', { draft });
+    const result = await fetchCenterData<{ message: string; record: MountFolderRecord }>(LOCAL_FOLDERS_API_PATH, {
+      method: 'POST',
+      body: JSON.stringify({
+        id: draft.id,
+        name: draft.name,
+        libraryId: draft.libraryId,
+        libraryName: resolveLibraryName(draft.libraryId),
+        mountMode: draft.mountMode,
+        heartbeatPolicy: draft.heartbeatPolicy,
+        localPath: draft.localPath,
+        notes: draft.notes,
+      }),
+    });
+    return { message: result.message };
   },
 
   async saveNasNode(draft: NasDraft): Promise<{ message: string }> {
@@ -149,13 +177,20 @@ export const storageNodesApi = {
   },
 
   async runMountScan(ids: string[]): Promise<{ message: string }> {
-    return invokeStorageCommand<{ message: string }>('storage_nodes_run_mount_scan', { ids });
+    const result = await fetchCenterData<{ message: string }>(`${LOCAL_FOLDERS_API_PATH}/scan`, {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    });
+    return { message: result.message };
   },
 
   async runMountConnectionTest(ids: string[]): Promise<{ message: string; results: StorageConnectionTestResult[] }> {
-    return invokeStorageCommand<{ message: string; results: StorageConnectionTestResult[] }>(
-      'storage_nodes_run_mount_connection_test',
-      { ids },
+    return fetchCenterData<{ message: string; results: StorageConnectionTestResult[] }>(
+      `${LOCAL_FOLDERS_API_PATH}/connection-test`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ ids }),
+      },
     );
   },
 
@@ -174,15 +209,22 @@ export const storageNodesApi = {
   },
 
   async updateMountHeartbeat(ids: string[], heartbeatPolicy: StorageHeartbeatPolicy): Promise<{ message: string }> {
-    return invokeStorageCommand<{ message: string }>('storage_nodes_update_mount_heartbeat', { heartbeatPolicy, ids });
+    const result = await fetchCenterData<{ message: string }>(`${LOCAL_FOLDERS_API_PATH}/heartbeat`, {
+      method: 'PATCH',
+      body: JSON.stringify({ ids, heartbeatPolicy }),
+    });
+    return { message: result.message };
   },
 
   async loadMountScanHistory(id: string): Promise<{ id: string; items: StorageScanHistoryItem[] }> {
-    return invokeStorageCommand<{ id: string; items: StorageScanHistoryItem[] }>('storage_nodes_load_mount_scan_history', { id });
+    return fetchCenterData<{ id: string; items: StorageScanHistoryItem[] }>(`${LOCAL_FOLDERS_API_PATH}/${id}/scan-history`);
   },
 
   async deleteMountFolder(id: string): Promise<{ message: string }> {
-    return invokeStorageCommand<{ message: string }>('storage_nodes_delete_mount_folder', { id });
+    const result = await fetchCenterData<{ message: string }>(`${LOCAL_FOLDERS_API_PATH}/${id}`, {
+      method: 'DELETE',
+    });
+    return { message: result.message };
   },
 
   async deleteNasNode(id: string): Promise<{ message: string }> {
@@ -209,6 +251,37 @@ async function invokeStorageCommand<T>(command: string, payload: Record<string, 
   }
 
   return runBrowserFallback<T>(command, payload);
+}
+
+async function fetchCenterData<T>(path: string, init?: RequestInit): Promise<T> {
+  const { centerBaseUrl } = getRuntimeConfig();
+  const response = await fetch(`${centerBaseUrl}${path}`, {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(init?.headers ?? {}),
+    },
+  });
+
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { error?: { message?: string } } | null;
+    throw new Error(payload?.error?.message ?? `center service returned status ${response.status}`);
+  }
+
+  const payload = (await response.json()) as { data: T };
+  return payload.data;
+}
+
+function resolveLibraryName(libraryId: string) {
+  const libraryMap = new Map(
+    [
+      ['photo', '商业摄影资产库'],
+      ['video', '视频工作流资产库'],
+      ['family', '家庭照片资产库'],
+    ] as Array<[string, string]>,
+  );
+
+  return libraryMap.get(libraryId) ?? libraryId;
 }
 
 function isTauriRuntime() {

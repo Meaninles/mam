@@ -32,17 +32,18 @@ func (s *Service) Register(ctx context.Context, registration Registration) (Agen
 	now := s.now().UTC()
 	row := s.pool.QueryRow(ctx, `
 		INSERT INTO agents (
-			agent_id, version, hostname, platform, mode, process_id, registered_at, last_heartbeat_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+			agent_id, version, hostname, platform, mode, process_id, capabilities, registered_at, last_heartbeat_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
 		ON CONFLICT (agent_id) DO UPDATE SET
 			version = EXCLUDED.version,
 			hostname = EXCLUDED.hostname,
 			platform = EXCLUDED.platform,
 			mode = EXCLUDED.mode,
 			process_id = EXCLUDED.process_id,
+			capabilities = EXCLUDED.capabilities,
 			registered_at = EXCLUDED.registered_at,
 			last_heartbeat_at = EXCLUDED.last_heartbeat_at
-		RETURNING agent_id, version, hostname, platform, mode, process_id, registered_at, last_heartbeat_at
+		RETURNING agent_id, version, hostname, platform, mode, process_id, capabilities, registered_at, last_heartbeat_at
 	`,
 		registration.AgentID,
 		registration.Version,
@@ -50,6 +51,7 @@ func (s *Service) Register(ctx context.Context, registration Registration) (Agen
 		registration.Platform,
 		registration.Mode,
 		registration.ProcessID,
+		registration.Capabilities,
 		now,
 	)
 
@@ -68,9 +70,10 @@ func (s *Service) Heartbeat(ctx context.Context, heartbeat Heartbeat) (Agent, er
 		    platform = $4,
 		    mode = $5,
 		    process_id = $6,
-		    last_heartbeat_at = $7
+		    capabilities = $7,
+		    last_heartbeat_at = $8
 		WHERE agent_id = $1
-		RETURNING agent_id, version, hostname, platform, mode, process_id, registered_at, last_heartbeat_at
+		RETURNING agent_id, version, hostname, platform, mode, process_id, capabilities, registered_at, last_heartbeat_at
 	`,
 		heartbeat.AgentID,
 		heartbeat.Version,
@@ -78,6 +81,7 @@ func (s *Service) Heartbeat(ctx context.Context, heartbeat Heartbeat) (Agent, er
 		heartbeat.Platform,
 		heartbeat.Mode,
 		heartbeat.ProcessID,
+		heartbeat.Capabilities,
 		s.now().UTC(),
 	)
 
@@ -94,7 +98,7 @@ func (s *Service) Heartbeat(ctx context.Context, heartbeat Heartbeat) (Agent, er
 
 func (s *Service) Snapshot(ctx context.Context) ([]Agent, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT agent_id, version, hostname, platform, mode, process_id, registered_at, last_heartbeat_at
+		SELECT agent_id, version, hostname, platform, mode, process_id, capabilities, registered_at, last_heartbeat_at
 		FROM agents
 		ORDER BY agent_id
 	`)
@@ -132,6 +136,7 @@ func scanAgent(row scanner) (Agent, error) {
 		&agent.Platform,
 		&agent.Mode,
 		&agent.ProcessID,
+		&agent.Capabilities,
 		&agent.RegisteredAt,
 		&agent.LastHeartbeatAt,
 	); err != nil {

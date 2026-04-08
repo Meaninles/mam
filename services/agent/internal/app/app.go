@@ -19,6 +19,7 @@ type Options struct {
 	Platform          string
 	Mode              string
 	ProcessID         int64
+	Capabilities      []string
 	HeartbeatInterval time.Duration
 	RetryDelay        time.Duration
 }
@@ -37,20 +38,22 @@ func NewRunner(client CenterClient, options Options) *Runner {
 
 func (r *Runner) Run(ctx context.Context) error {
 	registerPayload := agentdto.RegisterRequest{
-		AgentID:   r.options.AgentID,
-		Version:   r.options.Version,
-		Hostname:  r.options.Hostname,
-		Platform:  r.options.Platform,
-		Mode:      r.options.Mode,
-		ProcessID: r.options.ProcessID,
+		AgentID:      r.options.AgentID,
+		Version:      r.options.Version,
+		Hostname:     r.options.Hostname,
+		Platform:     r.options.Platform,
+		Mode:         r.options.Mode,
+		ProcessID:    r.options.ProcessID,
+		Capabilities: append([]string(nil), r.options.Capabilities...),
 	}
 	heartbeatPayload := agentdto.HeartbeatRequest{
-		AgentID:   r.options.AgentID,
-		Version:   r.options.Version,
-		Hostname:  r.options.Hostname,
-		Platform:  r.options.Platform,
-		Mode:      r.options.Mode,
-		ProcessID: r.options.ProcessID,
+		AgentID:      r.options.AgentID,
+		Version:      r.options.Version,
+		Hostname:     r.options.Hostname,
+		Platform:     r.options.Platform,
+		Mode:         r.options.Mode,
+		ProcessID:    r.options.ProcessID,
+		Capabilities: append([]string(nil), r.options.Capabilities...),
 	}
 
 	for {

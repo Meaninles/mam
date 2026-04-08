@@ -13,6 +13,7 @@ import (
 	httpapi "mare/services/center/internal/http"
 	"mare/services/center/internal/logging"
 	"mare/services/center/internal/runtime"
+	"mare/services/center/internal/storage"
 )
 
 type ServerApplication struct {
@@ -44,6 +45,7 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 	}
 
 	agentService := agentregistry.NewService(pool)
+	localFolderService := storage.NewLocalFolderService(pool)
 	runtimeService := runtime.NewService(
 		cfg.ServiceName,
 		cfg.ServiceVersion,
@@ -55,9 +57,10 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 	)
 
 	router := httpapi.NewRouter(httpapi.Dependencies{
-		Logger:  logger,
-		Runtime: runtimeService,
-		Agents:  agentService,
+		Logger:       logger,
+		Runtime:      runtimeService,
+		Agents:       agentService,
+		LocalFolders: localFolderService,
 	})
 
 	return &ServerApplication{

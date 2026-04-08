@@ -8,23 +8,25 @@ import (
 )
 
 type Options struct {
-	AgentID   string
-	Version   string
-	Hostname  string
-	Platform  string
-	Mode      string
-	ProcessID int64
-	StartedAt time.Time
+	AgentID      string
+	Version      string
+	Hostname     string
+	Platform     string
+	Mode         string
+	ProcessID    int64
+	Capabilities []string
+	StartedAt    time.Time
 }
 
 type Summary struct {
-	AgentID   string `json:"agentId"`
-	Version   string `json:"version"`
-	Hostname  string `json:"hostname"`
-	Platform  string `json:"platform"`
-	Mode      string `json:"mode"`
-	ProcessID int64  `json:"processId"`
-	StartedAt string `json:"startedAt"`
+	AgentID      string   `json:"agentId"`
+	Version      string   `json:"version"`
+	Hostname     string   `json:"hostname"`
+	Platform     string   `json:"platform"`
+	Mode         string   `json:"mode"`
+	ProcessID    int64    `json:"processId"`
+	Capabilities []string `json:"capabilities"`
+	StartedAt    string   `json:"startedAt"`
 }
 
 func BuildSummary(options Options) (Summary, error) {
@@ -51,13 +53,14 @@ func BuildSummary(options Options) (Summary, error) {
 	}
 
 	return Summary{
-		AgentID:   options.AgentID,
-		Version:   options.Version,
-		Hostname:  options.Hostname,
-		Platform:  options.Platform,
-		Mode:      options.Mode,
-		ProcessID: options.ProcessID,
-		StartedAt: options.StartedAt.UTC().Format(time.RFC3339),
+		AgentID:      options.AgentID,
+		Version:      options.Version,
+		Hostname:     options.Hostname,
+		Platform:     options.Platform,
+		Mode:         options.Mode,
+		ProcessID:    options.ProcessID,
+		Capabilities: append([]string(nil), options.Capabilities...),
+		StartedAt:    options.StartedAt.UTC().Format(time.RFC3339),
 	}, nil
 }
 

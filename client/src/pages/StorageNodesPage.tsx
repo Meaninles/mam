@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   ChevronLeft,
   ChevronRight,
@@ -26,7 +27,6 @@ import type {
   CloudRecord,
   MountFolderDraft,
   MountFolderRecord,
-  MountFolderType,
   NasDraft,
   NasRecord,
   StorageCloudAccessMethod,
@@ -69,18 +69,25 @@ type HistoryState = {
   items: StorageScanHistoryItem[];
 };
 
+type StorageMenuState = {
+  type: 'mount' | 'nas' | 'cloud';
+  id: string;
+  top: number;
+  right: number;
+} | null;
+
 const SUB_PAGES: Array<{ id: StorageSubPage; label: string }> = [
-  { id: 'mounts', label: '挂载文件夹管理' },
+  { id: 'mounts', label: '本地文件夹管理' },
   { id: 'nas', label: 'NAS 管理' },
   { id: 'cloud', label: '网盘管理' },
 ];
 
-const MOUNT_TYPE_OPTIONS: Array<'全部' | MountFolderType> = ['全部', '本地', 'NAS', '网盘'];
 const STATUS_OPTIONS: StatusFilter[] = ['全部', '可用', '异常', '已停用', '扫描中'];
 const HEARTBEAT_OPTIONS: StorageHeartbeatPolicy[] = ['从不', '每周（深夜）', '每日（深夜）', '每小时'];
 const CLOUD_ACCESS_OPTIONS: StorageCloudAccessMethod[] = ['填入 Token', '扫码登录获取 Token'];
 const CLOUD_QR_OPTIONS: StorageCloudQrChannel[] = ['微信小程序', '支付宝小程序', '电视端'];
 const PAGE_SIZE_OPTIONS: StoragePageSize[] = [10, 20, 50, 100];
+const ROW_MENU_ESTIMATED_HEIGHT = 220;
 
 const EMPTY_MOUNT_DRAFT: MountFolderDraft = {
   name: '',
@@ -129,7 +136,6 @@ export function StorageNodesPage({
   const [dashboard, setDashboard] = useState<StorageNodesDashboard>({ mountFolders: [], nasNodes: [], cloudNodes: [] });
   const [feedback, setFeedback] = useState<FeedbackState>(null);
   const [subPage, setSubPage] = useState<StorageSubPage>('mounts');
-  const [mountTypeFilter, setMountTypeFilter] = useState<'全部' | MountFolderType>('全部');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('全部');
   const [searchText, setSearchText] = useState('');
   const [selectedMountIds, setSelectedMountIds] = useState<string[]>([]);
@@ -139,7 +145,7 @@ export function StorageNodesPage({
   const [historyState, setHistoryState] = useState<HistoryState | null>(null);
   const [connectionResults, setConnectionResults] = useState<StorageConnectionTestResult[] | null>(null);
   const [heartbeatEditor, setHeartbeatEditor] = useState<{ ids: string[]; value: StorageHeartbeatPolicy; saving: boolean } | null>(null);
-  const [menuState, setMenuState] = useState<{ type: 'mount' | 'nas' | 'cloud'; id: string } | null>(null);
+  const [menuState, setMenuState] = useState<StorageMenuState>(null);
   const [scanningIds, setScanningIds] = useState<string[]>([]);
   const [testingIds, setTestingIds] = useState<string[]>([]);
   const [testingNasIds, setTestingNasIds] = useState<string[]>([]);
@@ -165,7 +171,7 @@ export function StorageNodesPage({
 
   useEffect(() => {
     setPageBySubPage((current) => ({ ...current, mounts: 1 }));
-  }, [mountTypeFilter, searchText, statusFilter]);
+  }, [searchText, statusFilter]);
 
   useEffect(() => {
     setPageBySubPage((current) => ({ ...current, nas: 1 }));
@@ -195,12 +201,11 @@ export function StorageNodesPage({
   const visibleMounts = useMemo(() => {
     const keyword = searchText.trim().toLowerCase();
     return dashboard.mountFolders.filter((item) => {
-      const matchesType = mountTypeFilter === '全部' ? true : item.folderType === mountTypeFilter;
       const matchesStatus = statusFilter === '全部' ? true : resolveMountStatus(item) === statusFilter;
-      const haystack = `${item.name} ${item.address} ${item.libraryName} ${item.sourceName ?? ''} ${item.folderType}`.toLowerCase();
-      return matchesType && matchesStatus && (keyword ? haystack.includes(keyword) : true);
+      const haystack = `${item.name} ${item.address} ${item.libraryName}`.toLowerCase();
+      return matchesStatus && (keyword ? haystack.includes(keyword) : true);
     });
-  }, [dashboard.mountFolders, mountTypeFilter, searchText, statusFilter]);
+  }, [dashboard.mountFolders, searchText, statusFilter]);
 
   const visibleNas = useMemo(() => {
     const keyword = searchText.trim().toLowerCase();
@@ -292,7 +297,7 @@ export function StorageNodesPage({
       setMountForm(null);
     } catch (error) {
       setMountForm((current) => (current ? { ...current, saving: false } : current));
-      setFeedback({ message: extractErrorMessage(error, '保存挂载文件夹失败'), tone: 'critical' });
+      setFeedback({ message: extractErrorMessage(error, '保存本地文件夹失败'), tone: 'critical' });
     }
   }
 
@@ -355,7 +360,7 @@ export function StorageNodesPage({
 
   async function runMountScan(ids: string[]) {
     if (ids.length === 0) {
-      setFeedback({ message: '请先选择需要扫描的挂载文件夹', tone: 'info' });
+      setFeedback({ message: '请先选择需要扫描的本地文件夹', tone: 'info' });
       return;
     }
     setScanningIds(ids);
@@ -373,7 +378,7 @@ export function StorageNodesPage({
 
   async function runMountConnectionTest(ids: string[]) {
     if (ids.length === 0) {
-      setFeedback({ message: '请先选择需要测试的挂载文件夹', tone: 'info' });
+      setFeedback({ message: '请先选择需要测试的本地文件夹', tone: 'info' });
       return;
     }
     setTestingIds(ids);
@@ -477,14 +482,6 @@ export function StorageNodesPage({
 
       <div className="toolbar-card action-toolbar storage-topbar">
         <div className="toolbar-group wrap storage-toolbar-main">
-          {subPage === 'mounts' ? (
-            <SelectPill
-              ariaLabel="挂载类型筛选"
-              options={MOUNT_TYPE_OPTIONS}
-              value={mountTypeFilter}
-              onChange={(value) => setMountTypeFilter(value as '全部' | MountFolderType)}
-            />
-          ) : null}
           <SelectPill
             ariaLabel="状态筛选"
             options={STATUS_OPTIONS}
@@ -503,14 +500,14 @@ export function StorageNodesPage({
         <div className="toolbar-group wrap">
           <ActionButton onClick={openCreate}>
             <Plus size={14} />
-            {subPage === 'mounts' ? '新增挂载文件夹' : subPage === 'nas' ? '新增 NAS' : '新增网盘'}
+            {subPage === 'mounts' ? '新增本地文件夹' : subPage === 'nas' ? '新增 NAS' : '新增网盘'}
           </ActionButton>
         </div>
       </div>
 
       {subPage === 'mounts' && selectedMountIds.length > 0 ? (
         <div className="toolbar-card selection-toolbar">
-          <span className="selection-caption">已选择 {selectedMountIds.length} 个挂载文件夹</span>
+          <span className="selection-caption">已选择 {selectedMountIds.length} 个本地文件夹</span>
           <div className="toolbar-group wrap">
             <ActionButton ariaLabel="批量扫描" onClick={() => void runMountScan(selectedMountIds)}>
               <RefreshCw size={14} />
@@ -532,7 +529,7 @@ export function StorageNodesPage({
           <div className="empty-state">
             <LoaderCircle className="spin" size={18} />
             <strong>正在加载存储配置</strong>
-            <p>正在从当前 mock 数据源读取挂载文件夹、NAS 和网盘配置。</p>
+            <p>正在读取本地文件夹、NAS 和网盘配置。</p>
           </div>
         ) : subPage === 'mounts' ? (
           <MountFoldersTable
@@ -612,12 +609,12 @@ export function StorageNodesPage({
       </div>
 
       {mountForm ? (
-        <Sheet onClose={() => setMountForm(null)} title={mountForm.draft.id ? '编辑挂载文件夹' : '新增挂载文件夹'}>
+        <Sheet onClose={() => setMountForm(null)} title={mountForm.draft.id ? '编辑本地文件夹' : '新增本地文件夹'}>
           <div className="sheet-section">
             <div className="sheet-form">
-              <Field label="挂载名称" error={mountForm.errors.name}>
+              <Field label="文件夹名称" error={mountForm.errors.name}>
                 <input
-                  aria-label="挂载名称"
+                  aria-label="文件夹名称"
                   value={mountForm.draft.name}
                   onChange={(event) => setMountForm(updateMountForm(mountForm, { name: event.target.value }))}
                 />
@@ -635,88 +632,12 @@ export function StorageNodesPage({
                   ))}
                 </select>
               </Field>
-              <Field label="文件夹类型">
-                <div className="mini-segmented" role="group" aria-label="文件夹类型">
-                  {(['本地', 'NAS', '网盘'] as MountFolderType[]).map((option) => (
-                    <button
-                      key={option}
-                      className={mountForm.draft.folderType === option ? 'active' : ''}
-                      type="button"
-                      onClick={() =>
-                        setMountForm(
-                          updateMountForm(mountForm, {
-                            folderType: option,
-                            localPath: '',
-                            nasId: '',
-                            cloudId: '',
-                            targetFolder: '',
-                          }),
-                        )
-                      }
-                    >
-                      {option}
-                    </button>
-                  ))}
+              <Field label="本地目录" error={mountForm.errors.localPath}>
+                <div className="inline-action-row">
+                  <input aria-label="本地目录" value={mountForm.draft.localPath} readOnly />
+                  <ActionButton onClick={() => void browseLocalFolder()}>浏览目录</ActionButton>
                 </div>
               </Field>
-              {mountForm.draft.folderType === '本地' ? (
-                <Field label="本地目录" error={mountForm.errors.localPath}>
-                  <div className="inline-action-row">
-                    <input aria-label="本地目录" value={mountForm.draft.localPath} readOnly />
-                    <ActionButton onClick={() => void browseLocalFolder()}>浏览目录</ActionButton>
-                  </div>
-                </Field>
-              ) : mountForm.draft.folderType === 'NAS' ? (
-                <>
-                  <Field label="NAS 来源" error={mountForm.errors.nasId}>
-                    <select
-                      aria-label="NAS 来源"
-                      value={mountForm.draft.nasId}
-                      onChange={(event) => setMountForm(updateMountForm(mountForm, { nasId: event.target.value }))}
-                    >
-                      <option value="">请选择 NAS</option>
-                      {dashboard.nasNodes.map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {item.name}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                  <Field label="NAS 共享文件夹" error={mountForm.errors.targetFolder}>
-                    <input
-                      aria-label="NAS 共享文件夹"
-                      placeholder="例如：video_workflow"
-                      value={mountForm.draft.targetFolder}
-                      onChange={(event) => setMountForm(updateMountForm(mountForm, { targetFolder: event.target.value }))}
-                    />
-                  </Field>
-                </>
-              ) : (
-                <>
-                  <Field label="网盘来源" error={mountForm.errors.cloudId}>
-                    <select
-                      aria-label="网盘来源"
-                      value={mountForm.draft.cloudId}
-                      onChange={(event) => setMountForm(updateMountForm(mountForm, { cloudId: event.target.value }))}
-                    >
-                      <option value="">请选择网盘</option>
-                      {dashboard.cloudNodes.map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {item.name}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                  <Field label="网盘文件夹名 / ID" error={mountForm.errors.targetFolder}>
-                    <input
-                      aria-label="网盘文件夹名 / ID"
-                      placeholder="例如：family_album 或 123456"
-                      value={mountForm.draft.targetFolder}
-                      onChange={(event) => setMountForm(updateMountForm(mountForm, { targetFolder: event.target.value }))}
-                    />
-                  </Field>
-                </>
-              )}
               <Field label="挂载模式">
                 <select
                   aria-label="挂载模式"
@@ -745,7 +666,7 @@ export function StorageNodesPage({
           <div className="sheet-actions right">
             <ActionButton tone="primary" onClick={() => void saveMountFolder()}>
               {mountForm.saving ? <LoaderCircle className="spin" size={14} /> : null}
-              保存挂载文件夹
+              保存本地文件夹
             </ActionButton>
           </div>
         </Sheet>
@@ -925,13 +846,13 @@ function MountFoldersTable({
 }: {
   allVisibleSelected: boolean;
   items: MountFolderRecord[];
-  menuState: { type: 'mount' | 'nas' | 'cloud'; id: string } | null;
+  menuState: StorageMenuState;
   page: number;
   pageCount: number;
   pageSize: StoragePageSize;
   onDelete: (id: string) => void | Promise<void>;
   onEdit: (item: MountFolderRecord) => void;
-  onMenuChange: (value: { type: 'mount' | 'nas' | 'cloud'; id: string } | null) => void;
+  onMenuChange: (value: StorageMenuState) => void;
   onOpenHistory: (item: MountFolderRecord) => void;
   onOpenIssueCenter?: (context: { id: string; label: string; path?: string }) => void;
   onOpenTaskCenter?: (id: string) => void;
@@ -948,7 +869,7 @@ function MountFoldersTable({
   total: number;
 }) {
   if (items.length === 0) {
-    return <EmptyState title="没有匹配的挂载文件夹" description="可以调整筛选条件，或新增一个挂载文件夹。" />;
+    return <EmptyState title="没有匹配的本地文件夹" description="可以调整筛选条件，或新增一个本地文件夹。" />;
   }
 
   return (
@@ -958,11 +879,10 @@ function MountFoldersTable({
         <thead>
           <tr>
             <th className="checkbox-cell">
-              <input aria-label="选择当前挂载文件夹" checked={allVisibleSelected} type="checkbox" onChange={onToggleSelectVisible} />
+              <input aria-label="选择当前本地文件夹" checked={allVisibleSelected} type="checkbox" onChange={onToggleSelectVisible} />
             </th>
             <th>名称</th>
-            <th>类型</th>
-            <th>地址 / 路径</th>
+            <th>路径</th>
             <th>扫描状态</th>
             <th>最近扫描</th>
             <th>心跳周期</th>
@@ -974,7 +894,7 @@ function MountFoldersTable({
           {items.map((item) => (
             <tr key={item.id} aria-selected={selectedIds.includes(item.id)}>
               <td className="checkbox-cell">
-                <input aria-label={`选择挂载文件夹 ${item.name}`} checked={selectedIds.includes(item.id)} type="checkbox" onChange={() => onToggleSelect(item.id)} />
+                <input aria-label={`选择本地文件夹 ${item.name}`} checked={selectedIds.includes(item.id)} type="checkbox" onChange={() => onToggleSelect(item.id)} />
               </td>
               <td>
                 <div className="storage-node-cell">
@@ -997,11 +917,10 @@ function MountFoldersTable({
                   </div>
                 </div>
               </td>
-              <td>{item.folderType}</td>
               <td>
                 <div className="row-main">
                   <strong>{item.address}</strong>
-                  <span>{item.sourceName ?? '本地目录'}</span>
+                  <span>本地目录</span>
                 </div>
               </td>
               <td>
@@ -1035,11 +954,28 @@ function MountFoldersTable({
                     <Pencil size={15} />
                   </IconButton>
                   <div className="storage-menu-anchor">
-                    <IconButton ariaLabel={`更多操作 ${item.name}`} tooltip="更多操作" onClick={() => onMenuChange(menuState?.id === item.id ? null : { type: 'mount', id: item.id })}>
+                    <IconButton
+                      ariaLabel={`更多操作 ${item.name}`}
+                      tooltip="更多操作"
+                      onClick={(event) => {
+                        const rect = event.currentTarget.getBoundingClientRect();
+                        onMenuChange(
+                          menuState?.id === item.id
+                            ? null
+                            : {
+                                type: 'mount',
+                                id: item.id,
+                                top: resolveFloatingMenuTop(rect, ROW_MENU_ESTIMATED_HEIGHT),
+                                right: Math.max(12, window.innerWidth - rect.right),
+                              },
+                        );
+                      }}
+                    >
                       <CircleEllipsis size={15} />
                     </IconButton>
-                    {menuState?.type === 'mount' && menuState.id === item.id ? (
-                      <div className="context-menu storage-menu-inline">
+                    {menuState?.type === 'mount' && menuState.id === item.id
+                      ? createPortal(
+                      <div className="context-menu storage-menu-inline" style={{ position: 'fixed', top: menuState.top, right: menuState.right }}>
                         <button type="button" onClick={() => onSetHeartbeat(item.id, item.heartbeatPolicy)}>
                           设置心跳
                         </button>
@@ -1058,7 +994,8 @@ function MountFoldersTable({
                         <button className="danger-text" type="button" onClick={() => void onDelete(item.id)}>
                           删除
                         </button>
-                      </div>
+                      </div>,
+                      document.body,
                     ) : null}
                   </div>
                 </div>
@@ -1096,13 +1033,13 @@ function NasTable({
   total,
 }: {
   items: NasRecord[];
-  menuState: { type: 'mount' | 'nas' | 'cloud'; id: string } | null;
+  menuState: StorageMenuState;
   page: number;
   pageCount: number;
   pageSize: StoragePageSize;
   onDelete: (id: string) => void;
   onEdit: (item: NasRecord) => void;
-  onMenuChange: (value: { type: 'mount' | 'nas' | 'cloud'; id: string } | null) => void;
+  onMenuChange: (value: StorageMenuState) => void;
   onPageChange: (value: number) => void;
   onPageSizeChange: (value: StoragePageSize) => void;
   onRunConnectionTest: (id: string) => void;
@@ -1152,15 +1089,33 @@ function NasTable({
                     <Pencil size={15} />
                   </IconButton>
                   <div className="storage-menu-anchor">
-                    <IconButton ariaLabel={`更多操作 ${item.name}`} tooltip="更多操作" onClick={() => onMenuChange(menuState?.id === item.id ? null : { type: 'nas', id: item.id })}>
+                    <IconButton
+                      ariaLabel={`更多操作 ${item.name}`}
+                      tooltip="更多操作"
+                      onClick={(event) => {
+                        const rect = event.currentTarget.getBoundingClientRect();
+                        onMenuChange(
+                          menuState?.id === item.id
+                            ? null
+                            : {
+                                type: 'nas',
+                                id: item.id,
+                                top: resolveFloatingMenuTop(rect, ROW_MENU_ESTIMATED_HEIGHT),
+                                right: Math.max(12, window.innerWidth - rect.right),
+                              },
+                        );
+                      }}
+                    >
                       <CircleEllipsis size={15} />
                     </IconButton>
-                    {menuState?.type === 'nas' && menuState.id === item.id ? (
-                      <div className="context-menu storage-menu-inline">
+                    {menuState?.type === 'nas' && menuState.id === item.id
+                      ? createPortal(
+                      <div className="context-menu storage-menu-inline" style={{ position: 'fixed', top: menuState.top, right: menuState.right }}>
                         <button className="danger-text" type="button" onClick={() => onDelete(item.id)}>
                           删除
                         </button>
-                      </div>
+                      </div>,
+                      document.body,
                     ) : null}
                   </div>
                 </div>
@@ -1198,13 +1153,13 @@ function CloudTable({
   total,
 }: {
   items: CloudRecord[];
-  menuState: { type: 'mount' | 'nas' | 'cloud'; id: string } | null;
+  menuState: StorageMenuState;
   page: number;
   pageCount: number;
   pageSize: StoragePageSize;
   onDelete: (id: string) => void;
   onEdit: (item: CloudRecord) => void;
-  onMenuChange: (value: { type: 'mount' | 'nas' | 'cloud'; id: string } | null) => void;
+  onMenuChange: (value: StorageMenuState) => void;
   onPageChange: (value: number) => void;
   onPageSizeChange: (value: StoragePageSize) => void;
   onRunConnectionTest: (id: string) => void;
@@ -1251,15 +1206,33 @@ function CloudTable({
                     <Pencil size={15} />
                   </IconButton>
                   <div className="storage-menu-anchor">
-                    <IconButton ariaLabel={`更多操作 ${item.name}`} tooltip="更多操作" onClick={() => onMenuChange(menuState?.id === item.id ? null : { type: 'cloud', id: item.id })}>
+                    <IconButton
+                      ariaLabel={`更多操作 ${item.name}`}
+                      tooltip="更多操作"
+                      onClick={(event) => {
+                        const rect = event.currentTarget.getBoundingClientRect();
+                        onMenuChange(
+                          menuState?.id === item.id
+                            ? null
+                            : {
+                                type: 'cloud',
+                                id: item.id,
+                                top: resolveFloatingMenuTop(rect, ROW_MENU_ESTIMATED_HEIGHT),
+                                right: Math.max(12, window.innerWidth - rect.right),
+                              },
+                        );
+                      }}
+                    >
                       <CircleEllipsis size={15} />
                     </IconButton>
-                    {menuState?.type === 'cloud' && menuState.id === item.id ? (
-                      <div className="context-menu storage-menu-inline">
+                    {menuState?.type === 'cloud' && menuState.id === item.id
+                      ? createPortal(
+                      <div className="context-menu storage-menu-inline" style={{ position: 'fixed', top: menuState.top, right: menuState.right }}>
                         <button className="danger-text" type="button" onClick={() => onDelete(item.id)}>
                           删除
                         </button>
-                      </div>
+                      </div>,
+                      document.body,
                     ) : null}
                   </div>
                 </div>
@@ -1383,12 +1356,12 @@ function mountRecordToDraft(item: MountFolderRecord): MountFolderDraft {
     id: item.id,
     name: item.name,
     libraryId: item.libraryId,
-    folderType: item.folderType,
+    folderType: '本地',
     mountMode: item.mountMode,
     heartbeatPolicy: item.heartbeatPolicy,
-    localPath: item.folderType === '本地' ? item.address : '',
-    nasId: item.folderType === 'NAS' ? item.sourceRefId ?? '' : '',
-    cloudId: item.folderType === '网盘' ? item.sourceRefId ?? '' : '',
+    localPath: item.address,
+    nasId: '',
+    cloudId: '',
     targetFolder: '',
     notes: item.notes,
   };
@@ -1421,14 +1394,9 @@ function cloudRecordToDraft(item: CloudRecord): CloudDraft {
 
 function validateMountDraft(draft: MountFolderDraft) {
   const errors: Partial<Record<string, string>> = {};
-  if (!draft.name.trim()) errors.name = '请输入挂载名称';
+  if (!draft.name.trim()) errors.name = '请输入文件夹名称';
   if (!draft.libraryId.trim()) errors.libraryId = '请选择资产库';
-  if (draft.folderType === '本地' && !draft.localPath.trim()) errors.localPath = '请选择本地目录';
-  if (draft.folderType === 'NAS' && !draft.nasId) errors.nasId = '请选择 NAS 来源';
-  if (draft.folderType === '网盘' && !draft.cloudId) errors.cloudId = '请选择网盘来源';
-  if ((draft.folderType === 'NAS' || draft.folderType === '网盘') && !draft.targetFolder.trim()) {
-    errors.targetFolder = draft.folderType === 'NAS' ? '请输入 NAS 共享文件夹' : '请输入网盘文件夹名 / ID';
-  }
+  if (!draft.localPath.trim()) errors.localPath = '请选择本地目录';
   return errors;
 }
 
@@ -1466,4 +1434,10 @@ function resolveMountStatusTone(item: MountFolderRecord): FeedbackTone {
 
 function extractErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error && error.message ? error.message : fallback;
+}
+
+function resolveFloatingMenuTop(rect: DOMRect, menuHeight: number) {
+  const preferredTop = rect.bottom + 8;
+  const maxTop = Math.max(12, window.innerHeight - menuHeight - 12);
+  return Math.min(preferredTop, maxTop);
 }

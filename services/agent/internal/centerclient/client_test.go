@@ -27,6 +27,9 @@ func TestRegisterSendsExpectedPayload(t *testing.T) {
 		if payload.AgentID != "agent-dev-1" || payload.Hostname != "工作站-A" {
 			t.Fatalf("unexpected payload: %+v", payload)
 		}
+		if len(payload.Capabilities) != 1 || payload.Capabilities[0] != "localfs" {
+			t.Fatalf("unexpected capabilities: %+v", payload.Capabilities)
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -42,6 +45,9 @@ func TestRegisterSendsExpectedPayload(t *testing.T) {
 		Platform:  "windows/amd64",
 		Mode:      "attached",
 		ProcessID: 1024,
+		Capabilities: []string{
+			"localfs",
+		},
 	}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -65,6 +71,9 @@ func TestHeartbeatReturnsErrorForNotFound(t *testing.T) {
 		Platform:  "windows/amd64",
 		Mode:      "attached",
 		ProcessID: 1024,
+		Capabilities: []string{
+			"localfs",
+		},
 	})
 	if err == nil {
 		t.Fatal("expected heartbeat error")
@@ -82,6 +91,9 @@ func TestRegisterReturnsNetworkErrorWhenCenterUnavailable(t *testing.T) {
 		Platform:  "windows/amd64",
 		Mode:      "attached",
 		ProcessID: 1024,
+		Capabilities: []string{
+			"localfs",
+		},
 	})
 	if err == nil {
 		t.Fatal("expected register network error")

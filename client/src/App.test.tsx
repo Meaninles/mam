@@ -658,13 +658,17 @@ describe('MARE 客户端', () => {
 
     await user.click(screen.getByRole('button', { name: '存储节点' }));
 
-    expect(await screen.findByRole('button', { name: '挂载文件夹管理' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: '本地文件夹管理' })).toBeInTheDocument();
 
-    const row = await screen.findByRole('row', { name: /视频工作流 NAS 挂载/ });
-    await user.click(within(row).getByRole('button', { name: '连接测试 视频工作流 NAS 挂载' }));
+    await user.click(screen.getByRole('button', { name: 'NAS 管理' }));
+
+    const nameCell = await screen.findByText('影像 NAS 01');
+    const row = nameCell.closest('tr');
+    expect(row).not.toBeNull();
+    await user.click(within(row!).getByRole('button', { name: '连接测试 影像 NAS 01' }));
 
     expect(await screen.findByRole('dialog', { name: '连接测试结果' })).toBeInTheDocument();
-    expect(screen.getByText('挂载目录可达且当前配置可继续使用。')).toBeInTheDocument();
+    expect(screen.getByText('NAS 连接测试通过，可继续使用当前配置。')).toBeInTheDocument();
   });
 
   it('页头展示动态导入入口并可跳转到导入中心', async () => {

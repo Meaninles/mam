@@ -27,7 +27,7 @@ func TestMigratorApplyIsIdempotent(t *testing.T) {
 		t.Fatalf("first apply: %v", err)
 	}
 
-	if firstState.CurrentVersion != 1 || firstState.LatestVersion != 1 || firstState.Status != "ready" {
+	if firstState.CurrentVersion != 2 || firstState.LatestVersion != 2 || firstState.Status != "ready" {
 		t.Fatalf("unexpected first state: %+v", firstState)
 	}
 
@@ -36,7 +36,7 @@ func TestMigratorApplyIsIdempotent(t *testing.T) {
 		t.Fatalf("second apply: %v", err)
 	}
 
-	if secondState.CurrentVersion != 1 || secondState.LatestVersion != 1 || secondState.Status != "ready" {
+	if secondState.CurrentVersion != 2 || secondState.LatestVersion != 2 || secondState.Status != "ready" {
 		t.Fatalf("unexpected second state: %+v", secondState)
 	}
 }
@@ -62,7 +62,7 @@ func TestMigratorStateReportsPendingWithoutApply(t *testing.T) {
 	if state.Status != "pending" {
 		t.Fatalf("expected pending state, got %+v", state)
 	}
-	if state.CurrentVersion != 0 || state.LatestVersion != 1 {
+	if state.CurrentVersion != 0 || state.LatestVersion != 2 {
 		t.Fatalf("unexpected pending version state: %+v", state)
 	}
 }
@@ -80,10 +80,16 @@ func openTestPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
 func resetSchema(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
 
-	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS agents"); err != nil {
-		t.Fatalf("drop agents: %v", err)
-	}
-	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS schema_migrations"); err != nil {
+	if _, err := pool.Exec(ctx, `
+		DROP TABLE IF EXISTS mount_scan_histories;
+		DROP TABLE IF EXISTS mount_runtime;
+		DROP TABLE IF EXISTS mounts;
+		DROP TABLE IF EXISTS storage_node_runtime;
+		DROP TABLE IF EXISTS storage_node_credentials;
+		DROP TABLE IF EXISTS storage_nodes;
+		DROP TABLE IF EXISTS agents;
+		DROP TABLE IF EXISTS schema_migrations;
+	`); err != nil {
 		t.Fatalf("drop schema_migrations: %v", err)
 	}
 }

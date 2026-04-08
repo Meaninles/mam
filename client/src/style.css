@@ -3225,7 +3225,15 @@ button {
   top: calc(100% + 8px);
   right: 0;
   min-width: 180px;
+  width: max-content;
+  max-width: 220px;
+  display: flex;
+  flex-direction: column;
   z-index: 120;
+}
+
+.storage-menu-inline button {
+  white-space: nowrap;
 }
 
 .file-center-floating-menu {

@@ -31,13 +31,14 @@ func NewApplication(cfg config.Config, logger *slog.Logger) (*Application, error
 	}
 
 	summary, err := runtime.BuildSummary(runtime.Options{
-		AgentID:   agentID,
-		Version:   cfg.AgentVersion,
-		Hostname:  hostname,
-		Platform:  runtime.DetectPlatform(),
-		Mode:      cfg.AgentMode,
-		ProcessID: int64(os.Getpid()),
-		StartedAt: time.Now().UTC(),
+		AgentID:      agentID,
+		Version:      cfg.AgentVersion,
+		Hostname:     hostname,
+		Platform:     runtime.DetectPlatform(),
+		Mode:         cfg.AgentMode,
+		ProcessID:    int64(os.Getpid()),
+		Capabilities: []string{"localfs"},
+		StartedAt:    time.Now().UTC(),
 	})
 	if err != nil {
 		return nil, err
@@ -51,6 +52,7 @@ func NewApplication(cfg config.Config, logger *slog.Logger) (*Application, error
 		Platform:          summary.Platform,
 		Mode:              summary.Mode,
 		ProcessID:         summary.ProcessID,
+		Capabilities:      summary.Capabilities,
 		HeartbeatInterval: cfg.HeartbeatInterval,
 		RetryDelay:        5 * time.Second,
 	})

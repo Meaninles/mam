@@ -3,21 +3,23 @@ package agentregistry
 import "time"
 
 type Registration struct {
-	AgentID   string `json:"agentId"`
-	Version   string `json:"version"`
-	Hostname  string `json:"hostname"`
-	Platform  string `json:"platform"`
-	Mode      string `json:"mode"`
-	ProcessID int64  `json:"processId"`
+	AgentID      string   `json:"agentId"`
+	Version      string   `json:"version"`
+	Hostname     string   `json:"hostname"`
+	Platform     string   `json:"platform"`
+	Mode         string   `json:"mode"`
+	ProcessID    int64    `json:"processId"`
+	Capabilities []string `json:"capabilities"`
 }
 
 type Heartbeat struct {
-	AgentID   string `json:"agentId"`
-	Version   string `json:"version"`
-	Hostname  string `json:"hostname"`
-	Platform  string `json:"platform"`
-	Mode      string `json:"mode"`
-	ProcessID int64  `json:"processId"`
+	AgentID      string   `json:"agentId"`
+	Version      string   `json:"version"`
+	Hostname     string   `json:"hostname"`
+	Platform     string   `json:"platform"`
+	Mode         string   `json:"mode"`
+	ProcessID    int64    `json:"processId"`
+	Capabilities []string `json:"capabilities"`
 }
 
 type Agent struct {
@@ -27,6 +29,7 @@ type Agent struct {
 	Platform        string    `json:"platform"`
 	Mode            string    `json:"mode"`
 	ProcessID       int64     `json:"processId"`
+	Capabilities    []string  `json:"capabilities"`
 	RegisteredAt    time.Time `json:"registeredAt"`
 	LastHeartbeatAt time.Time `json:"lastHeartbeatAt"`
 }
