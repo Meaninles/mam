@@ -5,6 +5,8 @@
     "center:dev": "powershell -ExecutionPolicy Bypass -File ./scripts/dev/start-center.ps1",
     "center:migrate": "powershell -ExecutionPolicy Bypass -File ./scripts/dev/migrate-center.ps1",
     "center:test": "go test ./services/center/...",
+    "agent:dev": "powershell -ExecutionPolicy Bypass -File ./scripts/dev/start-agent.ps1",
+    "agent:test": "go test ./services/agent/...",
     "dev:pg:up": "powershell -ExecutionPolicy Bypass -File ./scripts/dev/up-postgres.ps1",
     "dev:pg:down": "powershell -ExecutionPolicy Bypass -File ./scripts/dev/down-postgres.ps1",
     "dev:pg:reset": "powershell -ExecutionPolicy Bypass -File ./scripts/dev/reset-postgres.ps1",
