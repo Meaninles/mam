@@ -371,6 +371,74 @@ button {
   gap: 8px;
 }
 
+.system-runtime-indicator {
+  position: relative;
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.12);
+}
+
+.system-runtime-indicator.success {
+  background: var(--success);
+}
+
+.system-runtime-indicator.warning {
+  background: var(--warning);
+}
+
+.system-runtime-indicator.critical {
+  background: var(--critical);
+}
+
+.system-runtime-indicator.has-status-tooltip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 10px);
+  transform: translateX(-50%) translateY(4px);
+  opacity: 0;
+  pointer-events: none;
+  white-space: nowrap;
+  border-radius: 10px;
+  padding: 6px 10px;
+  background: rgba(25, 31, 40, 0.92);
+  color: #f8fbff;
+  font-size: 0.78rem;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.22);
+  transition: opacity 140ms ease, transform 140ms ease;
+  z-index: 12;
+}
+
+.system-runtime-indicator.has-status-tooltip::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 4px);
+  width: 8px;
+  height: 8px;
+  background: rgba(25, 31, 40, 0.92);
+  transform: translateX(-50%) rotate(45deg) translateY(4px);
+  opacity: 0;
+  transition: opacity 140ms ease, transform 140ms ease;
+  z-index: 11;
+}
+
+.system-runtime-indicator.has-status-tooltip:hover::after,
+.system-runtime-indicator.has-status-tooltip:hover::before {
+  opacity: 1;
+}
+
+.system-runtime-indicator.has-status-tooltip:hover::after {
+  transform: translateX(-50%) translateY(0);
+}
+
+.system-runtime-indicator.has-status-tooltip:hover::before {
+  transform: translateX(-50%) rotate(45deg) translateY(0);
+}
+
 .page-header-feedback {
   min-height: 22px;
   flex: 1;

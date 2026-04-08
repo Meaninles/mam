@@ -86,7 +86,7 @@ func NewRouter(deps Dependencies) http.Handler {
 		response.WriteSuccess(w, http.StatusOK, agent)
 	})
 
-	return mux
+	return withCORS(mux)
 }
 
 func writeError(logger *slog.Logger, w http.ResponseWriter, err error) {
@@ -96,4 +96,19 @@ func writeError(logger *slog.Logger, w http.ResponseWriter, err error) {
 
 	statusCode, code, message := apperrors.ToHTTP(err)
 	response.WriteError(w, statusCode, code, message)
+}
+
+func withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }

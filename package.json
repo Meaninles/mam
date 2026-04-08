@@ -10,6 +10,8 @@
     "dev:pg:up": "powershell -ExecutionPolicy Bypass -File ./scripts/dev/up-postgres.ps1",
     "dev:pg:down": "powershell -ExecutionPolicy Bypass -File ./scripts/dev/down-postgres.ps1",
     "dev:pg:reset": "powershell -ExecutionPolicy Bypass -File ./scripts/dev/reset-postgres.ps1",
+    "one-link-start": "powershell -ExecutionPolicy Bypass -File ./one-link-start.ps1",
+    "one-link-start:with-db": "powershell -ExecutionPolicy Bypass -File ./one-link-start.ps1 -RestartDatabase",
     "dev": "powershell -ExecutionPolicy Bypass -File ./scripts/dev/run-client-script.ps1 dev",
     "build": "powershell -ExecutionPolicy Bypass -File ./scripts/dev/run-client-script.ps1 build",
     "test": "powershell -ExecutionPolicy Bypass -File ./scripts/dev/run-client-script.ps1 test",

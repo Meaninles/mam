@@ -219,3 +219,48 @@ func TestRuntimeStatusRouteReturnsAggregatedState(t *testing.T) {
 		t.Fatalf("expected 200, got %d", recorder.Code)
 	}
 }
+
+func TestRuntimeStatusRouteIncludesCORSHeaders(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(Dependencies{
+		Runtime: fakeRuntimeService{
+			statusPayload: runtime.RuntimeStatusPayload{
+				Status: "ready",
+			},
+		},
+		Agents: fakeAgentService{},
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/api/runtime/status", nil)
+	request.Header.Set("Origin", "http://localhost:5173")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("expected wildcard CORS header, got %q", recorder.Header().Get("Access-Control-Allow-Origin"))
+	}
+}
+
+func TestOptionsPreflightReturnsNoContent(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(Dependencies{
+		Runtime: fakeRuntimeService{},
+		Agents:  fakeAgentService{},
+	})
+
+	request := httptest.NewRequest(http.MethodOptions, "/api/runtime/status", nil)
+	request.Header.Set("Origin", "http://localhost:5173")
+	request.Header.Set("Access-Control-Request-Method", "GET")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", recorder.Code)
+	}
+
+	if recorder.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("expected wildcard CORS header, got %q", recorder.Header().Get("Access-Control-Allow-Origin"))
+	}
+}

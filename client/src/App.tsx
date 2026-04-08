@@ -38,6 +38,8 @@ import {
   type PersistedState,
 } from './lib/clientState';
 import { resolveImportEntrySignal } from './lib/importCenter';
+import { getRuntimeConfig } from './lib/runtimeConfig';
+import { fetchSystemRuntimeStatus, type SystemRuntimeSummary } from './lib/systemRuntimeApi';
 import {
   consumeReminderNotices,
   getUnconsumedNoticeCount,
@@ -132,6 +134,11 @@ type BatchEndpointAction = {
   endpointName: string;
   enabled: boolean;
 };
+type RuntimeLightState = {
+  ariaLabel: string;
+  tooltip: string;
+  tone: 'success' | 'warning' | 'critical';
+} | null;
 
 function resolveTaskStatusTone(status: string): Severity {
   if (status === '失败') return 'critical';
@@ -678,6 +685,7 @@ function resolveIssueActionFeedback(action: 'retry' | 'confirm' | 'postpone' | '
 }
 
 export default function App() {
+  const runtimeConfig = useMemo(() => getRuntimeConfig(), []);
   const [persisted, setPersisted] = useState<PersistedState>(loadPersistedState);
   const startupWorkspaceViewRef = useRef<WorkspaceView>(resolveStartupWorkspace(persisted.settings));
   const [openWorkspaceViews, setOpenWorkspaceViews] = useState<WorkspaceView[]>([startupWorkspaceViewRef.current]);
@@ -705,6 +713,7 @@ export default function App() {
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
   const [feedback, setFeedback] = useState<FeedbackState>(null);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [runtimeLightState, setRuntimeLightState] = useState<RuntimeLightState>(null);
   const [libraryMenuOpen, setLibraryMenuOpen] = useState(false);
   const [managedLibrary, setManagedLibrary] = useState<Library | null>(null);
   const [taskDetail, setTaskDetail] = useState<TaskRecord | null>(null);
@@ -748,8 +757,34 @@ export default function App() {
       'storage-nodes': { title: '存储节点', icon: navIcons['storage-nodes'] },
       settings: { title: '设置', icon: navIcons.settings },
     }) as Record<WorkspaceView, { icon: React.ReactNode; title: string }>,
-    [],
-  );
+      [],
+    );
+
+  useEffect(() => {
+    if (!runtimeConfig.runtimeStatusEnabled) {
+      return undefined;
+    }
+
+    let disposed = false;
+
+    const syncRuntimeStatus = async () => {
+      const summary = await fetchSystemRuntimeStatus(runtimeConfig.centerBaseUrl);
+      if (disposed) {
+        return;
+      }
+      setRuntimeLightState(resolveRuntimeLightState(summary));
+    };
+
+    void syncRuntimeStatus();
+    const timerId = window.setInterval(() => {
+      void syncRuntimeStatus();
+    }, runtimeConfig.runtimeStatusPollMs);
+
+    return () => {
+      disposed = true;
+      window.clearInterval(timerId);
+    };
+  }, [runtimeConfig]);
   const settingsCustomContent = useMemo(() => {
     if (settingsTab === 'tag-management') {
       return <TagManagementPage libraries={persisted.libraries} onFeedback={setFeedback} />;
@@ -2011,8 +2046,8 @@ export default function App() {
               {item.badge ? <span className="nav-badge">{item.badge}</span> : null}
             </button>
           ))}
-        </nav>
-      </aside>
+          </nav>
+        </aside>
 
       <main className="content-shell">
         <header className="page-header workspace-page-header">
@@ -2038,6 +2073,15 @@ export default function App() {
             />
           </div>
           <div className="page-header-actions">
+            {runtimeLightState ? (
+              <span
+                aria-label={runtimeLightState.ariaLabel}
+                className={`system-runtime-indicator ${runtimeLightState.tone} has-status-tooltip`}
+                data-tooltip={runtimeLightState.tooltip}
+                data-testid="system-runtime-indicator"
+                role="img"
+              />
+            ) : null}
             <button
               aria-label={importEntrySignal.label}
               className={`import-entry-chip ${importEntrySignal.tone}`}
@@ -3089,3 +3133,27 @@ const navIcons: Record<MainView, React.ReactNode> = {
   'storage-nodes': <HardDrive size={16} />,
   settings: <Settings2 size={16} />,
 };
+
+function resolveRuntimeLightState(summary: SystemRuntimeSummary): RuntimeLightState {
+  if (summary.centerStatus !== 'ready') {
+    return {
+      ariaLabel: '系统状态：中心服务异常',
+      tooltip: '中心服务：异常 · 本地执行器：未知',
+      tone: 'critical',
+    };
+  }
+
+  if (summary.agentStatus !== 'online') {
+    return {
+      ariaLabel: '系统状态：中心服务可用，本地执行器异常',
+      tooltip: '中心服务：正常 · 本地执行器：异常',
+      tone: 'warning',
+    };
+  }
+
+  return {
+    ariaLabel: '系统状态：中心服务可用，本地执行器在线',
+    tooltip: '中心服务：正常 · 本地执行器：在线',
+    tone: 'success',
+  };
+}

@@ -13,7 +13,7 @@ $clientDir = Resolve-Path (Join-Path $PSScriptRoot "..\..\client")
 Push-Location $clientDir
 
 try {
-  & npm run $ScriptName -- @ScriptArgs
+  & cnpm run $ScriptName -- @ScriptArgs
   if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
   }
