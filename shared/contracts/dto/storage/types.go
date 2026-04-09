@@ -81,6 +81,68 @@ type DeleteNasNodeResponse struct {
 	Message string `json:"message"`
 }
 
+type CloudNodeRecord struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Vendor       string `json:"vendor"`
+	AccessMethod string `json:"accessMethod"`
+	QRChannel    string `json:"qrChannel,omitempty"`
+	MountPath    string `json:"mountPath"`
+	TokenStatus  string `json:"tokenStatus"`
+	LastTestAt   string `json:"lastTestAt,omitempty"`
+	Status       string `json:"status"`
+	Tone         string `json:"tone"`
+	MountCount   int    `json:"mountCount"`
+	Notes        string `json:"notes"`
+}
+
+type SaveCloudNodeRequest struct {
+	ID           string `json:"id,omitempty"`
+	Name         string `json:"name"`
+	Vendor       string `json:"vendor"`
+	AccessMethod string `json:"accessMethod"`
+	QRChannel    string `json:"qrChannel,omitempty"`
+	MountPath    string `json:"mountPath"`
+	Token        string `json:"token"`
+	QRSession    *CloudQRCodeSession `json:"qrSession,omitempty"`
+	Notes        string `json:"notes"`
+}
+
+type SaveCloudNodeResponse struct {
+	Message string          `json:"message"`
+	Record  CloudNodeRecord `json:"record"`
+}
+
+type RunCloudNodeConnectionTestRequest struct {
+	IDs []string `json:"ids"`
+}
+
+type RunCloudNodeConnectionTestResponse struct {
+	Message string                 `json:"message"`
+	Results []ConnectionTestResult `json:"results"`
+}
+
+type DeleteCloudNodeResponse struct {
+	Message string `json:"message"`
+}
+
+type CloudQRCodeSessionRequest struct {
+	Channel string `json:"channel"`
+}
+
+type CloudQRCodeSession struct {
+	UID     string `json:"uid"`
+	Time    int64  `json:"time"`
+	Sign    string `json:"sign"`
+	QRCode  string `json:"qrcode"`
+	Channel string `json:"channel"`
+}
+
+type CloudQRCodeStatusResponse struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
 type LocalFolderRecord struct {
 	ID               string   `json:"id"`
 	Name             string   `json:"name"`

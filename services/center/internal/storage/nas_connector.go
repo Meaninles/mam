@@ -27,6 +27,7 @@ type nasConnectionProbe struct {
 type nasConnector interface {
 	Test(ctx context.Context, address string, username string, password string) (nasConnectionProbe, error)
 	EnsureDirectory(ctx context.Context, address string, username string, password string) error
+	DeletePath(ctx context.Context, address string, username string, password string) error
 }
 
 type smbConnector struct {
@@ -176,6 +177,40 @@ func (c smbConnector) EnsureDirectory(ctx context.Context, address string, usern
 		return fmt.Errorf("create smb directory %s: %w", target.RelativePath, err)
 	}
 	return nil
+}
+
+func (c smbConnector) DeletePath(ctx context.Context, address string, username string, password string) error {
+	target, err := parseSMBAddress(address)
+	if err != nil {
+		return fmt.Errorf("parse smb address: %w", err)
+	}
+	if target.Share == "" {
+		return fmt.Errorf("missing SMB share name")
+	}
+
+	session, closeFn, err := c.openSession(ctx, target.Endpoint, username, password)
+	if err != nil {
+		return err
+	}
+	defer closeFn()
+
+	share, err := session.Mount(target.Share)
+	if err != nil {
+		return fmt.Errorf("mount share %s: %w", target.Share, err)
+	}
+	defer share.Umount()
+
+	if target.RelativePath == "" {
+		return fmt.Errorf("missing SMB relative path")
+	}
+
+	if err := share.Remove(target.RelativePath); err == nil {
+		return nil
+	}
+	if err := share.RemoveAll(target.RelativePath); err == nil {
+		return nil
+	}
+	return fmt.Errorf("delete smb path %s failed", target.RelativePath)
 }
 
 func (c smbConnector) openSession(ctx context.Context, endpoint string, username string, password string) (*smb2.Session, func(), error) {

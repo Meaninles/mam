@@ -233,7 +233,7 @@ button {
   padding: 14px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   border-radius: 18px;
   border: 1px solid var(--border);
   background: var(--bg-card);
@@ -243,9 +243,16 @@ button {
 
 .library-trigger-copy {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+}
+
+.library-trigger-copy strong {
+  font-size: 1.1rem;
+  font-weight: 800;
+  color: #111111;
+  letter-spacing: 0.01em;
 }
 
 .library-menu {
@@ -257,6 +264,37 @@ button {
   border: 1px solid var(--border);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-large);
+}
+
+.library-menu-header {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 4px 0 10px;
+}
+
+.library-create-button {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(14, 165, 233, 0.08);
+  color: var(--text-main);
+  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.library-create-button:hover {
+  background: rgba(14, 165, 233, 0.14);
+  border-color: rgba(14, 165, 233, 0.32);
+  transform: translateY(-1px);
+}
+
+.library-create-button:focus-visible {
+  outline: 2px solid rgba(14, 165, 233, 0.32);
+  outline-offset: 2px;
 }
 
 .library-option {
@@ -3257,6 +3295,61 @@ button {
 .storage-menu-inline button {
   display: block;
   white-space: nowrap;
+}
+
+.cloud-qr-preview {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px;
+  border-radius: 16px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-control);
+}
+
+.cloud-qr-visual {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+}
+
+.cloud-qr-image,
+.cloud-qr-placeholder {
+  width: 168px;
+  height: 168px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: #fff;
+}
+
+.cloud-qr-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.cloud-qr-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-secondary);
+}
+
+.cloud-qr-copy strong {
+  color: var(--text-main);
+}
+
+.cloud-qr-refresh {
+  align-self: flex-start;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-card);
+  color: var(--text-main);
+  padding: 0.4rem 0.8rem;
+  margin-bottom: 4px;
 }
 
 .file-center-floating-menu {

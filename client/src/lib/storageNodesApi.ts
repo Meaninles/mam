@@ -74,13 +74,31 @@ export type CloudRecord = {
   vendor: '115';
   accessMethod: StorageCloudAccessMethod;
   qrChannel?: StorageCloudQrChannel;
-  accountAlias: string;
   mountDirectory: string;
   tokenStatus: string;
   lastTestAt?: string;
   status: string;
   tone: StorageTone;
+  mountCount: number;
   notes: string;
+};
+
+type CloudRecordResponse = Omit<CloudRecord, 'mountDirectory'> & {
+  mountDirectory?: string;
+  mountPath?: string;
+};
+
+export type CloudQRCodeSession = {
+  uid: string;
+  time: number;
+  sign: string;
+  qrcode: string;
+  channel: StorageCloudQrChannel;
+};
+
+export type CloudQRCodeStatusResponse = {
+  status: string;
+  message: string;
 };
 
 export type StorageNodesDashboard = {
@@ -95,6 +113,7 @@ export type MountDraft = {
   id?: string;
   name: string;
   libraryId: string;
+  libraryName?: string;
   nodeId: string;
   mountMode: StorageMountMode;
   heartbeatPolicy: StorageHeartbeatPolicy;
@@ -131,9 +150,9 @@ export type CloudDraft = {
   vendor: '115';
   accessMethod: StorageCloudAccessMethod;
   qrChannel: StorageCloudQrChannel;
-  accountAlias: string;
   mountDirectory: string;
   token: string;
+  qrSession?: CloudQRCodeSession;
   notes: string;
 };
 
@@ -174,20 +193,29 @@ const LOCAL_FOLDERS_API_PATH = '/api/storage/local-folders';
 export const storageNodesApi = {
   async loadDashboard(): Promise<StorageNodesDashboard> {
     const fallback = runBrowserFallback<StorageNodesDashboard>('storage_nodes_load_dashboard', {});
-    const [localNodesResult, mountsResult, nasNodesResult] = await Promise.allSettled([
+    const [localNodesResult, mountsResult, nasNodesResult, cloudNodesResult] = await Promise.allSettled([
       fetchCenterDataWithRetry<LocalNodeRecord[]>('/api/storage/local-nodes'),
       fetchCenterDataWithRetry<MountRecord[]>(LOCAL_FOLDERS_API_PATH),
       fetchCenterDataWithRetry<NasRecord[]>('/api/storage/nas-nodes'),
+      fetchCenterDataWithRetry<CloudRecordResponse[]>('/api/storage/cloud-nodes'),
     ]);
 
     const localNodes = localNodesResult.status === 'fulfilled' ? localNodesResult.value : [];
     const mounts = mountsResult.status === 'fulfilled' ? mountsResult.value : [];
     const nasNodes = nasNodesResult.status === 'fulfilled' ? nasNodesResult.value : [];
+    const cloudNodes =
+      cloudNodesResult.status === 'fulfilled'
+        ? cloudNodesResult.value.map((item) => ({
+            ...item,
+            mountDirectory: item.mountDirectory ?? item.mountPath ?? '',
+          }))
+        : fallback.cloudNodes;
 
     if (
       localNodesResult.status === 'rejected' &&
       mountsResult.status === 'rejected' &&
-      nasNodesResult.status === 'rejected'
+      nasNodesResult.status === 'rejected' &&
+      cloudNodesResult.status === 'rejected'
     ) {
       throw localNodesResult.reason;
     }
@@ -195,7 +223,7 @@ export const storageNodesApi = {
     return {
       localNodes,
       nasNodes,
-      cloudNodes: fallback.cloudNodes,
+      cloudNodes,
       mounts,
       mountFolders: mounts,
     };
@@ -214,7 +242,7 @@ export const storageNodesApi = {
     return { message: result.message };
   },
 
-  async saveMount(draft: MountDraft): Promise<{ message: string }> {
+  async saveMount(draft: MountDraft): Promise<{ message: string; record: MountRecord }> {
     const result = await fetchCenterData<{ message: string; record: MountRecord }>(LOCAL_FOLDERS_API_PATH, {
       method: 'POST',
       body: JSON.stringify({
@@ -222,14 +250,14 @@ export const storageNodesApi = {
         name: draft.name,
         nodeId: draft.nodeId,
         libraryId: draft.libraryId,
-        libraryName: resolveLibraryName(draft.libraryId),
+        libraryName: draft.libraryName ?? draft.libraryId,
         mountMode: draft.mountMode,
         heartbeatPolicy: draft.heartbeatPolicy,
         relativePath: draft.relativePath,
         notes: draft.notes,
       }),
     });
-    return { message: result.message };
+    return result;
   },
 
   async saveMountFolder(draft: MountDraft): Promise<{ message: string }> {
@@ -252,7 +280,41 @@ export const storageNodesApi = {
   },
 
   async saveCloudNode(draft: CloudDraft): Promise<{ message: string }> {
-    return invokeStorageCommand<{ message: string }>('storage_nodes_save_cloud_node', { draft });
+    const result = await fetchCenterData<{ message: string; record: CloudRecord }>('/api/storage/cloud-nodes', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: draft.id,
+        name: draft.name,
+        vendor: draft.vendor,
+        accessMethod: draft.accessMethod,
+        qrChannel: draft.accessMethod === '扫码登录获取 Token' ? draft.qrChannel : '',
+        mountPath: draft.mountDirectory,
+        token: draft.accessMethod === '填入 Token' ? draft.token : '',
+        qrSession: draft.accessMethod === '扫码登录获取 Token' ? draft.qrSession : undefined,
+        notes: draft.notes,
+      }),
+    });
+    return { message: result.message };
+  },
+
+  async createCloudQrSession(channel: StorageCloudQrChannel): Promise<CloudQRCodeSession> {
+    return fetchCenterData<CloudQRCodeSession>('/api/storage/cloud-nodes/qr-session', {
+      method: 'POST',
+      body: JSON.stringify({ channel }),
+    });
+  },
+
+  async getCloudQrSessionStatus(session: CloudQRCodeSession): Promise<CloudQRCodeStatusResponse> {
+    return fetchCenterData<CloudQRCodeStatusResponse>('/api/storage/cloud-nodes/qr-session/status', {
+      method: 'POST',
+      body: JSON.stringify(session),
+    });
+  },
+
+  getCloudQrImageUrl(session: CloudQRCodeSession) {
+    const { centerBaseUrl } = getRuntimeConfig();
+    const payload = encodeURIComponent(JSON.stringify(session));
+    return `${centerBaseUrl}/api/storage/cloud-nodes/qr-session/image?payload=${payload}`;
   },
 
   async runMountScan(ids: string[]): Promise<{ message: string }> {
@@ -301,9 +363,12 @@ export const storageNodesApi = {
   },
 
   async runCloudConnectionTest(ids: string[]): Promise<{ message: string; results: StorageConnectionTestResult[] }> {
-    return invokeStorageCommand<{ message: string; results: StorageConnectionTestResult[] }>(
-      'storage_nodes_run_cloud_connection_test',
-      { ids },
+    return fetchCenterData<{ message: string; results: StorageConnectionTestResult[] }>(
+      '/api/storage/cloud-nodes/connection-test',
+      {
+        method: 'POST',
+        body: JSON.stringify({ ids }),
+      },
     );
   },
 
@@ -334,7 +399,10 @@ export const storageNodesApi = {
   },
 
   async deleteCloudNode(id: string): Promise<{ message: string }> {
-    return invokeStorageCommand<{ message: string }>('storage_nodes_delete_cloud_node', { id });
+    const result = await fetchCenterData<{ message: string }>(`/api/storage/cloud-nodes/${id}`, {
+      method: 'DELETE',
+    });
+    return { message: result.message };
   },
 
   async browseLocalFolder(): Promise<{ path: string | null }> {
@@ -388,18 +456,6 @@ async function fetchCenterDataWithRetry<T>(path: string, attempts = 6, delayMs =
     }
   }
   throw lastError instanceof Error ? lastError : new Error('center service request failed');
-}
-
-function resolveLibraryName(libraryId: string) {
-  const libraryMap = new Map(
-    [
-      ['photo', '商业摄影资产库'],
-      ['video', '视频工作流资产库'],
-      ['family', '家庭照片资产库'],
-    ] as Array<[string, string]>,
-  );
-
-  return libraryMap.get(libraryId) ?? libraryId;
 }
 
 function isTauriRuntime() {
@@ -546,12 +602,12 @@ function saveCloudNodeInBrowser(db: StorageBrowserDb, draft: CloudDraft) {
     vendor: draft.vendor,
     accessMethod: draft.accessMethod,
     qrChannel: draft.accessMethod === '扫码登录获取 Token' ? draft.qrChannel : undefined,
-    accountAlias: draft.accountAlias,
     mountDirectory: draft.mountDirectory,
     tokenStatus: draft.token ? '已配置' : '未配置',
     lastTestAt: draft.id ? db.cloudNodes.find((item) => item.id === draft.id)?.lastTestAt : undefined,
     status: draft.token ? '鉴权正常' : '待鉴权',
     tone: draft.token ? 'success' : 'warning',
+    mountCount: draft.id ? (db.cloudNodes.find((item) => item.id === draft.id)?.mountCount ?? 0) : 0,
     notes: draft.notes,
   };
 
@@ -802,12 +858,12 @@ function createSeedBrowserDb(): StorageBrowserDb {
       name: '115 云归档',
       vendor: '115',
       accessMethod: '填入 Token',
-      accountAlias: 'mare-archive',
       mountDirectory: '/MareArchive',
       tokenStatus: '48 小时内过期',
       lastTestAt: '今天 08:40',
       status: '鉴权异常',
       tone: 'warning',
+      mountCount: 1,
       notes: '云归档空间',
     },
     {
@@ -816,12 +872,12 @@ function createSeedBrowserDb(): StorageBrowserDb {
       vendor: '115',
       accessMethod: '扫码登录获取 Token',
       qrChannel: '微信小程序',
-      accountAlias: 'mare-exchange',
       mountDirectory: '/ProjectExchange',
       tokenStatus: '已配置',
       lastTestAt: '今天 09:05',
       status: '鉴权正常',
       tone: 'success',
+      mountCount: 0,
       notes: '项目交换空间',
     },
   ];
@@ -831,12 +887,12 @@ function createSeedBrowserDb(): StorageBrowserDb {
       vendor: '115' as const,
       accessMethod: index % 2 === 0 ? '填入 Token' : '扫码登录获取 Token',
       qrChannel: index % 2 === 0 ? undefined : (index % 3 === 0 ? '支付宝小程序' : '微信小程序'),
-      accountAlias: `cloud-alias-${index + 1}`,
       mountDirectory: `/ProjectSpace/${index + 1}`,
       tokenStatus: index % 5 === 0 ? '即将过期' : '已配置',
       lastTestAt: `今天 ${String((index % 10) + 8).padStart(2, '0')}:30`,
       status: index % 5 === 0 ? '鉴权异常' : '鉴权正常',
       tone: index % 5 === 0 ? 'warning' : 'success',
+      mountCount: index % 3,
       notes: `网盘空间 ${index + 1}`,
     }));
   const cloudNodes: CloudRecord[] = baseCloudNodes.concat(extraCloudNodes);

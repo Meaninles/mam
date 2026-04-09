@@ -1,0 +1,14 @@
+root = "."
+tmp_dir = ".tmp\\air-center"
+
+[build]
+  cmd = "go build -o .\\.tmp\\air-center\\mare-center.exe .\\services\\center\\cmd\\mare-center"
+  bin = ".tmp\\air-center\\mare-center.exe"
+  delay = 500
+  include_ext = ["go", "sql", "json", "toml", "yaml", "yml"]
+  include_dir = ["services\\center", "shared\\contracts"]
+  include_file = ["go.work", "go.work.sum", "services\\center\\go.mod", "services\\center\\go.sum", "shared\\contracts\\go.mod"]
+  exclude_dir = [".git", ".tmp", "client", "docs", "infra", "node_modules", "scripts", "services\\agent"]
+
+[misc]
+  clean_on_exit = true

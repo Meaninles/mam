@@ -2,6 +2,8 @@ param(
   [switch]$RestartDatabase
 )
 
+. (Join-Path $PSScriptRoot "scripts\dev\bootstrap-utf8.ps1")
+
 $ErrorActionPreference = "Stop"
 
 $workspace = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -14,9 +16,13 @@ function Stop-MareProcesses {
     'services/center/cmd/mare-center',
     'mare-center',
     'start-center\.ps1',
+    '\.air\.center\.toml',
+    'start-go-hot\.ps1.*center',
     'services/agent/cmd/mare-agent',
     'mare-agent',
     'start-agent\.ps1',
+    '\.air\.agent\.toml',
+    'start-go-hot\.ps1.*agent',
     'mare_client\.exe',
     'tauri:dev',
     'run-client-script\.ps1 tauri:dev',
@@ -104,11 +110,18 @@ function Start-DetachedPowerShell {
     [string]$Command
   )
 
+  $bootstrapPath = (Join-Path $workspace "scripts\dev\bootstrap-utf8.ps1") -replace "'", "''"
+  $escapedTitle = $Title -replace "'", "''"
+  $escapedWorkspace = $workspace -replace "'", "''"
+  $escapedCommand = $Command -replace "'", "''"
+
   $argumentList = @(
+    '-NoLogo',
+    '-NoProfile',
     '-NoExit',
     '-ExecutionPolicy', 'Bypass',
     '-Command',
-    "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; `$host.UI.RawUI.WindowTitle='$Title'; Set-Location '$workspace'; $Command"
+    "& { . '$bootstrapPath'; `$host.UI.RawUI.WindowTitle='$escapedTitle'; Set-Location '$escapedWorkspace'; $escapedCommand }"
   )
 
   Start-Process -FilePath 'powershell.exe' -ArgumentList $argumentList | Out-Null
@@ -120,12 +133,12 @@ Stop-MareProcesses
 
 if ($RestartDatabase) {
   Write-Host "Restarting development PostgreSQL..."
-  powershell -ExecutionPolicy Bypass -File "$workspace\scripts\dev\down-postgres.ps1"
+  powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$workspace\scripts\dev\down-postgres.ps1"
 } else {
   Write-Host "Keeping database state and ensuring PostgreSQL is running..."
 }
 
-powershell -ExecutionPolicy Bypass -File "$workspace\scripts\dev\up-postgres.ps1"
+powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$workspace\scripts\dev\up-postgres.ps1"
 
 Write-Host "Starting center..."
 Start-DetachedPowerShell -Title 'MARE Center' -Command "cnpm run center:dev"

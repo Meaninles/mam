@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 
 	"mare/services/center/internal/agentregistry"
 	apperrors "mare/services/center/internal/errors"
 	"mare/services/center/internal/response"
 	"mare/services/center/internal/runtime"
+	assetdto "mare/shared/contracts/dto/asset"
 	storagedto "mare/shared/contracts/dto/storage"
 )
 
@@ -48,13 +52,34 @@ type NASNodeService interface {
 	DeleteNasNode(ctx context.Context, id string) (storagedto.DeleteNasNodeResponse, error)
 }
 
+type CloudNodeService interface {
+	ListCloudNodes(ctx context.Context) ([]storagedto.CloudNodeRecord, error)
+	SaveCloudNode(ctx context.Context, request storagedto.SaveCloudNodeRequest) (storagedto.SaveCloudNodeResponse, error)
+	RunCloudNodeConnectionTest(ctx context.Context, ids []string) (storagedto.RunCloudNodeConnectionTestResponse, error)
+	DeleteCloudNode(ctx context.Context, id string) (storagedto.DeleteCloudNodeResponse, error)
+	CreateCloudQRCodeSession(ctx context.Context, channel string) (storagedto.CloudQRCodeSession, error)
+	GetCloudQRCodeStatus(ctx context.Context, session storagedto.CloudQRCodeSession) (storagedto.CloudQRCodeStatusResponse, error)
+	FetchCloudQRCodeImage(ctx context.Context, session storagedto.CloudQRCodeSession) ([]byte, string, error)
+}
+
+type AssetService interface {
+	ListLibraries(ctx context.Context) ([]assetdto.LibraryRecord, error)
+	CreateLibrary(ctx context.Context, request assetdto.CreateLibraryRequest) (assetdto.CreateLibraryResponse, error)
+	CreateDirectory(ctx context.Context, libraryID string, request assetdto.CreateDirectoryRequest) (assetdto.CreateDirectoryResponse, error)
+	DeleteEntry(ctx context.Context, id string) (assetdto.DeleteEntryResponse, error)
+	BrowseLibrary(ctx context.Context, libraryID string, query assetdto.BrowseQuery) (assetdto.BrowseLibraryResponse, error)
+	LoadEntry(ctx context.Context, id string) (*assetdto.EntryRecord, error)
+}
+
 type Dependencies struct {
 	Logger       *slog.Logger
 	Runtime      RuntimeService
 	Agents       AgentService
 	LocalNodes   LocalNodeService
 	NasNodes     NASNodeService
+	CloudNodes   CloudNodeService
 	LocalFolders LocalFolderService
+	Assets       AssetService
 }
 
 func NewRouter(deps Dependencies) http.Handler {
@@ -219,6 +244,183 @@ func NewRouter(deps Dependencies) http.Handler {
 		response.WriteSuccess(w, http.StatusOK, result)
 	})
 
+	mux.HandleFunc("GET /api/storage/cloud-nodes", func(w http.ResponseWriter, r *http.Request) {
+		payload, err := deps.CloudNodes.ListCloudNodes(r.Context())
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("POST /api/storage/cloud-nodes", func(w http.ResponseWriter, r *http.Request) {
+		var payload storagedto.SaveCloudNodeRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("网盘保存请求格式无效"))
+			return
+		}
+
+		result, err := deps.CloudNodes.SaveCloudNode(r.Context(), payload)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("POST /api/storage/cloud-nodes/connection-test", func(w http.ResponseWriter, r *http.Request) {
+		var payload storagedto.RunCloudNodeConnectionTestRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("网盘连接测试请求格式无效"))
+			return
+		}
+
+		result, err := deps.CloudNodes.RunCloudNodeConnectionTest(r.Context(), payload.IDs)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("DELETE /api/storage/cloud-nodes/{id}", func(w http.ResponseWriter, r *http.Request) {
+		result, err := deps.CloudNodes.DeleteCloudNode(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("POST /api/storage/cloud-nodes/qr-session", func(w http.ResponseWriter, r *http.Request) {
+		var payload storagedto.CloudQRCodeSessionRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("网盘二维码会话请求格式无效"))
+			return
+		}
+
+		result, err := deps.CloudNodes.CreateCloudQRCodeSession(r.Context(), payload.Channel)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("POST /api/storage/cloud-nodes/qr-session/status", func(w http.ResponseWriter, r *http.Request) {
+		var payload storagedto.CloudQRCodeSession
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("网盘二维码状态请求格式无效"))
+			return
+		}
+
+		result, err := deps.CloudNodes.GetCloudQRCodeStatus(r.Context(), payload)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("GET /api/storage/cloud-nodes/qr-session/image", func(w http.ResponseWriter, r *http.Request) {
+		raw := r.URL.Query().Get("payload")
+		if raw == "" {
+			writeError(deps.Logger, w, apperrors.BadRequest("网盘二维码图片请求格式无效"))
+			return
+		}
+		decoded, err := url.QueryUnescape(raw)
+		if err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("网盘二维码图片请求格式无效"))
+			return
+		}
+
+		var payload storagedto.CloudQRCodeSession
+		if err := json.Unmarshal([]byte(decoded), &payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("网盘二维码图片请求格式无效"))
+			return
+		}
+
+		image, contentType, err := deps.CloudNodes.FetchCloudQRCodeImage(r.Context(), payload)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", contentType)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(image)
+	})
+
+	mux.HandleFunc("GET /api/libraries", func(w http.ResponseWriter, r *http.Request) {
+		payload, err := deps.Assets.ListLibraries(r.Context())
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("POST /api/libraries", func(w http.ResponseWriter, r *http.Request) {
+		var payload assetdto.CreateLibraryRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("资产库创建请求格式无效"))
+			return
+		}
+		result, err := deps.Assets.CreateLibrary(r.Context(), payload)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("POST /api/libraries/{libraryId}/directories", func(w http.ResponseWriter, r *http.Request) {
+		var payload assetdto.CreateDirectoryRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("目录创建请求格式无效"))
+			return
+		}
+
+		result, err := deps.Assets.CreateDirectory(r.Context(), r.PathValue("libraryId"), payload)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("GET /api/libraries/{libraryId}/browse", func(w http.ResponseWriter, r *http.Request) {
+		query, err := parseBrowseQuery(r.URL)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		payload, err := deps.Assets.BrowseLibrary(r.Context(), r.PathValue("libraryId"), query)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("GET /api/file-entries/{id}", func(w http.ResponseWriter, r *http.Request) {
+		payload, err := deps.Assets.LoadEntry(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("DELETE /api/file-entries/{id}", func(w http.ResponseWriter, r *http.Request) {
+		payload, err := deps.Assets.DeleteEntry(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
 	mux.HandleFunc("POST /api/storage/local-folders", func(w http.ResponseWriter, r *http.Request) {
 		var payload storagedto.SaveLocalFolderRequest
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -298,6 +500,44 @@ func NewRouter(deps Dependencies) http.Handler {
 	})
 
 	return withCORS(mux)
+}
+
+func parseBrowseQuery(raw *url.URL) (assetdto.BrowseQuery, error) {
+	values := raw.Query()
+	page := 1
+	if value := strings.TrimSpace(values.Get("page")); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return assetdto.BrowseQuery{}, apperrors.BadRequest("page 参数无效")
+		}
+		page = parsed
+	}
+
+	pageSize := 20
+	if value := strings.TrimSpace(values.Get("pageSize")); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return assetdto.BrowseQuery{}, apperrors.BadRequest("pageSize 参数无效")
+		}
+		pageSize = parsed
+	}
+
+	var parentID *string
+	if value := strings.TrimSpace(values.Get("parentId")); value != "" {
+		parentID = &value
+	}
+
+	return assetdto.BrowseQuery{
+		ParentID:                 parentID,
+		Page:                     page,
+		PageSize:                 pageSize,
+		SearchText:               values.Get("searchText"),
+		FileType:                 values.Get("fileTypeFilter"),
+		StatusFilter:             values.Get("statusFilter"),
+		SortValue:                values.Get("sortValue"),
+		SortDirection:            values.Get("sortDirection"),
+		PartialSyncEndpointNames: values["partialSyncEndpointName"],
+	}, nil
 }
 
 func writeError(logger *slog.Logger, w http.ResponseWriter, err error) {

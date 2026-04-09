@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"mare/services/center/internal/assets"
 	apperrors "mare/services/center/internal/errors"
 	storagedto "mare/shared/contracts/dto/storage"
 )
@@ -18,7 +20,11 @@ type LocalFolderService struct {
 	pool   *pgxpool.Pool
 	now    func() time.Time
 	nas    nasConnector
+	cloud  *http.Client
 	cipher credentialCipher
+	assetService interface {
+		SyncMount(ctx context.Context, mountID string) error
+	}
 }
 
 func NewLocalFolderService(pool *pgxpool.Pool) *LocalFolderService {
@@ -26,8 +32,16 @@ func NewLocalFolderService(pool *pgxpool.Pool) *LocalFolderService {
 		pool:   pool,
 		now:    time.Now,
 		nas:    newSMBConnector(5 * time.Second),
+		cloud:  &http.Client{Timeout: 10 * time.Second},
 		cipher: newSystemCredentialCipher(),
+		assetService: assets.NewService(pool),
 	}
+}
+
+func (s *LocalFolderService) SetAssetService(service interface {
+	SyncMount(ctx context.Context, mountID string) error
+}) {
+	s.assetService = service
 }
 
 func (s *LocalFolderService) ListLocalFolders(ctx context.Context) ([]storagedto.LocalFolderRecord, error) {
@@ -59,7 +73,7 @@ func (s *LocalFolderService) ListLocalFolders(ctx context.Context) ([]storagedto
 		FROM mounts m
 		INNER JOIN storage_nodes sn ON sn.id = m.storage_node_id
 		LEFT JOIN mount_runtime mr ON mr.mount_id = m.id
-		WHERE sn.node_type IN ('LOCAL', 'NAS')
+		WHERE sn.node_type IN ('LOCAL', 'NAS', 'CLOUD')
 		  AND sn.deleted_at IS NULL
 		  AND m.deleted_at IS NULL
 		ORDER BY m.created_at DESC
@@ -224,6 +238,17 @@ func (s *LocalFolderService) SaveLocalFolder(ctx context.Context, request storag
 		if ensureErr := s.nas.EnsureDirectory(ctx, sourcePath, node.Username, password); ensureErr != nil {
 			return storagedto.SaveLocalFolderResponse{}, apperrors.BadRequest(fmt.Sprintf("NAS 挂载目录创建失败：%s", ensureErr.Error()))
 		}
+	} else if node.NodeType == "CLOUD" {
+		cookie, decryptErr := s.cipher.Decrypt(node.SecretCiphertext)
+		if decryptErr != nil {
+			return storagedto.SaveLocalFolderResponse{}, apperrors.BadRequest("网盘凭据无法读取，请重新保存网盘节点")
+		}
+		cloudService := NewCloudNodeService(s.pool)
+		cloudService.cipher = s.cipher
+		cloudService.client = s.cloud
+		if ensureErr := cloudService.ensureCloudMountDirectory(ctx, cookie, sourcePath); ensureErr != nil {
+			return storagedto.SaveLocalFolderResponse{}, apperrors.BadRequest(fmt.Sprintf("网盘挂载目录创建失败：%s", ensureErr.Error()))
+		}
 	}
 
 	now := s.now().UTC()
@@ -234,6 +259,28 @@ func (s *LocalFolderService) SaveLocalFolder(ctx context.Context, request storag
 		return storagedto.SaveLocalFolderResponse{}, err
 	}
 	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO libraries (id, code, name, root_label, status, created_at, updated_at)
+		VALUES ($1, $2, $3, '/', 'ACTIVE', $4, $4)
+		ON CONFLICT (id) DO UPDATE
+		SET name = EXCLUDED.name,
+		    updated_at = EXCLUDED.updated_at
+	`, request.LibraryID, "library-"+request.LibraryID, request.LibraryName, now)
+	if err != nil {
+		return storagedto.SaveLocalFolderResponse{}, err
+	}
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO library_directories (
+			id, library_id, relative_path, name, parent_path, depth, source_kind, status, sort_name, created_at, updated_at
+		) VALUES ($1, $2, '/', '/', NULL, 0, 'MANUAL', 'ACTIVE', '/', $3, $3)
+		ON CONFLICT (library_id, relative_path) DO UPDATE
+		SET updated_at = EXCLUDED.updated_at
+	`, "dir-root-"+request.LibraryID, request.LibraryID, now)
+	if err != nil {
+		return storagedto.SaveLocalFolderResponse{}, err
+	}
 
 	if strings.TrimSpace(request.ID) == "" {
 		mountID := buildCode("mount-id", now)
@@ -386,6 +433,16 @@ func (s *LocalFolderService) RunLocalFolderScan(ctx context.Context, ids []strin
 			return storagedto.RunLocalFolderScanResponse{}, apperrors.BadRequest("当前挂载类型暂不支持扫描")
 		}
 
+		if scanStatus == "SUCCESS" && s.assetService != nil {
+			if syncErr := s.assetService.SyncMount(ctx, id); syncErr != nil {
+				scanStatus = "FAILED"
+				summary = fmt.Sprintf("%s 扫描失败：资产索引写入失败", mount.Name)
+				lastErrorCode = "asset_index_failed"
+				lastErrorMessage = syncErr.Error()
+				healthStatus = "ERROR"
+			}
+		}
+
 		_, err = s.pool.Exec(ctx, `
 			UPDATE mount_runtime
 			SET scan_status = $2,
@@ -522,6 +579,69 @@ func (s *LocalFolderService) RunLocalFolderConnectionTest(ctx context.Context, i
 			authStatus = probe.AuthStatus
 			lastErrorCode = probe.LastErrorCode
 			lastErrorMessage = probe.LastErrorMessage
+		case "CLOUD":
+			cookie, decryptErr := s.cipher.Decrypt(mount.SecretCiphertext)
+			if decryptErr != nil {
+				tone = "critical"
+				summary = "网盘凭据无法读取，请重新保存网盘节点。"
+				checks = []storagedto.ConnectionCheck{
+					{Label: "凭据读取", Status: "critical", Detail: decryptErr.Error()},
+				}
+				healthStatus = "ERROR"
+				authStatus = "FAILED"
+				lastErrorCode = "credential_unreadable"
+				lastErrorMessage = decryptErr.Error()
+				break
+			}
+			cloudService := NewCloudNodeService(s.pool)
+			cloudService.cipher = s.cipher
+			cloudService.client = s.cloud
+			probe, probeErr := cloudService.probeCloudCredential(ctx, cookie)
+			if probeErr != nil {
+				tone = "critical"
+				summary = "网盘登录态校验失败。"
+				checks = []storagedto.ConnectionCheck{
+					{Label: "登录态校验", Status: "critical", Detail: probeErr.Error()},
+				}
+				healthStatus = "ERROR"
+				authStatus = "FAILED"
+				lastErrorCode = "credential_probe_failed"
+				lastErrorMessage = probeErr.Error()
+				break
+			}
+			if !probe.Authenticated {
+				tone = "critical"
+				summary = "网盘凭据已失效，请重新扫码登录。"
+				checks = []storagedto.ConnectionCheck{
+					{Label: "登录态校验", Status: "critical", Detail: probe.Message},
+				}
+				healthStatus = "ERROR"
+				authStatus = "FAILED"
+				lastErrorCode = "credential_invalid"
+				lastErrorMessage = probe.Message
+				break
+			}
+			if _, resolveErr := cloudService.resolveCloudMountDirectory(ctx, cookie, mount.SourcePath); resolveErr != nil {
+				tone = "critical"
+				summary = "挂载目录访问失败。"
+				checks = []storagedto.ConnectionCheck{
+					{Label: "登录态校验", Status: "success", Detail: probe.Message},
+					{Label: "挂载目录访问", Status: "critical", Detail: resolveErr.Error()},
+				}
+				healthStatus = "ERROR"
+				authStatus = "AUTHORIZED"
+				lastErrorCode = "mount_path_unavailable"
+				lastErrorMessage = resolveErr.Error()
+				break
+			}
+			tone = "success"
+			summary = "网盘挂载目录可访问，当前配置可继续使用。"
+			checks = []storagedto.ConnectionCheck{
+				{Label: "登录态校验", Status: "success", Detail: probe.Message},
+				{Label: "挂载目录访问", Status: "success", Detail: "目录存在且可访问。"},
+			}
+			healthStatus = "ONLINE"
+			authStatus = "AUTHORIZED"
 		default:
 			return storagedto.RunLocalFolderConnectionTestResponse{}, apperrors.BadRequest("当前挂载类型暂不支持连接测试")
 		}
@@ -698,7 +818,7 @@ func (s *LocalFolderService) loadStorageNodeForMount(ctx context.Context, id str
 		FROM storage_nodes sn
 		LEFT JOIN storage_node_credentials snc ON snc.storage_node_id = sn.id
 		WHERE sn.id = $1
-		  AND sn.node_type IN ('LOCAL', 'NAS')
+		  AND sn.node_type IN ('LOCAL', 'NAS', 'CLOUD')
 		  AND sn.deleted_at IS NULL
 	`, id).Scan(&node.ID, &node.Name, &node.NodeType, &node.AccessMode, &node.Address, &node.Username, &node.SecretCiphertext)
 	if err != nil {
@@ -764,9 +884,26 @@ func buildMountSourcePath(node storageNodeMountRef, relativePath string) (string
 			return "", "", apperrors.BadRequest("NAS 节点凭据缺失，请先重新保存 NAS 节点")
 		}
 		return joinSMBPath(node.Address, relativePath), "NAS_SHARE", nil
+	case "CLOUD":
+		return buildCloudMountPath(node.Address, relativePath), "CLOUD_FOLDER", nil
 	default:
 		return "", "", apperrors.BadRequest("当前节点类型暂不支持新增挂载")
 	}
+}
+
+func buildCloudMountPath(rootPath string, relativePath string) string {
+	root := strings.TrimRight(strings.TrimSpace(strings.ReplaceAll(rootPath, `\`, `/`)), `/`)
+	relative := strings.Trim(strings.TrimSpace(strings.ReplaceAll(relativePath, `\`, `/`)), `/`)
+	if root == "" {
+		root = "/"
+	}
+	if relative == "" {
+		return root
+	}
+	if root == "/" {
+		return "/" + relative
+	}
+	return root + "/" + relative
 }
 
 func buildLocalMountPath(rootPath string, relativePath string) string {
@@ -1026,6 +1163,8 @@ func uiFolderType(nodeType string) string {
 	switch nodeType {
 	case "NAS":
 		return "NAS"
+	case "CLOUD":
+		return "网盘"
 	default:
 		return "本地"
 	}
@@ -1036,11 +1175,14 @@ func buildMountBadges(nodeType string, accessMode string, mountMode string) []st
 	if nodeType == "NAS" && accessMode == "SMB" {
 		sourceBadge = "SMB"
 	}
+	if nodeType == "CLOUD" {
+		sourceBadge = "115"
+	}
 	return []string{sourceBadge, uiMountMode(mountMode)}
 }
 
 func initialMountAuthStatus(nodeType string) string {
-	if nodeType == "NAS" {
+	if nodeType == "NAS" || nodeType == "CLOUD" {
 		return "UNKNOWN"
 	}
 	return "NOT_REQUIRED"

@@ -162,6 +162,7 @@ describe('storageNodesApi', () => {
       name: '上海发布会原片',
       nodeId: 'local-node-1',
       libraryId: 'photo',
+      libraryName: '商业摄影资产库',
       mountMode: '可写',
       heartbeatPolicy: '每小时',
       relativePath: 'ShanghaiLaunch\\RAW',
@@ -189,6 +190,7 @@ describe('storageNodesApi', () => {
       }),
     );
     expect(result.message).toBe('挂载已保存');
+    expect(result.record.id).toBe('mount-1');
   });
 
   it('saveNasNode 改为调用中心服务接口', async () => {
@@ -280,5 +282,63 @@ describe('storageNodesApi', () => {
     expect(result.localNodes).toHaveLength(1);
     expect(result.nasNodes).toHaveLength(0);
     expect(result.mounts).toHaveLength(0);
+  });
+});
+
+describe('storageNodesApi cloud mapping', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    (window as Window & { __MARE_RUNTIME_CONFIG__?: { centerBaseUrl?: string } }).__MARE_RUNTIME_CONFIG__ = {
+      centerBaseUrl: 'http://127.0.0.1:18080',
+    };
+  });
+
+  afterEach(() => {
+    delete (window as Window & { __MARE_RUNTIME_CONFIG__?: { centerBaseUrl?: string } }).__MARE_RUNTIME_CONFIG__;
+    vi.unstubAllGlobals();
+  });
+
+  it('maps cloud mountPath into mountDirectory', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/storage/local-nodes')) {
+        return { ok: true, json: async () => ({ data: [] }) };
+      }
+      if (url.endsWith('/api/storage/local-folders')) {
+        return { ok: true, json: async () => ({ data: [] }) };
+      }
+      if (url.endsWith('/api/storage/nas-nodes')) {
+        return { ok: true, json: async () => ({ data: [] }) };
+      }
+      if (url.endsWith('/api/storage/cloud-nodes')) {
+        return {
+          ok: true,
+          json: async () => ({
+            data: [
+              {
+                id: 'cloud-node-1',
+                name: '115 云归档',
+                vendor: '115',
+                accessMethod: '扫码登录获取 Token',
+                qrChannel: 'tv',
+                mountPath: '/MareArchive/Projects/Shanghai',
+                tokenStatus: '已配置',
+                status: '鉴权正常',
+                tone: 'success',
+                mountCount: 1,
+                notes: '',
+              },
+            ],
+          }),
+        };
+      }
+      throw new Error(`unexpected url: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await storageNodesApi.loadDashboard();
+
+    expect(result.cloudNodes).toHaveLength(1);
+    expect(result.cloudNodes[0]?.mountDirectory).toBe('/MareArchive/Projects/Shanghai');
   });
 });

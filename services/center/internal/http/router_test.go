@@ -11,6 +11,7 @@ import (
 	"mare/services/center/internal/agentregistry"
 	"mare/services/center/internal/db"
 	"mare/services/center/internal/runtime"
+	assetdto "mare/shared/contracts/dto/asset"
 	storagedto "mare/shared/contracts/dto/storage"
 )
 
@@ -40,6 +41,7 @@ type fakeAgentService struct{}
 type fakeLocalFolderService struct{}
 type fakeLocalNodeService struct{}
 type fakeNASNodeService struct{}
+type fakeAssetService struct{}
 
 func (fakeAgentService) Register(_ context.Context, registration agentregistry.Registration) (agentregistry.Agent, error) {
 	return agentregistry.Agent{
@@ -228,6 +230,130 @@ func (fakeNASNodeService) RunNasNodeConnectionTest(context.Context, []string) (s
 
 func (fakeNASNodeService) DeleteNasNode(context.Context, string) (storagedto.DeleteNasNodeResponse, error) {
 	return storagedto.DeleteNasNodeResponse{Message: "NAS 已删除"}, nil
+}
+
+func (fakeAssetService) ListLibraries(context.Context) ([]assetdto.LibraryRecord, error) {
+	return []assetdto.LibraryRecord{
+		{
+			ID:            "photo",
+			Name:          "商业摄影资产库",
+			RootLabel:     "/",
+			ItemCount:     "1",
+			Health:        "100%",
+			StoragePolicy: "本地",
+			EndpointNames: []string{"商业摄影原片库"},
+		},
+	}, nil
+}
+
+func (fakeAssetService) CreateLibrary(_ context.Context, request assetdto.CreateLibraryRequest) (assetdto.CreateLibraryResponse, error) {
+	return assetdto.CreateLibraryResponse{
+		Message: "资产库已创建",
+		Library: assetdto.LibraryRecord{
+			ID:            "library-photo",
+			Name:          request.Name,
+			RootLabel:     "/",
+			ItemCount:     "0",
+			Health:        "100%",
+			StoragePolicy: "未绑定端点",
+			EndpointNames: []string{},
+		},
+	}, nil
+}
+
+func (fakeAssetService) CreateDirectory(_ context.Context, libraryID string, request assetdto.CreateDirectoryRequest) (assetdto.CreateDirectoryResponse, error) {
+	return assetdto.CreateDirectoryResponse{
+		Message: "目录已创建",
+		Entry: assetdto.EntryRecord{
+			ID:             "dir-new",
+			LibraryID:      libraryID,
+			ParentID:       request.ParentID,
+			Type:           "folder",
+			LifecycleState: "ACTIVE",
+			Name:           request.Name,
+			FileKind:       "文件夹",
+			DisplayType:    "文件夹",
+			ModifiedAt:     "2026-04-10 12:20",
+			CreatedAt:      "2026-04-10 12:20",
+			Size:           "0 项",
+			Path:           "商业摄影资产库 / " + request.Name,
+			SourceLabel:    "统一目录树",
+			LastTaskText:   "暂无任务",
+			LastTaskTone:   "info",
+			ColorLabel:     "无",
+			Badges:         []string{},
+			RiskTags:       []string{},
+			Tags:           []string{},
+			Endpoints:      []assetdto.EntryEndpoint{},
+			Metadata:       []assetdto.MetadataRow{},
+		},
+	}, nil
+}
+
+func (fakeAssetService) DeleteEntry(context.Context, string) (assetdto.DeleteEntryResponse, error) {
+	return assetdto.DeleteEntryResponse{Message: "条目已删除"}, nil
+}
+
+func (fakeAssetService) BrowseLibrary(_ context.Context, libraryID string, _ assetdto.BrowseQuery) (assetdto.BrowseLibraryResponse, error) {
+	return assetdto.BrowseLibraryResponse{
+		Breadcrumbs: []assetdto.Breadcrumb{{ID: nil, Label: "商业摄影资产库"}},
+		Items: []assetdto.EntryRecord{
+			{
+				ID:             "asset-1",
+				LibraryID:      libraryID,
+				Type:           "file",
+				LifecycleState: "ACTIVE",
+				Name:           "cover.jpg",
+				FileKind:       "图片",
+				DisplayType:    "JPEG 图片",
+				ModifiedAt:     "2026-04-10 12:20",
+				CreatedAt:      "2026-04-10 12:20",
+				Size:           "1.2 MB",
+				Path:           "商业摄影资产库 / 原片 / cover.jpg",
+				SourceLabel:    "统一资产",
+				LastTaskText:   "暂无任务",
+				LastTaskTone:   "info",
+				ColorLabel:     "无",
+				Badges:         []string{},
+				RiskTags:       []string{},
+				Tags:           []string{},
+				Endpoints: []assetdto.EntryEndpoint{
+					{Name: "商业摄影原片库", State: "已同步", Tone: "success", LastSyncAt: "2026-04-10 12:20", EndpointType: "local"},
+				},
+				Metadata: []assetdto.MetadataRow{{Label: "逻辑路径", Value: "/原片/cover.jpg"}},
+			},
+		},
+		Total:               1,
+		CurrentPathChildren: 1,
+		EndpointNames:       []string{"商业摄影原片库"},
+	}, nil
+}
+
+func (fakeAssetService) LoadEntry(context.Context, string) (*assetdto.EntryRecord, error) {
+	return &assetdto.EntryRecord{
+		ID:             "asset-1",
+		LibraryID:      "photo",
+		Type:           "file",
+		LifecycleState: "ACTIVE",
+		Name:           "cover.jpg",
+		FileKind:       "图片",
+		DisplayType:    "JPEG 图片",
+		ModifiedAt:     "2026-04-10 12:20",
+		CreatedAt:      "2026-04-10 12:20",
+		Size:           "1.2 MB",
+		Path:           "商业摄影资产库 / 原片 / cover.jpg",
+		SourceLabel:    "统一资产",
+		LastTaskText:   "暂无任务",
+		LastTaskTone:   "info",
+		ColorLabel:     "无",
+		Badges:         []string{},
+		RiskTags:       []string{},
+		Tags:           []string{},
+		Endpoints: []assetdto.EntryEndpoint{
+			{Name: "商业摄影原片库", State: "已同步", Tone: "success", LastSyncAt: "2026-04-10 12:20", EndpointType: "local"},
+		},
+		Metadata: []assetdto.MetadataRow{{Label: "逻辑路径", Value: "/原片/cover.jpg"}},
+	}, nil
 }
 
 func TestHealthzReturnsSuccessEnvelope(t *testing.T) {
@@ -509,6 +635,146 @@ func TestSaveNasNodeRouteAcceptsValidPayload(t *testing.T) {
 	}
 
 	request := httptest.NewRequest(http.MethodPost, "/api/storage/nas-nodes", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+}
+
+func TestLibrariesRouteReturnsPersistedRecords(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(Dependencies{
+		Runtime:      fakeRuntimeService{},
+		Agents:       fakeAgentService{},
+		LocalNodes:   fakeLocalNodeService{},
+		NasNodes:     fakeNASNodeService{},
+		LocalFolders: fakeLocalFolderService{},
+		Assets:       fakeAssetService{},
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/api/libraries", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+}
+
+func TestBrowseLibraryRouteAcceptsValidQuery(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(Dependencies{
+		Runtime:      fakeRuntimeService{},
+		Agents:       fakeAgentService{},
+		LocalNodes:   fakeLocalNodeService{},
+		NasNodes:     fakeNASNodeService{},
+		LocalFolders: fakeLocalFolderService{},
+		Assets:       fakeAssetService{},
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/api/libraries/photo/browse?page=1&pageSize=20&sortValue=修改时间&statusFilter=全部&fileTypeFilter=全部", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+}
+
+func TestLoadFileEntryRouteReturnsDetail(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(Dependencies{
+		Runtime:      fakeRuntimeService{},
+		Agents:       fakeAgentService{},
+		LocalNodes:   fakeLocalNodeService{},
+		NasNodes:     fakeNASNodeService{},
+		LocalFolders: fakeLocalFolderService{},
+		Assets:       fakeAssetService{},
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/api/file-entries/asset-1", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+}
+
+func TestCreateLibraryRouteAcceptsValidPayload(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(Dependencies{
+		Runtime:      fakeRuntimeService{},
+		Agents:       fakeAgentService{},
+		LocalNodes:   fakeLocalNodeService{},
+		NasNodes:     fakeNASNodeService{},
+		LocalFolders: fakeLocalFolderService{},
+		Assets:       fakeAssetService{},
+	})
+
+	body, err := json.Marshal(assetdto.CreateLibraryRequest{Name: "全新资产库"})
+	if err != nil {
+		t.Fatalf("marshal library payload: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/libraries", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+}
+
+func TestCreateDirectoryRouteAcceptsValidPayload(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(Dependencies{
+		Runtime:      fakeRuntimeService{},
+		Agents:       fakeAgentService{},
+		LocalNodes:   fakeLocalNodeService{},
+		NasNodes:     fakeNASNodeService{},
+		LocalFolders: fakeLocalFolderService{},
+		Assets:       fakeAssetService{},
+	})
+
+	parentID := "dir-root-photo"
+	body, err := json.Marshal(assetdto.CreateDirectoryRequest{
+		ParentID: &parentID,
+		Name:     "新建目录",
+	})
+	if err != nil {
+		t.Fatalf("marshal directory payload: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/libraries/photo/directories", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+}
+
+func TestDeleteEntryRouteReturnsSuccess(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(Dependencies{
+		Runtime:      fakeRuntimeService{},
+		Agents:       fakeAgentService{},
+		LocalNodes:   fakeLocalNodeService{},
+		NasNodes:     fakeNASNodeService{},
+		LocalFolders: fakeLocalFolderService{},
+		Assets:       fakeAssetService{},
+	})
+
+	request := httptest.NewRequest(http.MethodDelete, "/api/file-entries/dir-new", nil)
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
 

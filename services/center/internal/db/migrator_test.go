@@ -29,7 +29,7 @@ func TestMigratorApplyIsIdempotent(t *testing.T) {
 		t.Fatalf("first apply: %v", err)
 	}
 
-	if firstState.CurrentVersion != 2 || firstState.LatestVersion != 2 || firstState.Status != "ready" {
+	if firstState.CurrentVersion != 3 || firstState.LatestVersion != 3 || firstState.Status != "ready" {
 		t.Fatalf("unexpected first state: %+v", firstState)
 	}
 
@@ -38,7 +38,7 @@ func TestMigratorApplyIsIdempotent(t *testing.T) {
 		t.Fatalf("second apply: %v", err)
 	}
 
-	if secondState.CurrentVersion != 2 || secondState.LatestVersion != 2 || secondState.Status != "ready" {
+	if secondState.CurrentVersion != 3 || secondState.LatestVersion != 3 || secondState.Status != "ready" {
 		t.Fatalf("unexpected second state: %+v", secondState)
 	}
 }
@@ -64,7 +64,7 @@ func TestMigratorStateReportsPendingWithoutApply(t *testing.T) {
 	if state.Status != "pending" {
 		t.Fatalf("expected pending state, got %+v", state)
 	}
-	if state.CurrentVersion != 0 || state.LatestVersion != 2 {
+	if state.CurrentVersion != 0 || state.LatestVersion != 3 {
 		t.Fatalf("unexpected pending version state: %+v", state)
 	}
 }
@@ -113,6 +113,12 @@ func resetSchema(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
 
 	if _, err := pool.Exec(ctx, `
+		DROP TABLE IF EXISTS asset_metadata;
+		DROP TABLE IF EXISTS directory_presences;
+		DROP TABLE IF EXISTS asset_replicas;
+		DROP TABLE IF EXISTS assets;
+		DROP TABLE IF EXISTS library_directories;
+		DROP TABLE IF EXISTS libraries;
 		DROP TABLE IF EXISTS mount_scan_histories;
 		DROP TABLE IF EXISTS mount_runtime;
 		DROP TABLE IF EXISTS mounts;

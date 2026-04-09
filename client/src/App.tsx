@@ -7,6 +7,7 @@ import {
   CircleEllipsis,
   FolderOpen,
   HardDrive,
+  Plus,
   Settings2,
   Star,
 } from 'lucide-react';
@@ -38,6 +39,7 @@ import {
   type PersistedState,
 } from './lib/clientState';
 import { resolveImportEntrySignal } from './lib/importCenter';
+import { createLibrary, loadLibraries } from './lib/librariesApi';
 import { getRuntimeConfig } from './lib/runtimeConfig';
 import { fetchSystemRuntimeStatus, type SystemRuntimeSummary } from './lib/systemRuntimeApi';
 import {
@@ -69,6 +71,12 @@ import {
   type FileCenterStatusFilter,
   type FileCenterTagSuggestion,
 } from './lib/fileCenterApi';
+import {
+  storageNodesApi,
+  type StorageHeartbeatPolicy,
+  type StorageMountMode,
+  type StorageNodesDashboard,
+} from './lib/storageNodesApi';
 import { ActionButton, IconButton, LibraryManagerSheet, Sheet } from './components/Shared';
 import { WorkspaceTabBar } from './components/WorkspaceTabBar';
 import { FileCenterPage } from './pages/FileCenterPage';
@@ -138,6 +146,38 @@ type RuntimeLightState = {
   ariaLabel: string;
   tooltip: string;
   tone: 'success' | 'warning' | 'critical';
+} | null;
+
+function createEmptyLibraryMountDraft(): LibraryMountDraft {
+  return {
+    enabled: false,
+    mountName: '',
+    nodeId: '',
+    relativePath: '',
+    mountMode: '可写',
+    heartbeatPolicy: '从不',
+  };
+}
+type LibrarySourceType = '本地' | 'NAS' | '网盘';
+type LibraryNodeOption = {
+  id: string;
+  label: string;
+  sourceType: LibrarySourceType;
+};
+type LibraryMountDraft = {
+  enabled: boolean;
+  mountName: string;
+  nodeId: string;
+  relativePath: string;
+  mountMode: StorageMountMode;
+  heartbeatPolicy: StorageHeartbeatPolicy;
+};
+type LibraryCreateState = {
+  name: string;
+  loadingNodes: boolean;
+  saving: boolean;
+  errors: Partial<Record<string, string>>;
+  mounts: Record<LibrarySourceType, LibraryMountDraft>;
 } | null;
 
 function resolveTaskStatusTone(status: string): Severity {
@@ -687,12 +727,13 @@ function resolveIssueActionFeedback(action: 'retry' | 'confirm' | 'postpone' | '
 export default function App() {
   const runtimeConfig = useMemo(() => getRuntimeConfig(), []);
   const [persisted, setPersisted] = useState<PersistedState>(loadPersistedState);
+  const [libraries, setLibraries] = useState<Library[]>([]);
   const startupWorkspaceViewRef = useRef<WorkspaceView>(resolveStartupWorkspace(persisted.settings));
   const [openWorkspaceViews, setOpenWorkspaceViews] = useState<WorkspaceView[]>([startupWorkspaceViewRef.current]);
   const [mountedWorkspaceViews, setMountedWorkspaceViews] = useState<WorkspaceView[]>([startupWorkspaceViewRef.current]);
   const [activeWorkspaceView, setActiveWorkspaceView] = useState<WorkspaceView>(startupWorkspaceViewRef.current);
   const [recentlyClosedWorkspaceViews, setRecentlyClosedWorkspaceViews] = useState<WorkspaceView[]>([]);
-  const [activeLibraryId, setActiveLibraryId] = useState(resolveDefaultLibraryId(persisted.settings, persisted.libraries));
+  const [activeLibraryId, setActiveLibraryId] = useState('');
   const [taskTab, setTaskTab] = useState<TaskTab>('transfer');
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('general');
   const [fileTypeFilter, setFileTypeFilter] = useState<FileTypeFilter>('全部');
@@ -716,6 +757,8 @@ export default function App() {
   const [runtimeLightState, setRuntimeLightState] = useState<RuntimeLightState>(null);
   const [libraryMenuOpen, setLibraryMenuOpen] = useState(false);
   const [managedLibrary, setManagedLibrary] = useState<Library | null>(null);
+  const [libraryCreateState, setLibraryCreateState] = useState<LibraryCreateState>(null);
+  const [libraryCreateSources, setLibraryCreateSources] = useState<StorageNodesDashboard | null>(null);
   const [taskDetail, setTaskDetail] = useState<TaskRecord | null>(null);
   const [fileDetail, setFileDetail] = useState<FileCenterEntry | null>(null);
   const [fileCenterState, setFileCenterState] = useState<FileCenterDirectoryResult>({
@@ -723,6 +766,7 @@ export default function App() {
     items: [],
     total: 0,
     currentPathChildren: 0,
+    endpointNames: [],
   });
   const [fileCenterLoading, setFileCenterLoading] = useState(true);
   const [fileCenterVersion, setFileCenterVersion] = useState(0);
@@ -742,6 +786,41 @@ export default function App() {
     'storage-nodes': 0,
     settings: 0,
   });
+
+  useEffect(() => {
+    let disposed = false;
+
+    void loadLibraries()
+      .then((items) => {
+        if (disposed) {
+          return;
+        }
+        setLibraries(items);
+      })
+      .catch(() => {
+        if (disposed) {
+          return;
+        }
+        setLibraries([]);
+        setFeedback({ message: '加载资产库失败，请稍后重试', tone: 'critical' });
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (libraries.length === 0) {
+      return;
+    }
+
+    if (activeLibraryId !== '' && libraries.some((item) => item.id === activeLibraryId)) {
+      return;
+    }
+
+    setActiveLibraryId(resolveDefaultLibraryId(persisted.settings, libraries));
+  }, [activeLibraryId, libraries, persisted.settings]);
   const pendingTaskSizeCalcIdsRef = useRef<Set<string>>(new Set());
   const workspaceStageRef = useRef<HTMLDivElement | null>(null);
   const workspaceContainersRef = useRef<Partial<Record<WorkspaceView, HTMLDivElement>>>({});
@@ -787,7 +866,7 @@ export default function App() {
   }, [runtimeConfig]);
   const settingsCustomContent = useMemo(() => {
     if (settingsTab === 'tag-management') {
-      return <TagManagementPage libraries={persisted.libraries} onFeedback={setFeedback} />;
+      return <TagManagementPage libraries={libraries} onFeedback={setFeedback} />;
     }
 
     if (settingsTab === 'workspace') {
@@ -894,7 +973,7 @@ export default function App() {
     persisted.importDeviceSessions,
     persisted.importReports,
     persisted.issueRecords,
-    persisted.libraries,
+    libraries,
     persisted.noticeRecords,
     persisted.taskRecords,
     settingsDraft,
@@ -1047,6 +1126,10 @@ export default function App() {
   }, [fileCenterState.items, fileCenterVersion, selectedFileIds]);
 
   useEffect(() => {
+    if (!activeLibraryId) {
+      setAvailableTags([]);
+      return;
+    }
     void fileCenterApi.loadTagSuggestions('', activeLibraryId).then(setAvailableTags).catch(() => {
       setAvailableTags([]);
     });
@@ -1054,12 +1137,65 @@ export default function App() {
 
   const theme = useMemo(() => resolveThemeMode(persisted.settings), [persisted.settings]);
   const currentLibrary = useMemo(
-    () => persisted.libraries.find((item) => item.id === activeLibraryId) ?? persisted.libraries[0],
-    [activeLibraryId, persisted.libraries],
+    () =>
+      libraries.find((item) => item.id === activeLibraryId) ??
+      libraries[0] ?? {
+        id: '',
+        name: '资产库',
+        rootLabel: '/',
+        itemCount: '0',
+        health: '—',
+        storagePolicy: '—',
+      },
+    [activeLibraryId, libraries],
   );
   const statusFilterEndpointNames = useMemo(
-    () => fileCenterApi.listLibraryEndpointNames(activeLibraryId),
-    [activeLibraryId],
+    () => fileCenterState.endpointNames ?? fileCenterApi.listLibraryEndpointNames(activeLibraryId),
+    [activeLibraryId, fileCenterState.endpointNames],
+  );
+  const currentSettingsSections = useMemo(() => {
+    const sections = settingsDraft[settingsTab];
+    if (settingsTab !== 'general') {
+      return sections;
+    }
+    return sections.map((section) =>
+      section.id !== 'launch'
+        ? section
+        : {
+            ...section,
+            rows: section.rows.map((row) =>
+              row.id !== 'default-library'
+                ? row
+                : {
+                    ...row,
+                    options: ['上次使用', ...libraries.map((library) => library.name)],
+                  },
+            ),
+          },
+    );
+  }, [libraries, settingsDraft, settingsTab]);
+  const libraryCreateNodeOptions = useMemo<LibraryNodeOption[]>(
+    () =>
+      libraryCreateSources
+        ? [
+            ...libraryCreateSources.localNodes.map((node) => ({
+              id: node.id,
+              label: `本地 · ${node.name}`,
+              sourceType: '本地' as const,
+            })),
+            ...libraryCreateSources.nasNodes.map((node) => ({
+              id: node.id,
+              label: `NAS · ${node.name}`,
+              sourceType: 'NAS' as const,
+            })),
+            ...libraryCreateSources.cloudNodes.map((node) => ({
+              id: node.id,
+              label: `网盘 · ${node.name}`,
+              sourceType: '网盘' as const,
+            })),
+          ]
+        : [],
+    [libraryCreateSources],
   );
   const breadcrumbs = fileCenterState.breadcrumbs.length > 0
     ? fileCenterState.breadcrumbs
@@ -1075,6 +1211,20 @@ export default function App() {
   useEffect(() => {
     let disposed = false;
     setFileCenterLoading(true);
+
+    if (!activeLibraryId) {
+      setFileCenterState({
+        breadcrumbs: [],
+        items: [],
+        total: 0,
+        currentPathChildren: 0,
+        endpointNames: [],
+      });
+      setFileCenterLoading(false);
+      return () => {
+        disposed = true;
+      };
+    }
 
     void fileCenterApi
       .loadDirectory({
@@ -1104,6 +1254,7 @@ export default function App() {
           items: [],
           total: 0,
           currentPathChildren: 0,
+          endpointNames: [],
         });
         setFeedback({ message: '加载文件中心失败，请稍后重试', tone: 'critical' });
       })
@@ -1529,6 +1680,112 @@ export default function App() {
     setHistoryIndex(0);
     setSelectedFileIds([]);
     setLibraryMenuOpen(false);
+  };
+
+  const openCreateLibraryDialog = () => {
+    setLibraryMenuOpen(false);
+    setLibraryCreateState({
+      name: '',
+      loadingNodes: true,
+      saving: false,
+      errors: {},
+      mounts: {
+        本地: createEmptyLibraryMountDraft(),
+        NAS: createEmptyLibraryMountDraft(),
+        网盘: createEmptyLibraryMountDraft(),
+      },
+    });
+
+    void storageNodesApi
+      .loadDashboard()
+      .then((dashboard) => {
+        setLibraryCreateSources(dashboard);
+        setLibraryCreateState((current) =>
+          current
+            ? {
+                ...current,
+                loadingNodes: false,
+                mounts: {
+                  本地: { ...current.mounts['本地'], nodeId: dashboard.localNodes[0]?.id ?? '' },
+                  NAS: { ...current.mounts['NAS'], nodeId: dashboard.nasNodes[0]?.id ?? '' },
+                  网盘: { ...current.mounts['网盘'], nodeId: dashboard.cloudNodes[0]?.id ?? '' },
+                },
+              }
+            : current,
+        );
+      })
+      .catch((error) => {
+        setLibraryCreateSources({
+          localNodes: [],
+          nasNodes: [],
+          cloudNodes: [],
+          mounts: [],
+          mountFolders: [],
+        });
+        setLibraryCreateState((current) => (current ? { ...current, loadingNodes: false } : current));
+        setFeedback({ message: error instanceof Error ? error.message : '加载存储节点失败', tone: 'critical' });
+      });
+  };
+
+  const saveCreatedLibrary = async () => {
+    if (!libraryCreateState) {
+      return;
+    }
+
+    const errors: Partial<Record<string, string>> = {};
+    if (!libraryCreateState.name.trim()) errors.name = '请输入资产库名称';
+    (['本地', 'NAS', '网盘'] as LibrarySourceType[]).forEach((sourceType) => {
+      const mount = libraryCreateState.mounts[sourceType];
+      if (!mount.enabled) {
+        return;
+      }
+      if (!mount.mountName.trim()) errors[`mountName-${sourceType}`] = '请输入挂载名称';
+      if (!mount.nodeId.trim()) errors[`nodeId-${sourceType}`] = '请选择所属节点';
+      if (!mount.relativePath.trim()) errors[`relativePath-${sourceType}`] = '请输入挂载子目录';
+    });
+    if (Object.keys(errors).length > 0) {
+      setLibraryCreateState((current) => (current ? { ...current, errors } : current));
+      return;
+    }
+
+    setLibraryCreateState((current) => (current ? { ...current, saving: true, errors: {} } : current));
+
+    try {
+      const created = await createLibrary(libraryCreateState.name.trim());
+      const enabledMounts = (['本地', 'NAS', '网盘'] as LibrarySourceType[])
+        .map((sourceType) => ({ sourceType, mount: libraryCreateState.mounts[sourceType] }))
+        .filter((item) => item.mount.enabled);
+
+      const createdMounts = await Promise.all(
+        enabledMounts.map(({ sourceType, mount }) =>
+          storageNodesApi.saveMount({
+            name: mount.mountName.trim(),
+            libraryId: created.library.id,
+            libraryName: created.library.name,
+            nodeId: mount.nodeId,
+            mountMode: mount.mountMode,
+            heartbeatPolicy: mount.heartbeatPolicy,
+            relativePath: mount.relativePath.trim(),
+            notes: '',
+            folderType: sourceType,
+          }),
+        ),
+      );
+      if (createdMounts.length > 0) {
+        await storageNodesApi.runMountScan(createdMounts.map((item) => item.record.id));
+      }
+
+      const nextLibraries = await loadLibraries();
+      setLibraries(nextLibraries);
+      setLibraryCreateState(null);
+      setLibraryCreateSources(null);
+      switchLibrary(created.library.id);
+      activateWorkspace('file-center');
+      setFeedback({ message: '资产库与挂载已创建', tone: 'success' });
+    } catch (error) {
+      setLibraryCreateState((current) => (current ? { ...current, saving: false } : current));
+      setFeedback({ message: error instanceof Error ? error.message : '创建资产库失败', tone: 'critical' });
+    }
   };
 
   const createDeleteTasks = (
@@ -2002,13 +2259,17 @@ export default function App() {
             onClick={() => setLibraryMenuOpen((value) => !value)}
           >
             <div className="library-trigger-copy">
-              <span>{currentLibrary.name}</span>
-              <strong>{currentLibrary.rootLabel}</strong>
+              <strong>{currentLibrary.name}</strong>
             </div>
           </button>
           {libraryMenuOpen ? (
             <div className="library-menu" role="menu">
-              {persisted.libraries.map((library) => (
+              <div className="library-menu-header">
+                <button aria-label="新增资产库" className="library-create-button" type="button" onClick={openCreateLibraryDialog}>
+                  <Plus size={14} />
+                </button>
+              </div>
+              {libraries.map((library) => (
                 <div className={`library-option${library.id === currentLibrary.id ? ' active' : ''}`} key={library.id}>
                   <button className="library-option-main" type="button" onClick={() => switchLibrary(library.id)}>
                     <div>
@@ -2495,7 +2756,7 @@ export default function App() {
             activeTab={taskTab}
             fileNodes={persisted.fileNodes}
             issues={persisted.issueRecords}
-            libraries={persisted.libraries}
+            libraries={libraries}
             statusFilter={taskStatusFilter}
             taskItems={persisted.taskItemRecords}
             tasks={persisted.taskRecords}
@@ -2572,7 +2833,7 @@ export default function App() {
             <IssuesPage
               key={`issues-${workspaceRefreshTokens.issues}`}
               issues={persisted.issueRecords}
-              libraries={persisted.libraries}
+              libraries={libraries}
               focusRequest={issueFocusRequest}
               onClearFocusRequest={() => setIssueFocusRequest(null)}
               onConsumeFocusRequest={() => setIssueFocusRequest(null)}
@@ -2601,7 +2862,7 @@ export default function App() {
           createPortal(
             <StorageNodesPage
               key={`storage-nodes-${workspaceRefreshTokens['storage-nodes']}`}
-            libraries={persisted.libraries}
+            libraries={libraries}
             onFeedback={setFeedback}
             onOpenIssueCenter={(context) => {
               setIssueFocusRequest({
@@ -2622,7 +2883,7 @@ export default function App() {
             <SettingsPage
               key={`settings-${workspaceRefreshTokens.settings}`}
               customContent={settingsCustomContent}
-              sections={settingsDraft[settingsTab]}
+              sections={currentSettingsSections}
               settingsTab={settingsTab}
               setSettingsTab={setSettingsTab}
               onChangeSetting={(sectionId, rowId, value) =>
@@ -2742,6 +3003,219 @@ export default function App() {
             activateWorkspace('storage-nodes');
           }}
         />
+      ) : null}
+
+      {libraryCreateState ? (
+        <div className="dialog-backdrop" role="presentation" onClick={() => { setLibraryCreateState(null); setLibraryCreateSources(null); }}>
+          <section
+            aria-label="新增资产库"
+            className="dialog-panel"
+            role="dialog"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="sheet-header">
+              <strong>新增资产库</strong>
+              <IconButton ariaLabel="关闭" onClick={() => { setLibraryCreateState(null); setLibraryCreateSources(null); }}>
+                <CircleEllipsis size={15} />
+              </IconButton>
+            </div>
+            <div className="sheet-section">
+              <label className="form-field">
+                <span>资产库名称</span>
+                <input
+                  aria-label="资产库名称"
+                  value={libraryCreateState.name}
+                  onChange={(event) =>
+                    setLibraryCreateState((current) =>
+                      current ? { ...current, name: event.target.value, errors: { ...current.errors, name: undefined } } : current,
+                    )
+                  }
+                />
+                {libraryCreateState.errors.name ? <small className="field-error">{libraryCreateState.errors.name}</small> : null}
+              </label>
+            </div>
+            <div className="sheet-section">
+              <strong>挂载文件夹配置</strong>
+              <p className="muted-paragraph">可分别为本地、NAS、网盘配置挂载，也可以只配置其中一部分。</p>
+            </div>
+            {(['本地', 'NAS', '网盘'] as LibrarySourceType[]).map((sourceType) => {
+              const mount = libraryCreateState.mounts[sourceType];
+              const options = libraryCreateNodeOptions.filter((item) => item.sourceType === sourceType);
+              return (
+                <div className="sheet-section" key={sourceType}>
+                  <div className="row-actions">
+                    <strong>{sourceType} 挂载</strong>
+                    <ActionButton
+                      onClick={() =>
+                        setLibraryCreateState((current) =>
+                          current
+                            ? {
+                                ...current,
+                                mounts: {
+                                  ...current.mounts,
+                                  [sourceType]: {
+                                    ...current.mounts[sourceType],
+                                    enabled: !current.mounts[sourceType].enabled,
+                                  },
+                                },
+                              }
+                            : current,
+                        )
+                      }
+                    >
+                      {mount.enabled ? '已启用' : '不配置'}
+                    </ActionButton>
+                  </div>
+                  {mount.enabled ? (
+                    <div className="sheet-form">
+                      <label className="form-field">
+                        <span>挂载名称</span>
+                        <input
+                          aria-label={`${sourceType}挂载名称`}
+                          value={mount.mountName}
+                          onChange={(event) =>
+                            setLibraryCreateState((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    mounts: {
+                                      ...current.mounts,
+                                      [sourceType]: { ...current.mounts[sourceType], mountName: event.target.value },
+                                    },
+                                    errors: { ...current.errors, [`mountName-${sourceType}`]: undefined },
+                                  }
+                                : current,
+                            )
+                          }
+                        />
+                        {libraryCreateState.errors[`mountName-${sourceType}`] ? (
+                          <small className="field-error">{libraryCreateState.errors[`mountName-${sourceType}`]}</small>
+                        ) : null}
+                      </label>
+                      <label className="form-field">
+                        <span>所属节点</span>
+                        <select
+                          aria-label={`${sourceType}所属节点`}
+                          disabled={libraryCreateState.loadingNodes || options.length === 0}
+                          value={mount.nodeId}
+                          onChange={(event) =>
+                            setLibraryCreateState((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    mounts: {
+                                      ...current.mounts,
+                                      [sourceType]: { ...current.mounts[sourceType], nodeId: event.target.value },
+                                    },
+                                    errors: { ...current.errors, [`nodeId-${sourceType}`]: undefined },
+                                  }
+                                : current,
+                            )
+                          }
+                        >
+                          {options.length === 0 ? (
+                            <option value="">暂无可用节点</option>
+                          ) : (
+                            options.map((option) => (
+                              <option key={option.id} value={option.id}>
+                                {option.label}
+                              </option>
+                            ))
+                          )}
+                        </select>
+                        {libraryCreateState.errors[`nodeId-${sourceType}`] ? (
+                          <small className="field-error">{libraryCreateState.errors[`nodeId-${sourceType}`]}</small>
+                        ) : null}
+                      </label>
+                      <label className="form-field">
+                        <span>挂载子目录</span>
+                        <input
+                          aria-label={`${sourceType}挂载子目录`}
+                          value={mount.relativePath}
+                          onChange={(event) =>
+                            setLibraryCreateState((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    mounts: {
+                                      ...current.mounts,
+                                      [sourceType]: { ...current.mounts[sourceType], relativePath: event.target.value },
+                                    },
+                                    errors: { ...current.errors, [`relativePath-${sourceType}`]: undefined },
+                                  }
+                                : current,
+                            )
+                          }
+                        />
+                        {libraryCreateState.errors[`relativePath-${sourceType}`] ? (
+                          <small className="field-error">{libraryCreateState.errors[`relativePath-${sourceType}`]}</small>
+                        ) : null}
+                      </label>
+                      <label className="form-field">
+                        <span>挂载模式</span>
+                        <select
+                          aria-label={`${sourceType}挂载模式`}
+                          value={mount.mountMode}
+                          onChange={(event) =>
+                            setLibraryCreateState((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    mounts: {
+                                      ...current.mounts,
+                                      [sourceType]: { ...current.mounts[sourceType], mountMode: event.target.value as StorageMountMode },
+                                    },
+                                  }
+                                : current,
+                            )
+                          }
+                        >
+                          {(['可写', '只读'] as StorageMountMode[]).map((mode) => (
+                            <option key={mode} value={mode}>
+                              {mode}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="form-field">
+                        <span>心跳策略</span>
+                        <select
+                          aria-label={`${sourceType}心跳策略`}
+                          value={mount.heartbeatPolicy}
+                          onChange={(event) =>
+                            setLibraryCreateState((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    mounts: {
+                                      ...current.mounts,
+                                      [sourceType]: { ...current.mounts[sourceType], heartbeatPolicy: event.target.value as StorageHeartbeatPolicy },
+                                    },
+                                  }
+                                : current,
+                            )
+                          }
+                        >
+                          {(['从不', '每周（深夜）', '每日（深夜）', '每小时'] as StorageHeartbeatPolicy[]).map((policy) => (
+                            <option key={policy} value={policy}>
+                              {policy}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+            <div className="sheet-actions right">
+              <ActionButton onClick={() => { setLibraryCreateState(null); setLibraryCreateSources(null); }}>取消</ActionButton>
+              <ActionButton tone="primary" onClick={() => void saveCreatedLibrary()}>
+                {libraryCreateState.saving ? '创建中...' : '创建资产库'}
+              </ActionButton>
+            </div>
+          </section>
+        </div>
       ) : null}
 
       {managedLibrary ? <LibraryManagerSheet library={managedLibrary} onClose={() => setManagedLibrary(null)} /> : null}

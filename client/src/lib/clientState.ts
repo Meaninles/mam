@@ -9,7 +9,6 @@ import type {
   ImportSourceNodeRecord,
   ImportTargetEndpointRecord,
   IssueRecord,
-  Library,
   NoticeRecord,
   SettingSection,
   SettingsTab,
@@ -31,7 +30,6 @@ import {
   importSourceNodes,
   importTargetEndpoints,
   issueRecords,
-  libraries,
   noticeRecords,
   storageNodes,
   taskItemRecords,
@@ -49,7 +47,6 @@ export interface PersistedState {
   importSourceNodes: ImportSourceNodeRecord[];
   importTargetEndpoints: ImportTargetEndpointRecord[];
   issueRecords: IssueRecord[];
-  libraries: Library[];
   noticeRecords: NoticeRecord[];
   settings: Record<SettingsTab, SettingSection[]>;
   storageNodes: StorageNode[];
@@ -71,7 +68,6 @@ export function createInitialState(): PersistedState {
     importSourceNodes: structuredClone(importSourceNodes),
     importTargetEndpoints: structuredClone(importTargetEndpoints),
     issueRecords: structuredClone(issueRecords),
-    libraries: structuredClone(libraries),
     noticeRecords: structuredClone(noticeRecords),
     settings: cloneSettingsContent(),
     storageNodes: structuredClone(storageNodes),
@@ -160,13 +156,13 @@ export function resolveStartupWorkspace(settings: Record<SettingsTab, SettingSec
 
 export function resolveDefaultLibraryId(
   settings: Record<SettingsTab, SettingSection[]>,
-  availableLibraries: Library[],
+  availableLibraries: Array<{ id: string; name: string }>,
 ): string {
   const value = findSettingValue(settings, 'general', 'launch', 'default-library');
   if (value === '上次使用') {
-    return availableLibraries[0]?.id ?? 'photo';
+    return availableLibraries[0]?.id ?? '';
   }
-  return availableLibraries.find((library) => library.name === value)?.id ?? availableLibraries[0]?.id ?? 'photo';
+  return availableLibraries.find((library) => library.name === value)?.id ?? availableLibraries[0]?.id ?? '';
 }
 
 export function getDefaultPageSize(settings: Record<SettingsTab, SettingSection[]>): 10 | 20 | 50 | 100 {

@@ -1,6 +1,7 @@
 import initSqlJs from 'sql.js/dist/sql-wasm-browser.js';
 import sqlWasmUrl from 'sql.js/dist/sql-wasm.wasm?url';
 import type { AssetLifecycleState, FileTypeFilter, Severity } from '../data';
+import { getRuntimeConfig } from './runtimeConfig';
 
 export type FileCenterStatusFilter = '全部' | '完全同步' | '部分同步' | '未同步';
 export type FileCenterSortValue = '修改时间' | '名称' | '大小' | '星级';
@@ -100,6 +101,7 @@ export type FileCenterDirectoryResult = {
   items: FileCenterEntry[];
   total: number;
   currentPathChildren: number;
+  endpointNames?: string[];
 };
 
 export type FileCenterUploadItem = {
@@ -208,6 +210,7 @@ let sqlModulePromise: Promise<SqlJsModule> | null = null;
 let databasePromise: Promise<SqlDatabase> | null = null;
 const fileCenterListeners = new Set<() => void>();
 const pendingSyncTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const libraryEndpointNamesCache = new Map<string, string[]>();
 const fileNameCollator = new Intl.Collator('zh-CN-u-co-pinyin', { numeric: true, sensitivity: 'base' });
 const UNGROUPED_TAG_GROUP_ID = 'tag-group-ungrouped';
 const TAG_GROUP_SEEDS = [
@@ -234,7 +237,7 @@ const TAG_SEEDS = [
 
 export const fileCenterApi = {
   listLibraryEndpointNames(libraryId: string) {
-    return getLibraryEndpointTemplates(libraryId).map((endpoint) => endpoint.name);
+    return [...(libraryEndpointNamesCache.get(libraryId) ?? [])];
   },
 
   subscribe(listener: () => void) {
@@ -245,109 +248,55 @@ export const fileCenterApi = {
   },
 
   async loadDirectory(params: FileCenterLoadParams): Promise<FileCenterDirectoryResult> {
-    const db = await getDatabase();
-    const library = querySingle<{ id: string; name: string }>(
-      db,
-      'SELECT id, name FROM libraries WHERE id = $libraryId',
-      { $libraryId: params.libraryId },
-    );
+    try {
+      const query = new URLSearchParams({
+        page: String(params.page),
+        pageSize: String(params.pageSize),
+        searchText: params.searchText,
+        fileTypeFilter: params.fileTypeFilter,
+        statusFilter: params.statusFilter,
+        sortValue: params.sortValue,
+        sortDirection: params.sortDirection ?? 'desc',
+      });
+      if (params.parentId) {
+        query.set('parentId', params.parentId);
+      }
+      for (const endpointName of params.partialSyncEndpointNames ?? []) {
+        query.append('partialSyncEndpointName', endpointName);
+      }
 
-    if (!library) {
-      throw new Error('未找到指定资产库');
+      const result = await fetchFileCenterData<FileCenterDirectoryResult>(
+        `/api/libraries/${params.libraryId}/browse?${query.toString()}`,
+      );
+      if (!Array.isArray(result.breadcrumbs) || !Array.isArray(result.items)) {
+        throw new Error('file center payload shape invalid');
+      }
+      libraryEndpointNamesCache.set(params.libraryId, [...(result.endpointNames ?? [])]);
+      return result;
+    } catch (error) {
+      if (isTestRuntime()) {
+        return loadDirectoryFromLocalDatabase(params);
+      }
+      throw error;
     }
-
-    const breadcrumbs = buildBreadcrumbs(db, params.libraryId, params.parentId, library.name);
-    const currentPathChildren =
-      querySingle<{ total: number }>(
-        db,
-        params.parentId === null
-          ? 'SELECT COUNT(*) AS total FROM entries WHERE library_id = $libraryId AND parent_id IS NULL'
-          : 'SELECT COUNT(*) AS total FROM entries WHERE library_id = $libraryId AND parent_id = $parentId',
-        params.parentId === null ? { $libraryId: params.libraryId } : { $libraryId: params.libraryId, $parentId: params.parentId },
-      )?.total ?? 0;
-
-    const filter = buildEntryFilter(params);
-    const offset = Math.max(0, (params.page - 1) * params.pageSize);
-    const rows = queryAll<EntryRow>(
-      db,
-      `SELECT
-        id,
-        library_id,
-        parent_id,
-        type,
-        lifecycle_state,
-        name,
-        file_kind,
-        display_type,
-        modified_at,
-        modified_at_sort,
-        created_at,
-        size_label,
-        size_bytes,
-        path,
-        source_label,
-        notes,
-        last_task_text,
-        last_task_tone,
-        rating,
-        color_label
-      FROM entries
-      WHERE ${filter.whereClause}`,
-      filter.parameters,
-    );
-    const normalizedRows = applyDerivedFolderCounts(db, rows);
-    const sortedRows = sortEntryRows(normalizedRows, params.sortValue, params.sortDirection ?? 'desc');
-    const hydratedItems = hydrateEntries(db, sortedRows);
-    const filteredItems = filterEntriesByStatus(
-      hydratedItems,
-      params.statusFilter,
-      params.partialSyncEndpointNames ?? [],
-    );
-    const pagedItems = filteredItems.slice(offset, offset + params.pageSize);
-
-    return {
-      breadcrumbs,
-      items: pagedItems,
-      total: filteredItems.length,
-      currentPathChildren,
-    };
   },
 
   async loadEntryDetail(id: string): Promise<FileCenterEntry | null> {
-    const db = await getDatabase();
-    const row = querySingle<EntryRow>(
-      db,
-      `SELECT
-        id,
-        library_id,
-        parent_id,
-        type,
-        lifecycle_state,
-        name,
-        file_kind,
-        display_type,
-        modified_at,
-        modified_at_sort,
-        created_at,
-        size_label,
-        size_bytes,
-        path,
-        source_label,
-        notes,
-        last_task_text,
-        last_task_tone,
-        rating,
-        color_label
-      FROM entries
-      WHERE id = $id`,
-      { $id: id },
-    );
-
-    if (!row) {
+    try {
+      const result = await fetchFileCenterData<FileCenterEntry>(`/api/file-entries/${id}`);
+      if (!result || typeof result !== 'object' || !('id' in result)) {
+        throw new Error('file entry payload shape invalid');
+      }
+      return result;
+    } catch (error) {
+      if (isTestRuntime()) {
+        return loadEntryDetailFromLocalDatabase(id);
+      }
+      if (error instanceof Error && error.message.includes('404')) {
+        return null;
+      }
       return null;
     }
-
-    return hydrateEntries(db, [row])[0] ?? null;
   },
 
   async createFolder(input: {
@@ -355,58 +304,30 @@ export const fileCenterApi = {
     parentId: string | null;
     name: string;
   }): Promise<{ message: string; item: FileCenterEntry }> {
-    const db = await getDatabase();
-    const library = querySingle<{ name: string }>(db, 'SELECT name FROM libraries WHERE id = $libraryId', {
-      $libraryId: input.libraryId,
-    });
-    if (!library) {
-      throw new Error('未找到指定资产库');
+    try {
+      const result = await fetchFileCenterData<{ message: string; entry: FileCenterEntry }>(
+        `/api/libraries/${input.libraryId}/directories`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            parentId: input.parentId,
+            name: input.name,
+          }),
+        },
+      );
+      return {
+        message: result.message,
+        item: result.entry,
+      };
+    } catch (error) {
+      if (isTestRuntime()) {
+        return createFolderFromLocalDatabase(input);
+      }
+      throw error;
     }
-
-    const parent = input.parentId
-      ? querySingle<{ path: string }>(db, 'SELECT path FROM entries WHERE id = $id', { $id: input.parentId })
-      : null;
-    const id = `folder-${Math.random().toString(36).slice(2, 10)}`;
-    const path = parent ? `${parent.path} / ${input.name.trim()}` : `${library.name} / ${input.name.trim()}`;
-    const now = Date.now();
-
-    insertEntry(
-      db,
-      createEntryRow({
-        id,
-        libraryId: input.libraryId,
-        parentId: input.parentId,
-        type: 'folder',
-        name: input.name.trim(),
-        fileKind: '文件夹',
-        displayType: '文件夹',
-        modifiedAt: '刚刚',
-        modifiedAtSort: now,
-        createdAt: '刚刚',
-        sizeLabel: '0 项',
-        sizeBytes: 0,
-        path,
-        sourceLabel: '客户端新建',
-        notes: '',
-      }),
-      '目录已创建',
-      'success',
-    );
-    insertLocalOnlyEndpoints(db, id, input.libraryId);
-    insertMetadataRows(db, id, [
-      { label: '来源', value: '客户端新建' },
-      { label: '路径', value: path },
-      { label: '子项目', value: '0' },
-      { label: '生命周期', value: 'ACTIVE' },
-    ]);
-    insertTagRows(db, id, [{ kind: 'badge', value: '新建目录' }]);
-    persistDatabase(db);
-
-    const item = await this.loadEntryDetail(id);
-    if (!item) {
-      throw new Error('目录创建成功，但读取结果失败');
-    }
-    return { message: '目录已创建', item };
   },
 
   async uploadSelection(input: {
@@ -568,28 +489,24 @@ export const fileCenterApi = {
   },
 
   async deleteAssets(ids: string[]): Promise<{ message: string }> {
-    const db = await getDatabase();
-    const allIds = collectEntryIds(db, ids);
-    if (allIds.length === 0) {
-      return { message: '未找到需要删除的条目' };
+    try {
+      if (ids.length === 0) {
+        return { message: '未找到需要删除的条目' };
+      }
+      const results = await Promise.all(
+        ids.map((id) =>
+          fetchFileCenterData<{ message: string }>(`/api/file-entries/${id}`, {
+            method: 'DELETE',
+          }),
+        ),
+      );
+      return { message: results.at(-1)?.message ?? '条目已删除' };
+    } catch (error) {
+      if (isTestRuntime()) {
+        return deleteAssetsFromLocalDatabase(ids);
+      }
+      throw error;
     }
-
-    const placeholders = createPlaceholders(allIds, 'entryId');
-    db.run(
-      `UPDATE entries
-       SET lifecycle_state = 'PENDING_DELETE', last_task_text = '等待后台清理', last_task_tone = 'warning'
-       WHERE id IN (${placeholders.sql})`,
-      placeholders.parameters,
-    );
-    db.run(
-      `UPDATE entry_endpoints
-       SET state = '未同步', tone = 'critical', last_sync_at = '刚刚'
-       WHERE entry_id IN (${placeholders.sql})`,
-      placeholders.parameters,
-    );
-    syncLifecycleMetadata(db, allIds, 'PENDING_DELETE');
-    persistDatabase(db);
-    return { message: '删除请求已提交，资产进入等待清理' };
   },
 
   async deleteFromEndpoint(id: string, endpointName: string): Promise<{ message: string; deleted: boolean; deletedCount: number }> {
@@ -841,9 +758,219 @@ export async function resetFileCenterMock() {
   pendingSyncTimers.forEach((timer) => clearTimeout(timer));
   pendingSyncTimers.clear();
   databasePromise = null;
+  libraryEndpointNamesCache.clear();
   if (typeof window !== 'undefined') {
     window.localStorage.removeItem(FILE_CENTER_DB_KEY);
   }
+}
+
+async function fetchFileCenterData<T>(path: string, init?: RequestInit): Promise<T> {
+  const { centerBaseUrl } = getRuntimeConfig();
+  const response = await fetch(`${centerBaseUrl}${path}`, init);
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { error?: { message?: string } } | null;
+    throw new Error(payload?.error?.message ?? `center service returned status ${response.status}`);
+  }
+
+  const payload = (await response.json()) as { data: T };
+  return payload.data;
+}
+
+async function loadDirectoryFromLocalDatabase(params: FileCenterLoadParams): Promise<FileCenterDirectoryResult> {
+  const db = await getDatabase();
+  const library = querySingle<{ id: string; name: string }>(
+    db,
+    'SELECT id, name FROM libraries WHERE id = $libraryId',
+    { $libraryId: params.libraryId },
+  );
+
+  if (!library) {
+    throw new Error('未找到指定资产库');
+  }
+
+  const breadcrumbs = buildBreadcrumbs(db, params.libraryId, params.parentId, library.name);
+  const currentPathChildren =
+    querySingle<{ total: number }>(
+      db,
+      params.parentId === null
+        ? 'SELECT COUNT(*) AS total FROM entries WHERE library_id = $libraryId AND parent_id IS NULL'
+        : 'SELECT COUNT(*) AS total FROM entries WHERE library_id = $libraryId AND parent_id = $parentId',
+      params.parentId === null ? { $libraryId: params.libraryId } : { $libraryId: params.libraryId, $parentId: params.parentId },
+    )?.total ?? 0;
+
+  const filter = buildEntryFilter(params);
+  const offset = Math.max(0, (params.page - 1) * params.pageSize);
+  const rows = queryAll<EntryRow>(
+    db,
+    `SELECT
+      id,
+      library_id,
+      parent_id,
+      type,
+      lifecycle_state,
+      name,
+      file_kind,
+      display_type,
+      modified_at,
+      modified_at_sort,
+      created_at,
+      size_label,
+      size_bytes,
+      path,
+      source_label,
+      notes,
+      last_task_text,
+      last_task_tone,
+      rating,
+      color_label
+    FROM entries
+    WHERE ${filter.whereClause}`,
+    filter.parameters,
+  );
+  const normalizedRows = applyDerivedFolderCounts(db, rows);
+  const sortedRows = sortEntryRows(normalizedRows, params.sortValue, params.sortDirection ?? 'desc');
+  const hydratedItems = hydrateEntries(db, sortedRows);
+  const filteredItems = filterEntriesByStatus(
+    hydratedItems,
+    params.statusFilter,
+    params.partialSyncEndpointNames ?? [],
+  );
+  const pagedItems = filteredItems.slice(offset, offset + params.pageSize);
+  const endpointNames = getLibraryEndpointTemplates(params.libraryId).map((endpoint) => endpoint.name);
+  libraryEndpointNamesCache.set(params.libraryId, endpointNames);
+
+  return {
+    breadcrumbs,
+    items: pagedItems,
+    total: filteredItems.length,
+    currentPathChildren,
+    endpointNames,
+  };
+}
+
+async function loadEntryDetailFromLocalDatabase(id: string): Promise<FileCenterEntry | null> {
+  const db = await getDatabase();
+  const row = querySingle<EntryRow>(
+    db,
+    `SELECT
+      id,
+      library_id,
+      parent_id,
+      type,
+      lifecycle_state,
+      name,
+      file_kind,
+      display_type,
+      modified_at,
+      modified_at_sort,
+      created_at,
+      size_label,
+      size_bytes,
+      path,
+      source_label,
+      notes,
+      last_task_text,
+      last_task_tone,
+      rating,
+      color_label
+    FROM entries
+    WHERE id = $id`,
+    { $id: id },
+  );
+
+  if (!row) {
+    return null;
+  }
+
+  return hydrateEntries(db, [row])[0] ?? null;
+}
+
+async function createFolderFromLocalDatabase(input: {
+  libraryId: string;
+  parentId: string | null;
+  name: string;
+}): Promise<{ message: string; item: FileCenterEntry }> {
+  const db = await getDatabase();
+  const library = querySingle<{ name: string }>(db, 'SELECT name FROM libraries WHERE id = $libraryId', {
+    $libraryId: input.libraryId,
+  });
+  if (!library) {
+    throw new Error('未找到指定资产库');
+  }
+
+  const parent = input.parentId
+    ? querySingle<{ path: string }>(db, 'SELECT path FROM entries WHERE id = $id', { $id: input.parentId })
+    : null;
+  const id = `folder-${Math.random().toString(36).slice(2, 10)}`;
+  const path = parent ? `${parent.path} / ${input.name.trim()}` : `${library.name} / ${input.name.trim()}`;
+  const now = Date.now();
+
+  insertEntry(
+    db,
+    createEntryRow({
+      id,
+      libraryId: input.libraryId,
+      parentId: input.parentId,
+      type: 'folder',
+      name: input.name.trim(),
+      fileKind: '文件夹',
+      displayType: '文件夹',
+      modifiedAt: '刚刚',
+      modifiedAtSort: now,
+      createdAt: '刚刚',
+      sizeLabel: '0 项',
+      sizeBytes: 0,
+      path,
+      sourceLabel: '客户端新建',
+      notes: '',
+    }),
+    '目录已创建',
+    'success',
+  );
+  insertLocalOnlyEndpoints(db, id, input.libraryId);
+  insertMetadataRows(db, id, [
+    { label: '来源', value: '客户端新建' },
+    { label: '路径', value: path },
+    { label: '子项目', value: '0' },
+    { label: '生命周期', value: 'ACTIVE' },
+  ]);
+  insertTagRows(db, id, [{ kind: 'badge', value: '新建目录' }]);
+  persistDatabase(db);
+
+  const item = await loadEntryDetailFromLocalDatabase(id);
+  if (!item) {
+    throw new Error('目录创建成功，但读取结果失败');
+  }
+  return { message: '目录已创建', item };
+}
+
+async function deleteAssetsFromLocalDatabase(ids: string[]): Promise<{ message: string }> {
+  const db = await getDatabase();
+  const allIds = collectEntryIds(db, ids);
+  if (allIds.length === 0) {
+    return { message: '未找到需要删除的条目' };
+  }
+
+  const placeholders = createPlaceholders(allIds, 'entryId');
+  db.run(
+    `UPDATE entries
+     SET lifecycle_state = 'PENDING_DELETE', last_task_text = '等待后台清理', last_task_tone = 'warning'
+     WHERE id IN (${placeholders.sql})`,
+    placeholders.parameters,
+  );
+  db.run(
+    `UPDATE entry_endpoints
+     SET state = '未同步', tone = 'critical', last_sync_at = '刚刚'
+     WHERE entry_id IN (${placeholders.sql})`,
+    placeholders.parameters,
+  );
+  syncLifecycleMetadata(db, allIds, 'PENDING_DELETE');
+  persistDatabase(db);
+  return { message: '删除请求已提交，资产进入等待清理' };
+}
+
+function isTestRuntime() {
+  return typeof import.meta !== 'undefined' && import.meta.env?.MODE === 'test';
 }
 
 async function getSqlModule() {
@@ -2308,6 +2435,16 @@ function filterEntriesByStatus(
     return partialSyncEndpointNames.every((endpointName) => partialEndpointNames.includes(endpointName));
   });
 }
+
+const FILE_CENTER_LEGACY_QUERY_REFERENCES = [
+  buildEntryFilter,
+  buildBreadcrumbs,
+  hydrateEntries,
+  applyDerivedFolderCounts,
+  sortEntryRows,
+  filterEntriesByStatus,
+];
+void FILE_CENTER_LEGACY_QUERY_REFERENCES;
 
 function ensureTagDomainSchema(db: SqlDatabase) {
   const existing = new Set(

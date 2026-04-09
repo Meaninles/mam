@@ -1,3 +1,5 @@
+. (Join-Path $PSScriptRoot "bootstrap-utf8.ps1")
+
 $ErrorActionPreference = "Stop"
 
 if (-not $env:DATABASE_URL) {

@@ -6,6 +6,8 @@ param(
   [string[]]$ScriptArgs
 )
 
+. (Join-Path $PSScriptRoot "bootstrap-utf8.ps1")
+
 $ErrorActionPreference = "Stop"
 
 $clientDir = Resolve-Path (Join-Path $PSScriptRoot "..\..\client")

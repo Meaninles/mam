@@ -1,0 +1,14 @@
+root = "."
+tmp_dir = ".tmp\\air-agent"
+
+[build]
+  cmd = "go build -o .\\.tmp\\air-agent\\mare-agent.exe .\\services\\agent\\cmd\\mare-agent"
+  bin = ".tmp\\air-agent\\mare-agent.exe"
+  delay = 500
+  include_ext = ["go", "json", "toml", "yaml", "yml"]
+  include_dir = ["services\\agent", "shared\\contracts"]
+  include_file = ["go.work", "go.work.sum", "services\\agent\\go.mod", "shared\\contracts\\go.mod"]
+  exclude_dir = [".git", ".tmp", "client", "docs", "infra", "node_modules", "scripts", "services\\center"]
+
+[misc]
+  clean_on_exit = true

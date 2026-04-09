@@ -493,33 +493,6 @@ export const navigationItems: NavigationItem[] = [
   { id: 'settings', label: '设置' },
 ];
 
-export const libraries: Library[] = [
-  {
-    id: 'photo',
-    name: '商业摄影资产库',
-    rootLabel: '2026 / Shanghai Launch',
-    itemCount: '46,820',
-    health: '98.2%',
-    storagePolicy: '本地 + NAS + 115',
-  },
-  {
-    id: 'video',
-    name: '视频工作流资产库',
-    rootLabel: '2026 / Interview',
-    itemCount: '28,406',
-    health: '91.6%',
-    storagePolicy: '本地 + NAS',
-  },
-  {
-    id: 'family',
-    name: '家庭照片资产库',
-    rootLabel: 'Archive / Family',
-    itemCount: '49,222',
-    health: '99.4%',
-    storagePolicy: '本地 + NAS + 云归档',
-  },
-];
-
 export const fileNodes: FileNode[] = [
   {
     id: 'photo-root-raw',
@@ -3796,7 +3769,7 @@ export const settingsContent: Record<SettingsTab, SettingSection[]> = {
           label: '默认打开资产库',
           value: '上次使用',
           control: 'select',
-          options: ['上次使用', '商业摄影资产库', '视频工作流资产库', '家庭照片资产库'],
+          options: ['上次使用'],
         },
         {
           id: 'folder-pattern',

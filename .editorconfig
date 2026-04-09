@@ -1,0 +1,64 @@
+root = true
+
+[*]
+charset = utf-8
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.md]
+trim_trailing_whitespace = false
+end_of_line = lf
+
+[*.ps1]
+end_of_line = crlf
+
+[*.cmd]
+end_of_line = crlf
+
+[*.bat]
+end_of_line = crlf
+
+[*.ts]
+end_of_line = lf
+
+[*.tsx]
+end_of_line = lf
+
+[*.js]
+end_of_line = lf
+
+[*.jsx]
+end_of_line = lf
+
+[*.json]
+end_of_line = lf
+
+[*.jsonc]
+end_of_line = lf
+
+[*.toml]
+end_of_line = lf
+
+[*.yaml]
+end_of_line = lf
+
+[*.yml]
+end_of_line = lf
+
+[*.go]
+end_of_line = lf
+
+[*.rs]
+end_of_line = lf
+
+[*.html]
+end_of_line = lf
+
+[*.css]
+end_of_line = lf
+
+[*.scss]
+end_of_line = lf
+
+[*.sql]
+end_of_line = lf

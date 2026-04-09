@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import QRCode from 'qrcode';
 import {
   ChevronLeft,
   ChevronRight,
@@ -87,7 +88,7 @@ type StorageMenuState = {
 type MountSourceOption = {
   id: string;
   label: string;
-  sourceType: '本地' | 'NAS';
+  sourceType: '本地' | 'NAS' | '网盘';
 };
 
 const SUB_PAGES: Array<{ id: StorageSubPage; label: string }> = [
@@ -131,9 +132,8 @@ const EMPTY_NAS_DRAFT: NasDraft = {
 const EMPTY_CLOUD_DRAFT: CloudDraft = {
   name: '',
   vendor: '115',
-  accessMethod: '填入 Token',
+  accessMethod: '扫码登录获取 Token',
   qrChannel: '微信小程序',
-  accountAlias: '',
   mountDirectory: '',
   token: '',
   notes: '',
@@ -254,7 +254,7 @@ export function StorageNodesPage({
   const visibleCloud = useMemo(() => {
     const keyword = searchText.trim().toLowerCase();
     return dashboard.cloudNodes.filter((item) =>
-      keyword ? `${item.name} ${item.accountAlias} ${item.mountDirectory} ${item.vendor}`.toLowerCase().includes(keyword) : true,
+      keyword ? `${item.name} ${item.mountDirectory} ${item.vendor}`.toLowerCase().includes(keyword) : true,
     );
   }, [dashboard.cloudNodes, searchText]);
 
@@ -274,8 +274,13 @@ export function StorageNodesPage({
         label: `NAS · ${node.name}`,
         sourceType: 'NAS' as const,
       })),
+      ...dashboard.cloudNodes.map((node) => ({
+        id: node.id,
+        label: `网盘 · ${node.name}`,
+        sourceType: '网盘' as const,
+      })),
     ],
-    [dashboard.localNodes, dashboard.nasNodes],
+    [dashboard.cloudNodes, dashboard.localNodes, dashboard.nasNodes],
   );
   const mountSourceTypeOptions = useMemo<Array<MountSourceOption['sourceType']>>(() => {
     const types = new Set<MountSourceOption['sourceType']>(mountSourceOptions.map((item) => item.sourceType));
@@ -385,7 +390,11 @@ export function StorageNodesPage({
     }
     setMountForm((current) => (current ? { ...current, saving: true } : current));
     try {
-      const result = await storageNodesApi.saveMount(mountForm.draft);
+      const selectedLibrary = libraries.find((library) => library.id === mountForm.draft.libraryId);
+      const result = await storageNodesApi.saveMount({
+        ...mountForm.draft,
+        libraryName: selectedLibrary?.name ?? mountForm.draft.libraryId,
+      });
       await refreshDashboard();
       setFeedback({ message: result.message, tone: 'success' });
       setMountForm(null);
@@ -964,7 +973,13 @@ export function StorageNodesPage({
                 <input aria-label="网盘名称" value={cloudForm.draft.name} onChange={(event) => setCloudForm(updateCloudForm(cloudForm, { name: event.target.value }))} />
               </Field>
               <Field label="网盘类型">
-                <div className="field-static-value">115</div>
+                <select
+                  aria-label="网盘类型"
+                  value={cloudForm.draft.vendor}
+                  onChange={(event) => setCloudForm(updateCloudForm(cloudForm, { vendor: event.target.value as '115' }))}
+                >
+                  <option value="115">115</option>
+                </select>
               </Field>
               <Field label="接入方式">
                 <div className="mini-segmented" role="group" aria-label="网盘接入方式">
@@ -976,25 +991,36 @@ export function StorageNodesPage({
                 </div>
               </Field>
               {cloudForm.draft.accessMethod === '扫码登录获取 Token' ? (
-                <Field label="扫码登录类型">
-                  <select aria-label="扫码登录类型" value={cloudForm.draft.qrChannel} onChange={(event) => setCloudForm(updateCloudForm(cloudForm, { qrChannel: event.target.value as StorageCloudQrChannel }))}>
-                    {CLOUD_QR_OPTIONS.map((option) => (
-                      <option key={option} value={option}>
-                        {option}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
+                <>
+                  <Field label="扫码登录类型">
+                    <select aria-label="扫码登录类型" value={cloudForm.draft.qrChannel} onChange={(event) => setCloudForm(updateCloudForm(cloudForm, { qrChannel: event.target.value as StorageCloudQrChannel }))}>
+                      {CLOUD_QR_OPTIONS.map((option) => (
+                        <option key={option} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="扫码登录二维码">
+                    <CloudQrCodePreview
+                      draft={cloudForm.draft}
+                      onSessionChange={(session) =>
+                        setCloudForm((current) =>
+                          current ? { ...current, draft: { ...current.draft, qrSession: session } } : current,
+                        )
+                      }
+                    />
+                  </Field>
+                </>
               ) : null}
-              <Field label="账号别名" error={cloudForm.errors.accountAlias}>
-                <input aria-label="账号别名" value={cloudForm.draft.accountAlias} onChange={(event) => setCloudForm(updateCloudForm(cloudForm, { accountAlias: event.target.value }))} />
-              </Field>
               <Field label="挂载目录" error={cloudForm.errors.mountDirectory}>
                 <input aria-label="挂载目录" placeholder="例如：/MareArchive" value={cloudForm.draft.mountDirectory} onChange={(event) => setCloudForm(updateCloudForm(cloudForm, { mountDirectory: event.target.value }))} />
               </Field>
-              <Field label="Token" error={cloudForm.errors.token}>
-                <input aria-label="网盘 Token" value={cloudForm.draft.token} onChange={(event) => setCloudForm(updateCloudForm(cloudForm, { token: event.target.value }))} />
-              </Field>
+              {cloudForm.draft.accessMethod === '填入 Token' ? (
+                <Field label="Token" error={cloudForm.errors.token}>
+                  <input aria-label="网盘 Token" value={cloudForm.draft.token} onChange={(event) => setCloudForm(updateCloudForm(cloudForm, { token: event.target.value }))} />
+                </Field>
+              ) : null}
             </div>
           </div>
           <div className="sheet-actions right">
@@ -1748,6 +1774,155 @@ function Dialog({
   );
 }
 
+function CloudQrCodePreview({
+  draft,
+  onSessionChange,
+}: {
+  draft: CloudDraft;
+  onSessionChange: (session: import('../lib/storageNodesApi').CloudQRCodeSession | undefined) => void;
+}) {
+  const [qrSession, setQrSession] = useState<import('../lib/storageNodesApi').CloudQRCodeSession | null>(draft.qrSession ?? null);
+  const [qrStatus, setQrStatus] = useState<string>('等待扫码');
+  const [qrImageSrc, setQrImageSrc] = useState('');
+  const [qrImageError, setQrImageError] = useState(false);
+  const [refreshToken, setRefreshToken] = useState(0);
+  const latestSessionCallback = useRef(onSessionChange);
+  const requestKey = `${draft.qrChannel}:${refreshToken}`;
+
+  useEffect(() => {
+    latestSessionCallback.current = onSessionChange;
+  }, [onSessionChange]);
+
+  useEffect(() => {
+    let disposed = false;
+
+    
+
+
+    setQrStatus('等待扫码');
+
+    void storageNodesApi.createCloudQrSession(draft.qrChannel).then(async (session) => {
+      if (disposed) return;
+      setQrSession(session);
+      latestSessionCallback.current(session);
+    }).catch(() => {
+      if (!disposed) {
+        setQrStatus('二维码获取失败');
+        latestSessionCallback.current(undefined);
+      }
+    });
+
+    return () => {
+      disposed = true;
+    };
+  }, [draft.qrChannel, requestKey]);
+
+  useEffect(() => {
+    let disposed = false;
+
+    if (!qrSession?.qrcode) {
+      setQrImageSrc('');
+      setQrImageError(false);
+      return () => {
+        disposed = true;
+      };
+    }
+
+    setQrImageError(false);
+    void QRCode.toDataURL(qrSession.qrcode, {
+      width: 168,
+      margin: 1,
+      errorCorrectionLevel: 'M',
+      color: {
+        dark: '#111827',
+        light: '#FFFFFF',
+      },
+    })
+      .then((value) => {
+        if (disposed) {
+          return;
+        }
+        setQrImageSrc(value);
+      })
+      .catch(() => {
+        if (disposed) {
+          return;
+        }
+        setQrImageSrc('');
+        setQrImageError(true);
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, [qrSession]);
+
+  useEffect(() => {
+    if (!qrSession) return;
+    let disposed = false;
+    let timer = 0;
+    const poll = async () => {
+      try {
+        const status = await storageNodesApi.getCloudQrSessionStatus(qrSession);
+        if (disposed) {
+          return;
+        }
+        setQrStatus(status.message);
+        if (status.status === 'CONFIRMED' || status.status === 'EXPIRED' || status.status === 'CANCELED') {
+          return;
+        }
+      } catch {
+        if (disposed) {
+          return;
+        }
+        setQrStatus('二维码状态查询超时，正在重试');
+      }
+
+      timer = window.setTimeout(() => {
+        void poll();
+      }, 2000);
+    };
+
+    timer = window.setTimeout(() => {
+      void poll();
+    }, 2000);
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+    };
+  }, [qrSession]);
+
+  return (
+    <div className="cloud-qr-preview">
+      <div className="cloud-qr-visual">
+        {qrImageSrc ? (
+          <img alt="115 扫码登录二维码" className="cloud-qr-image" src={qrImageSrc} />
+        ) : (
+          <div className="cloud-qr-placeholder">{qrImageError ? '二维码渲染失败，请刷新重试' : '二维码生成中'}</div>
+        )}
+      </div>
+      <div className="cloud-qr-copy">
+        <button
+          className="cloud-qr-refresh"
+          type="button"
+          onClick={() => {
+            setQrSession(null);
+            setQrImageSrc('');
+            setQrImageError(false);
+            latestSessionCallback.current(undefined);
+            setQrStatus('正在刷新二维码');
+            setRefreshToken((current) => current + 1);
+          }}
+        >
+          刷新二维码
+        </button>
+        <strong>请使用 {draft.qrChannel} 扫码</strong>
+        <span>{qrStatus}</span>
+      </div>
+    </div>
+  );
+}
+
 function updateMountForm(current: MountFormState, patch: Partial<MountFolderDraft>): MountFormState {
   return { ...current, draft: { ...current.draft, ...patch }, errors: {} };
 }
@@ -1805,7 +1980,6 @@ function cloudRecordToDraft(item: CloudRecord): CloudDraft {
     vendor: '115',
     accessMethod: item.accessMethod,
     qrChannel: item.qrChannel ?? '微信小程序',
-    accountAlias: item.accountAlias,
     mountDirectory: item.mountDirectory,
     token: '',
     notes: item.notes,
@@ -1839,9 +2013,8 @@ function validateNasDraft(draft: NasDraft) {
 function validateCloudDraft(draft: CloudDraft) {
   const errors: Partial<Record<string, string>> = {};
   if (!draft.name.trim()) errors.name = '请输入网盘名称';
-  if (!draft.accountAlias.trim()) errors.accountAlias = '请输入账号别名';
   if (!draft.mountDirectory.trim()) errors.mountDirectory = '请输入挂载目录';
-  if (!draft.token.trim()) errors.token = '请输入 Token';
+  if (draft.accessMethod === '填入 Token' && !draft.token.trim()) errors.token = '请输入 Token';
   return errors;
 }
 

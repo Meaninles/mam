@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"mare/services/center/internal/agentregistry"
+	"mare/services/center/internal/assets"
 	"mare/services/center/internal/config"
 	"mare/services/center/internal/db"
 	httpapi "mare/services/center/internal/http"
@@ -45,8 +46,11 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 	}
 
 	agentService := agentregistry.NewService(pool)
+	assetService := assets.NewService(pool)
 	localFolderService := storage.NewLocalFolderService(pool)
+	localFolderService.SetAssetService(assetService)
 	nasNodeService := storage.NewNASNodeService(pool)
+	cloudNodeService := storage.NewCloudNodeService(pool)
 	runtimeService := runtime.NewService(
 		cfg.ServiceName,
 		cfg.ServiceVersion,
@@ -63,7 +67,9 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 		Agents:       agentService,
 		LocalNodes:   localFolderService,
 		NasNodes:     nasNodeService,
+		CloudNodes:   cloudNodeService,
 		LocalFolders: localFolderService,
+		Assets:       assetService,
 	})
 
 	return &ServerApplication{

@@ -1,3 +1,5 @@
+. (Join-Path $PSScriptRoot "bootstrap-utf8.ps1")
+
 $ErrorActionPreference = "Stop"
 
 if (-not $env:DATABASE_URL) {
@@ -20,4 +22,7 @@ if (-not $env:SERVICE_VERSION) {
   $env:SERVICE_VERSION = "dev"
 }
 
-go run ./services/center/cmd/mare-center
+$workspace = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+$configPath = Join-Path $workspace ".air.center.toml"
+
+& (Join-Path $PSScriptRoot "start-go-hot.ps1") -ServiceName "center" -ConfigPath $configPath
