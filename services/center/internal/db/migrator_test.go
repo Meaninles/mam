@@ -2,6 +2,8 @@ package db
 
 import (
 	"context"
+	"fmt"
+	"net/url"
 	"testing"
 	"time"
 
@@ -70,11 +72,41 @@ func TestMigratorStateReportsPendingWithoutApply(t *testing.T) {
 func openTestPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	t.Helper()
 
-	pool, err := Open(ctx, developmentDatabaseURL)
+	pool, err := Open(ctx, isolatedSchemaDatabaseURL(t, ctx))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
 	return pool
+}
+
+func isolatedSchemaDatabaseURL(t *testing.T, ctx context.Context) string {
+	t.Helper()
+
+	schema := fmt.Sprintf("test_db_%d", time.Now().UnixNano())
+	adminPool, err := pgxpool.New(ctx, developmentDatabaseURL)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+
+	if _, err := adminPool.Exec(ctx, `CREATE SCHEMA IF NOT EXISTS "`+schema+`"`); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = adminPool.Exec(cleanupCtx, `DROP SCHEMA IF EXISTS "`+schema+`" CASCADE`)
+	})
+
+	parsed, err := url.Parse(developmentDatabaseURL)
+	if err != nil {
+		t.Fatalf("parse database url: %v", err)
+	}
+	query := parsed.Query()
+	query.Set("search_path", schema)
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
 }
 
 func resetSchema(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {

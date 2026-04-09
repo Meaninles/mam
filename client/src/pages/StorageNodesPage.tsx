@@ -84,6 +84,12 @@ type StorageMenuState = {
   right: number;
 } | null;
 
+type MountSourceOption = {
+  id: string;
+  label: string;
+  sourceType: '本地' | 'NAS';
+};
+
 const SUB_PAGES: Array<{ id: StorageSubPage; label: string }> = [
   { id: 'mounts', label: '本地文件夹管理' },
   { id: 'nas', label: 'NAS 管理' },
@@ -111,6 +117,7 @@ const EMPTY_MOUNT_DRAFT: MountFolderDraft = {
   heartbeatPolicy: '从不',
   relativePath: '',
   notes: '',
+  folderType: '本地',
 };
 
 const EMPTY_NAS_DRAFT: NasDraft = {
@@ -255,6 +262,29 @@ export function StorageNodesPage({
   const nasPageCount = Math.max(1, Math.ceil(visibleNas.length / pageSizeBySubPage.nas));
   const cloudPageCount = Math.max(1, Math.ceil(visibleCloud.length / pageSizeBySubPage.cloud));
   const mountLibraryOptions = useMemo(() => ['全部资产库', ...libraries.map((library) => library.name)], [libraries]);
+  const mountSourceOptions = useMemo<MountSourceOption[]>(
+    () => [
+      ...dashboard.localNodes.map((node) => ({
+        id: node.id,
+        label: `本地 · ${node.name}`,
+        sourceType: '本地' as const,
+      })),
+      ...dashboard.nasNodes.map((node) => ({
+        id: node.id,
+        label: `NAS · ${node.name}`,
+        sourceType: 'NAS' as const,
+      })),
+    ],
+    [dashboard.localNodes, dashboard.nasNodes],
+  );
+  const mountSourceTypeOptions = useMemo<Array<MountSourceOption['sourceType']>>(() => {
+    const types = new Set<MountSourceOption['sourceType']>(mountSourceOptions.map((item) => item.sourceType));
+    return Array.from(types);
+  }, [mountSourceOptions]);
+  const visibleMountSourceOptions = useMemo(
+    () => mountSourceOptions.filter((item) => item.sourceType === (mountForm?.draft.folderType ?? '本地')),
+    [mountForm?.draft.folderType, mountSourceOptions],
+  );
 
   const pagedMounts = useMemo(() => {
     const start = (pageBySubPage.mounts - 1) * pageSizeBySubPage.mounts;
@@ -306,16 +336,18 @@ export function StorageNodesPage({
 
   function openCreate() {
     setMenuState(null);
+    if (showMountManagement) {
+      const defaultSourceType = mountSourceTypeOptions[0] ?? '本地';
+      const defaultNodeId = mountSourceOptions.find((item) => item.sourceType === defaultSourceType)?.id ?? '';
+      setMountForm({
+        draft: { ...EMPTY_MOUNT_DRAFT, libraryId: libraries[0]?.id ?? '', folderType: defaultSourceType, nodeId: defaultNodeId },
+        errors: {},
+        saving: false,
+      });
+      return;
+    }
     if (subPage === 'mounts') {
-      if (showMountManagement) {
-        setMountForm({
-          draft: { ...EMPTY_MOUNT_DRAFT, libraryId: libraries[0]?.id ?? '', nodeId: dashboard.localNodes[0]?.id ?? '' },
-          errors: {},
-          saving: false,
-        });
-      } else {
-        setLocalNodeForm({ draft: { ...EMPTY_LOCAL_NODE_DRAFT }, errors: {}, saving: false });
-      }
+      setLocalNodeForm({ draft: { ...EMPTY_LOCAL_NODE_DRAFT }, errors: {}, saving: false });
       return;
     }
     if (subPage === 'nas') {
@@ -566,7 +598,14 @@ export function StorageNodesPage({
           }}
         />
         <div className="tab-switch storage-mode-switch" role="group" aria-label="挂载模式切换">
-          <button className={showMountManagement ? 'active' : ''} type="button" onClick={() => setShowMountManagement(true)}>
+          <button
+            className={showMountManagement ? 'active' : ''}
+            type="button"
+            onClick={() => {
+              setSubPage('mounts');
+              setShowMountManagement(true);
+            }}
+          >
             挂载管理
           </button>
         </div>
@@ -792,7 +831,7 @@ export function StorageNodesPage({
       ) : null}
 
       {mountForm ? (
-        <Sheet onClose={() => setMountForm(null)} title={mountForm.draft.id ? '编辑本地文件夹' : '新增本地文件夹'}>
+        <Sheet onClose={() => setMountForm(null)} title={mountForm.draft.id ? '编辑挂载' : '新增挂载'}>
           <div className="sheet-section">
             <div className="sheet-form">
               <Field label="挂载名称" error={mountForm.errors.name}>
@@ -802,20 +841,39 @@ export function StorageNodesPage({
                   onChange={(event) => setMountForm(updateMountForm(mountForm, { name: event.target.value }))}
                 />
               </Field>
-              <Field label="所属节点" error={mountForm.errors.nodeId}>
-                <select
-                  aria-label="所属节点"
-                  value={mountForm.draft.nodeId}
-                  onChange={(event) => setMountForm(updateMountForm(mountForm, { nodeId: event.target.value }))}
-                >
-                  <option value="">请选择节点</option>
-                  {dashboard.localNodes.map((node) => (
-                    <option key={node.id} value={node.id}>
-                      {node.name}
-                    </option>
-                  ))}
-                </select>
-              </Field>
+              <div className="form-split">
+                <Field label="节点类型">
+                  <select
+                    aria-label="节点类型"
+                    value={mountForm.draft.folderType ?? '本地'}
+                    onChange={(event) => {
+                      const nextType = event.target.value as MountSourceOption['sourceType'];
+                      const nextNodeId = mountSourceOptions.find((item) => item.sourceType === nextType)?.id ?? '';
+                      setMountForm(updateMountForm(mountForm, { folderType: nextType, nodeId: nextNodeId }));
+                    }}
+                  >
+                    {mountSourceTypeOptions.map((type) => (
+                      <option key={type} value={type}>
+                        {type}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="所属节点" error={mountForm.errors.nodeId}>
+                  <select
+                    aria-label="所属节点"
+                    value={mountForm.draft.nodeId}
+                    onChange={(event) => setMountForm(updateMountForm(mountForm, { nodeId: event.target.value }))}
+                  >
+                    <option value="">请选择节点</option>
+                    {visibleMountSourceOptions.map((node) => (
+                      <option key={node.id} value={node.id}>
+                        {node.label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
               <Field label="所属资产库" error={mountForm.errors.libraryId}>
                 <select
                   aria-label="所属资产库"
@@ -1413,7 +1471,12 @@ function NasTable({
           {items.map((item) => (
             <tr key={item.id}>
               <td>{item.name}</td>
-              <td>{item.address}</td>
+              <td>
+                <div className="row-main">
+                  <strong>{item.address}</strong>
+                  <span>{item.accessMode} · 已关联 {item.mountCount} 个挂载</span>
+                </div>
+              </td>
               <td>
                 <div className="row-main">
                   <strong>{item.username}</strong>
@@ -1711,6 +1774,7 @@ function mountRecordToDraft(item: MountFolderRecord): MountFolderDraft {
     heartbeatPolicy: item.heartbeatPolicy,
     relativePath: item.relativePath,
     notes: item.notes,
+    folderType: item.folderType,
   };
 }
 

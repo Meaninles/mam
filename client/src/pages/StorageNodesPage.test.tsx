@@ -58,10 +58,12 @@ describe('StorageNodesPage', () => {
           id: 'nas-1',
           name: '影像 NAS 01',
           address: '\\\\192.168.10.20\\media',
+          accessMode: 'SMB',
           username: 'mare-sync',
           passwordHint: '已保存',
           status: '鉴权正常',
           tone: 'success',
+          mountCount: 2,
           notes: '',
         },
       ],
@@ -208,7 +210,7 @@ describe('StorageNodesPage', () => {
     await user.click(screen.getByRole('button', { name: '挂载管理' }));
     await user.click(screen.getByRole('button', { name: '新增挂载' }));
 
-    const sheet = await screen.findByRole('region', { name: '新增本地文件夹' });
+    const sheet = await screen.findByRole('region', { name: '新增挂载' });
     await user.type(within(sheet).getByLabelText('挂载名称'), '精选交付');
     await user.selectOptions(within(sheet).getByLabelText('所属节点'), 'local-node-1');
     await user.selectOptions(within(sheet).getByLabelText('所属资产库'), 'photo');
@@ -216,5 +218,42 @@ describe('StorageNodesPage', () => {
     await user.click(within(sheet).getByRole('button', { name: '保存挂载' }));
 
     expect(mockedApi.saveMount).toHaveBeenCalled();
+  });
+
+  it('挂载表单的所属节点下拉应包含 NAS 节点', async () => {
+    const user = userEvent.setup();
+    render(<StorageNodesPage libraries={libraries as any} />);
+
+    await screen.findByText('本地素材根目录');
+    await user.click(screen.getByRole('button', { name: '挂载管理' }));
+    await user.click(screen.getByRole('button', { name: '新增挂载' }));
+
+    const sheet = await screen.findByRole('region', { name: '新增挂载' });
+    const nodeTypeSelect = within(sheet).getByLabelText('节点类型');
+    const nodeSelect = within(sheet).getByLabelText('所属节点');
+
+    expect(within(nodeTypeSelect).getByRole('option', { name: '本地' })).toBeInTheDocument();
+    expect(within(nodeTypeSelect).getByRole('option', { name: 'NAS' })).toBeInTheDocument();
+    expect(within(nodeSelect).getByRole('option', { name: '本地 · 本地素材根目录' })).toBeInTheDocument();
+
+    await user.selectOptions(nodeTypeSelect, 'NAS');
+
+    expect(within(nodeSelect).getByRole('option', { name: 'NAS · 影像 NAS 01' })).toBeInTheDocument();
+    expect(within(nodeSelect).queryByRole('option', { name: '本地 · 本地素材根目录' })).not.toBeInTheDocument();
+  });
+
+  it('从 NAS 页切到挂载管理后，新增入口必须打开挂载表单而不是 NAS 表单', async () => {
+    const user = userEvent.setup();
+    render(<StorageNodesPage libraries={libraries as any} />);
+
+    await screen.findByText('本地素材根目录');
+    await user.click(screen.getByRole('button', { name: 'NAS 管理' }));
+    await screen.findByText('影像 NAS 01');
+
+    await user.click(screen.getByRole('button', { name: '挂载管理' }));
+    await user.click(screen.getByRole('button', { name: '新增挂载' }));
+
+    expect(await screen.findByRole('region', { name: '新增挂载' })).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: '新增 NAS' })).not.toBeInTheDocument();
   });
 });

@@ -40,6 +40,47 @@ type DeleteLocalNodeResponse struct {
 	Message string `json:"message"`
 }
 
+type NasRecord struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Address      string `json:"address"`
+	AccessMode   string `json:"accessMode"`
+	Username     string `json:"username"`
+	PasswordHint string `json:"passwordHint"`
+	LastTestAt   string `json:"lastTestAt,omitempty"`
+	Status       string `json:"status"`
+	Tone         string `json:"tone"`
+	MountCount   int    `json:"mountCount"`
+	Notes        string `json:"notes"`
+}
+
+type SaveNasNodeRequest struct {
+	ID       string `json:"id,omitempty"`
+	Name     string `json:"name"`
+	Address  string `json:"address"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Notes    string `json:"notes"`
+}
+
+type SaveNasNodeResponse struct {
+	Message string    `json:"message"`
+	Record  NasRecord `json:"record"`
+}
+
+type RunNasNodeConnectionTestRequest struct {
+	IDs []string `json:"ids"`
+}
+
+type RunNasNodeConnectionTestResponse struct {
+	Message string                 `json:"message"`
+	Results []ConnectionTestResult `json:"results"`
+}
+
+type DeleteNasNodeResponse struct {
+	Message string `json:"message"`
+}
+
 type LocalFolderRecord struct {
 	ID               string   `json:"id"`
 	Name             string   `json:"name"`

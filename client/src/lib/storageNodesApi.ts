@@ -58,11 +58,13 @@ export type NasRecord = {
   id: string;
   name: string;
   address: string;
+  accessMode: string;
   username: string;
   passwordHint: string;
   lastTestAt?: string;
   status: string;
   tone: StorageTone;
+  mountCount: number;
   notes: string;
 };
 
@@ -172,19 +174,27 @@ const LOCAL_FOLDERS_API_PATH = '/api/storage/local-folders';
 export const storageNodesApi = {
   async loadDashboard(): Promise<StorageNodesDashboard> {
     const fallback = runBrowserFallback<StorageNodesDashboard>('storage_nodes_load_dashboard', {});
-    let localNodes: LocalNodeRecord[] = [];
-    let mounts: MountRecord[] = [];
-    try {
-      localNodes = await fetchCenterData<LocalNodeRecord[]>('/api/storage/local-nodes');
-      mounts = await fetchCenterData<MountRecord[]>(LOCAL_FOLDERS_API_PATH);
-    } catch {
-      localNodes = [];
-      mounts = [];
+    const [localNodesResult, mountsResult, nasNodesResult] = await Promise.allSettled([
+      fetchCenterDataWithRetry<LocalNodeRecord[]>('/api/storage/local-nodes'),
+      fetchCenterDataWithRetry<MountRecord[]>(LOCAL_FOLDERS_API_PATH),
+      fetchCenterDataWithRetry<NasRecord[]>('/api/storage/nas-nodes'),
+    ]);
+
+    const localNodes = localNodesResult.status === 'fulfilled' ? localNodesResult.value : [];
+    const mounts = mountsResult.status === 'fulfilled' ? mountsResult.value : [];
+    const nasNodes = nasNodesResult.status === 'fulfilled' ? nasNodesResult.value : [];
+
+    if (
+      localNodesResult.status === 'rejected' &&
+      mountsResult.status === 'rejected' &&
+      nasNodesResult.status === 'rejected'
+    ) {
+      throw localNodesResult.reason;
     }
 
     return {
       localNodes,
-      nasNodes: fallback.nasNodes,
+      nasNodes,
       cloudNodes: fallback.cloudNodes,
       mounts,
       mountFolders: mounts,
@@ -227,7 +237,18 @@ export const storageNodesApi = {
   },
 
   async saveNasNode(draft: NasDraft): Promise<{ message: string }> {
-    return invokeStorageCommand<{ message: string }>('storage_nodes_save_nas_node', { draft });
+    const result = await fetchCenterData<{ message: string; record: NasRecord }>('/api/storage/nas-nodes', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: draft.id,
+        name: draft.name,
+        address: draft.address,
+        username: draft.username,
+        password: draft.password,
+        notes: draft.notes,
+      }),
+    });
+    return { message: result.message };
   },
 
   async saveCloudNode(draft: CloudDraft): Promise<{ message: string }> {
@@ -270,9 +291,12 @@ export const storageNodesApi = {
   },
 
   async runNasConnectionTest(ids: string[]): Promise<{ message: string; results: StorageConnectionTestResult[] }> {
-    return invokeStorageCommand<{ message: string; results: StorageConnectionTestResult[] }>(
-      'storage_nodes_run_nas_connection_test',
-      { ids },
+    return fetchCenterData<{ message: string; results: StorageConnectionTestResult[] }>(
+      '/api/storage/nas-nodes/connection-test',
+      {
+        method: 'POST',
+        body: JSON.stringify({ ids }),
+      },
     );
   },
 
@@ -303,7 +327,10 @@ export const storageNodesApi = {
   },
 
   async deleteNasNode(id: string): Promise<{ message: string }> {
-    return invokeStorageCommand<{ message: string }>('storage_nodes_delete_nas_node', { id });
+    const result = await fetchCenterData<{ message: string }>(`/api/storage/nas-nodes/${id}`, {
+      method: 'DELETE',
+    });
+    return { message: result.message };
   },
 
   async deleteCloudNode(id: string): Promise<{ message: string }> {
@@ -345,6 +372,22 @@ async function fetchCenterData<T>(path: string, init?: RequestInit): Promise<T> 
 
   const payload = (await response.json()) as { data: T };
   return payload.data;
+}
+
+async function fetchCenterDataWithRetry<T>(path: string, attempts = 6, delayMs = 400): Promise<T> {
+  let lastError: unknown;
+  for (let index = 0; index < attempts; index += 1) {
+    try {
+      return await fetchCenterData<T>(path);
+    } catch (error) {
+      lastError = error;
+      if (index === attempts - 1) {
+        break;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('center service request failed');
 }
 
 function resolveLibraryName(libraryId: string) {
@@ -481,11 +524,13 @@ function saveNasNodeInBrowser(db: StorageBrowserDb, draft: NasDraft) {
     id: draft.id ?? `nas-${Math.random().toString(36).slice(2, 8)}`,
     name: draft.name,
     address: draft.address,
+    accessMode: 'SMB',
     username: draft.username,
     passwordHint: draft.password ? '刚刚更新' : '未更新',
     lastTestAt: draft.id ? db.nasNodes.find((item) => item.id === draft.id)?.lastTestAt : undefined,
     status: '鉴权正常',
     tone: 'success',
+    mountCount: draft.id ? (db.nasNodes.find((item) => item.id === draft.id)?.mountCount ?? 0) : 0,
     notes: draft.notes,
   };
 
@@ -713,22 +758,26 @@ function createSeedBrowserDb(): StorageBrowserDb {
       id: 'nas-main',
       name: '影像 NAS 01',
       address: '\\\\192.168.10.20\\media',
+      accessMode: 'SMB',
       username: 'mare-sync',
       passwordHint: '已保存，最近更新于 3 天前',
       lastTestAt: '今天 10:12',
       status: '鉴权正常',
       tone: 'success',
+      mountCount: 1,
       notes: '主 NAS',
     },
     {
       id: 'nas-backup',
       name: '影像 NAS 备份柜',
       address: '\\\\192.168.10.36\\backup_media',
+      accessMode: 'SMB',
       username: 'mare-archive',
       passwordHint: '已保存，最近更新于 7 天前',
       lastTestAt: '昨天 22:18',
       status: '鉴权正常',
       tone: 'success',
+      mountCount: 0,
       notes: '备份 NAS',
     },
   ];
@@ -736,11 +785,13 @@ function createSeedBrowserDb(): StorageBrowserDb {
       id: `nas-extra-${index + 1}`,
       name: `项目 NAS ${index + 1}`,
       address: `\\\\192.168.20.${100 + index}\\share_${index + 1}`,
+      accessMode: 'SMB',
       username: `project-user-${index + 1}`,
       passwordHint: `已保存，最近更新于 ${index + 1} 天前`,
       lastTestAt: `昨天 ${String((index % 9) + 10).padStart(2, '0')}:00`,
       status: index % 4 === 0 ? '鉴权异常' : '鉴权正常',
       tone: index % 4 === 0 ? 'warning' : 'success',
+      mountCount: index % 3 === 0 ? 1 : 0,
       notes: `项目 NAS ${index + 1}`,
     }));
   const nasNodes: NasRecord[] = baseNasNodes.concat(extraNasNodes);

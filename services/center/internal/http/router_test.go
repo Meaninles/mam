@@ -38,27 +38,29 @@ func (f fakeRuntimeService) Status(context.Context) (runtime.RuntimeStatusPayloa
 
 type fakeAgentService struct{}
 type fakeLocalFolderService struct{}
+type fakeLocalNodeService struct{}
+type fakeNASNodeService struct{}
 
 func (fakeAgentService) Register(_ context.Context, registration agentregistry.Registration) (agentregistry.Agent, error) {
 	return agentregistry.Agent{
-		AgentID:   registration.AgentID,
-		Version:   registration.Version,
-		Hostname:  registration.Hostname,
-		Platform:  registration.Platform,
-		Mode:      registration.Mode,
-		ProcessID: registration.ProcessID,
+		AgentID:      registration.AgentID,
+		Version:      registration.Version,
+		Hostname:     registration.Hostname,
+		Platform:     registration.Platform,
+		Mode:         registration.Mode,
+		ProcessID:    registration.ProcessID,
 		Capabilities: registration.Capabilities,
 	}, nil
 }
 
 func (fakeAgentService) Heartbeat(_ context.Context, heartbeat agentregistry.Heartbeat) (agentregistry.Agent, error) {
 	return agentregistry.Agent{
-		AgentID:   heartbeat.AgentID,
-		Version:   heartbeat.Version,
-		Hostname:  heartbeat.Hostname,
-		Platform:  heartbeat.Platform,
-		Mode:      heartbeat.Mode,
-		ProcessID: heartbeat.ProcessID,
+		AgentID:      heartbeat.AgentID,
+		Version:      heartbeat.Version,
+		Hostname:     heartbeat.Hostname,
+		Platform:     heartbeat.Platform,
+		Mode:         heartbeat.Mode,
+		ProcessID:    heartbeat.ProcessID,
 		Capabilities: heartbeat.Capabilities,
 	}, nil
 }
@@ -141,6 +143,91 @@ func (fakeLocalFolderService) LoadLocalFolderScanHistory(_ context.Context, id s
 
 func (fakeLocalFolderService) DeleteLocalFolder(context.Context, string) (storagedto.DeleteLocalFolderResponse, error) {
 	return storagedto.DeleteLocalFolderResponse{Message: "挂载文件夹已删除"}, nil
+}
+
+func (fakeLocalNodeService) ListLocalNodes(context.Context) ([]storagedto.LocalNodeRecord, error) {
+	return []storagedto.LocalNodeRecord{
+		{
+			ID:           "local-node-1",
+			Name:         "本地素材根目录",
+			RootPath:     `D:\Assets`,
+			Enabled:      true,
+			HealthStatus: "可用",
+			HealthTone:   "success",
+			LastCheckAt:  "今天 09:12",
+			MountCount:   1,
+		},
+	}, nil
+}
+
+func (fakeLocalNodeService) SaveLocalNode(_ context.Context, request storagedto.SaveLocalNodeRequest) (storagedto.SaveLocalNodeResponse, error) {
+	return storagedto.SaveLocalNodeResponse{
+		Message: "本地文件夹已保存",
+		Record: storagedto.LocalNodeRecord{
+			ID:       request.ID,
+			Name:     request.Name,
+			RootPath: request.RootPath,
+		},
+	}, nil
+}
+
+func (fakeLocalNodeService) RunLocalNodeConnectionTest(context.Context, []string) (storagedto.RunLocalNodeConnectionTestResponse, error) {
+	return storagedto.RunLocalNodeConnectionTestResponse{
+		Message: "连接测试已完成",
+		Results: []storagedto.ConnectionTestResult{
+			{ID: "local-node-1", Name: "本地素材根目录", OverallTone: "success", Summary: "根目录可访问", TestedAt: "刚刚"},
+		},
+	}, nil
+}
+
+func (fakeLocalNodeService) DeleteLocalNode(context.Context, string) (storagedto.DeleteLocalNodeResponse, error) {
+	return storagedto.DeleteLocalNodeResponse{Message: "本地文件夹已删除"}, nil
+}
+
+func (fakeNASNodeService) ListNasNodes(context.Context) ([]storagedto.NasRecord, error) {
+	return []storagedto.NasRecord{
+		{
+			ID:           "nas-node-1",
+			Name:         "影像 NAS 01",
+			Address:      `\\192.168.10.20\media`,
+			AccessMode:   "SMB",
+			Username:     "mare-sync",
+			PasswordHint: "已保存",
+			LastTestAt:   "今天 10:20",
+			Status:       "鉴权正常",
+			Tone:         "success",
+			MountCount:   2,
+		},
+	}, nil
+}
+
+func (fakeNASNodeService) SaveNasNode(_ context.Context, request storagedto.SaveNasNodeRequest) (storagedto.SaveNasNodeResponse, error) {
+	return storagedto.SaveNasNodeResponse{
+		Message: "NAS 已保存",
+		Record: storagedto.NasRecord{
+			ID:           request.ID,
+			Name:         request.Name,
+			Address:      request.Address,
+			AccessMode:   "SMB",
+			Username:     request.Username,
+			PasswordHint: "已保存",
+			Status:       "待检测",
+			Tone:         "info",
+		},
+	}, nil
+}
+
+func (fakeNASNodeService) RunNasNodeConnectionTest(context.Context, []string) (storagedto.RunNasNodeConnectionTestResponse, error) {
+	return storagedto.RunNasNodeConnectionTestResponse{
+		Message: "连接测试已完成",
+		Results: []storagedto.ConnectionTestResult{
+			{ID: "nas-node-1", Name: "影像 NAS 01", OverallTone: "success", Summary: "SMB 鉴权正常", TestedAt: "刚刚"},
+		},
+	}, nil
+}
+
+func (fakeNASNodeService) DeleteNasNode(context.Context, string) (storagedto.DeleteNasNodeResponse, error) {
+	return storagedto.DeleteNasNodeResponse{Message: "NAS 已删除"}, nil
 }
 
 func TestHealthzReturnsSuccessEnvelope(t *testing.T) {
@@ -372,6 +459,56 @@ func TestLocalFoldersRouteReturnsPersistedRecords(t *testing.T) {
 	})
 
 	request := httptest.NewRequest(http.MethodGet, "/api/storage/local-folders", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+}
+
+func TestNasNodesRouteReturnsPersistedRecords(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(Dependencies{
+		Runtime:      fakeRuntimeService{},
+		Agents:       fakeAgentService{},
+		LocalNodes:   fakeLocalNodeService{},
+		NasNodes:     fakeNASNodeService{},
+		LocalFolders: fakeLocalFolderService{},
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/api/storage/nas-nodes", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+}
+
+func TestSaveNasNodeRouteAcceptsValidPayload(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(Dependencies{
+		Runtime:      fakeRuntimeService{},
+		Agents:       fakeAgentService{},
+		LocalNodes:   fakeLocalNodeService{},
+		NasNodes:     fakeNASNodeService{},
+		LocalFolders: fakeLocalFolderService{},
+	})
+
+	body, err := json.Marshal(storagedto.SaveNasNodeRequest{
+		Name:     "影像 NAS 01",
+		Address:  `\\192.168.10.20\media`,
+		Username: "mare-sync",
+		Password: "secret",
+	})
+	if err != nil {
+		t.Fatalf("marshal nas payload: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/storage/nas-nodes", bytes.NewReader(body))
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
 

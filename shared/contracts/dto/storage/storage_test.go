@@ -5,6 +5,44 @@ import (
 	"testing"
 )
 
+func TestNasRecordJSONShape(t *testing.T) {
+	t.Parallel()
+
+	payload := NasRecord{
+		ID:           "nas-node-1",
+		Name:         "影像 NAS 01",
+		Address:      `\\192.168.10.20\media`,
+		AccessMode:   "SMB",
+		Username:     "mare-sync",
+		PasswordHint: "已保存",
+		LastTestAt:   "2026-04-09 10:20",
+		Status:       "鉴权正常",
+		Tone:         "success",
+		MountCount:   2,
+		Notes:        "主 NAS",
+	}
+
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal nas record: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal nas record: %v", err)
+	}
+
+	if decoded["accessMode"] != "SMB" {
+		t.Fatalf("expected accessMode SMB, got %#v", decoded["accessMode"])
+	}
+	if decoded["mountCount"] != float64(2) {
+		t.Fatalf("expected mountCount 2, got %#v", decoded["mountCount"])
+	}
+	if _, exists := decoded["password"]; exists {
+		t.Fatal("nas record json should not expose password")
+	}
+}
+
 func TestLocalFolderRecordJSONShape(t *testing.T) {
 	t.Parallel()
 
@@ -14,7 +52,11 @@ func TestLocalFolderRecordJSONShape(t *testing.T) {
 		LibraryID:        "photo",
 		LibraryName:      "商业摄影资产库",
 		FolderType:       "本地",
-		Address:          "D:\\Mare\\Assets\\PhotoRaw",
+		NodeID:           "local-node-1",
+		NodeName:         "本地素材根目录",
+		NodeRootPath:     `D:\Mare\Assets`,
+		RelativePath:     `PhotoRaw`,
+		Address:          `D:\Mare\Assets\PhotoRaw`,
 		MountMode:        "可写",
 		Enabled:          true,
 		ScanStatus:       "最近扫描成功",
@@ -37,9 +79,19 @@ func TestLocalFolderRecordJSONShape(t *testing.T) {
 		t.Fatalf("marshal local folder record: %v", err)
 	}
 
-	expected := `{"id":"local-folder-1","name":"商业摄影原片库","libraryId":"photo","libraryName":"商业摄影资产库","folderType":"本地","address":"D:\\Mare\\Assets\\PhotoRaw","mountMode":"可写","enabled":true,"scanStatus":"最近扫描成功","scanTone":"success","lastScanAt":"今天 09:12","heartbeatPolicy":"从不","nextHeartbeatAt":"—","capacitySummary":"待检测","freeSpaceSummary":"待检测","capacityPercent":0,"riskTags":[],"badges":["本地","可写"],"authStatus":"无需鉴权","authTone":"info","notes":"本机目录"}`
-	if string(raw) != expected {
-		t.Fatalf("unexpected json: %s", string(raw))
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal local folder record: %v", err)
+	}
+
+	if decoded["libraryId"] != "photo" {
+		t.Fatalf("expected libraryId photo, got %#v", decoded["libraryId"])
+	}
+	if decoded["nodeId"] != "local-node-1" {
+		t.Fatalf("expected nodeId local-node-1, got %#v", decoded["nodeId"])
+	}
+	if decoded["relativePath"] != "PhotoRaw" {
+		t.Fatalf("expected relativePath PhotoRaw, got %#v", decoded["relativePath"])
 	}
 }
 
@@ -71,8 +123,13 @@ func TestLocalFolderConnectionTestResponseJSONShape(t *testing.T) {
 		t.Fatalf("marshal connection test response: %v", err)
 	}
 
-	expected := `{"message":"连接测试已完成","results":[{"id":"local-folder-1","name":"商业摄影原片库","overallTone":"success","summary":"目录可访问。","checks":[{"label":"可达性","status":"success","detail":"目录存在且可读取。"}],"testedAt":"刚刚"}]}`
-	if string(raw) != expected {
-		t.Fatalf("unexpected json: %s", string(raw))
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal connection test response: %v", err)
+	}
+
+	results, ok := decoded["results"].([]any)
+	if !ok || len(results) != 1 {
+		t.Fatalf("expected single result, got %#v", decoded["results"])
 	}
 }

@@ -73,6 +73,26 @@ describe('storageNodesApi', () => {
               },
             ],
           }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            data: [
+              {
+                id: 'nas-node-1',
+                name: '影像 NAS 01',
+                address: '\\\\192.168.10.20\\media',
+                accessMode: 'SMB',
+                username: 'mare-sync',
+                passwordHint: '已保存',
+                lastTestAt: '今天 10:20',
+                status: '鉴权正常',
+                tone: 'success',
+                mountCount: 2,
+                notes: '',
+              },
+            ],
+          }),
         }),
     );
 
@@ -82,7 +102,8 @@ describe('storageNodesApi', () => {
     expect(result.localNodes[0]).not.toHaveProperty('libraryId');
     expect(result.mounts).toHaveLength(1);
     expect(result.mounts[0].nodeId).toBe('local-node-1');
-    expect(result.nasNodes.length).toBeGreaterThan(0);
+    expect(result.nasNodes).toHaveLength(1);
+    expect(result.nasNodes[0]?.accessMode).toBe('SMB');
     expect(result.cloudNodes.length).toBeGreaterThan(0);
   });
 
@@ -168,5 +189,96 @@ describe('storageNodesApi', () => {
       }),
     );
     expect(result.message).toBe('挂载已保存');
+  });
+
+  it('saveNasNode 改为调用中心服务接口', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: {
+          message: 'NAS 已保存',
+          record: {
+            id: 'nas-node-1',
+            name: '影像 NAS 01',
+          },
+        },
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await storageNodesApi.saveNasNode({
+      name: '影像 NAS 01',
+      address: '\\\\192.168.10.20\\media',
+      username: 'mare-sync',
+      password: 'secret',
+      notes: '',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:18080/api/storage/nas-nodes',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          name: '影像 NAS 01',
+          address: '\\\\192.168.10.20\\media',
+          username: 'mare-sync',
+          password: 'secret',
+          notes: '',
+        }),
+      }),
+    );
+    expect(result.message).toBe('NAS 已保存');
+  });
+
+  it('loadDashboard 在单个接口失败时仍返回其余已成功的数据', async () => {
+    vi.spyOn(window, 'setTimeout').mockImplementation(((handler: TimerHandler) => {
+      if (typeof handler === 'function') {
+        handler();
+      }
+      return 0 as unknown as number;
+    }) as typeof window.setTimeout);
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/storage/local-nodes')) {
+        return {
+          ok: true,
+          json: async () => ({
+            data: [
+              {
+                id: 'local-node-1',
+                name: '本地素材根目录',
+                rootPath: 'D:\\Assets',
+                enabled: true,
+                healthStatus: '可用',
+                healthTone: 'success',
+                lastCheckAt: '今天 10:00',
+                capacitySummary: '已用 20% · 800 GB 可用',
+                freeSpaceSummary: '800 GB 可用',
+                capacityPercent: 20,
+                mountCount: 2,
+                notes: '',
+              },
+            ],
+          }),
+        };
+      }
+      if (url.endsWith('/api/storage/local-folders')) {
+        return {
+          ok: true,
+          json: async () => ({
+            data: [],
+          }),
+        };
+      }
+      throw new Error('nas endpoint unavailable');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await storageNodesApi.loadDashboard();
+
+    expect(result.localNodes).toHaveLength(1);
+    expect(result.nasNodes).toHaveLength(0);
+    expect(result.mounts).toHaveLength(0);
   });
 });

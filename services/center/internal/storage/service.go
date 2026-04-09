@@ -15,14 +15,18 @@ import (
 )
 
 type LocalFolderService struct {
-	pool *pgxpool.Pool
-	now  func() time.Time
+	pool   *pgxpool.Pool
+	now    func() time.Time
+	nas    nasConnector
+	cipher credentialCipher
 }
 
 func NewLocalFolderService(pool *pgxpool.Pool) *LocalFolderService {
 	return &LocalFolderService{
-		pool: pool,
-		now:  time.Now,
+		pool:   pool,
+		now:    time.Now,
+		nas:    newSMBConnector(5 * time.Second),
+		cipher: newSystemCredentialCipher(),
 	}
 }
 
@@ -35,7 +39,9 @@ func (s *LocalFolderService) ListLocalFolders(ctx context.Context) ([]storagedto
 			m.library_name,
 			sn.id,
 			sn.name,
-			sn.address,
+			COALESCE(sn.address, ''),
+			sn.node_type,
+			sn.access_mode,
 			m.relative_root_path,
 			m.source_path,
 			m.mount_mode,
@@ -53,7 +59,7 @@ func (s *LocalFolderService) ListLocalFolders(ctx context.Context) ([]storagedto
 		FROM mounts m
 		INNER JOIN storage_nodes sn ON sn.id = m.storage_node_id
 		LEFT JOIN mount_runtime mr ON mr.mount_id = m.id
-		WHERE sn.node_type = 'LOCAL'
+		WHERE sn.node_type IN ('LOCAL', 'NAS')
 		  AND sn.deleted_at IS NULL
 		  AND m.deleted_at IS NULL
 		ORDER BY m.created_at DESC
@@ -72,7 +78,9 @@ func (s *LocalFolderService) ListLocalFolders(ctx context.Context) ([]storagedto
 			libraryName      string
 			nodeID           string
 			nodeName         string
-			nodeRootPath     string
+			nodeAddress      string
+			nodeType         string
+			accessMode       string
 			relativePath     string
 			sourcePath       string
 			mountMode        string
@@ -88,6 +96,7 @@ func (s *LocalFolderService) ListLocalFolders(ctx context.Context) ([]storagedto
 			lastErrorMessage string
 			notes            string
 		)
+
 		if err := rows.Scan(
 			&id,
 			&name,
@@ -95,7 +104,9 @@ func (s *LocalFolderService) ListLocalFolders(ctx context.Context) ([]storagedto
 			&libraryName,
 			&nodeID,
 			&nodeName,
-			&nodeRootPath,
+			&nodeAddress,
+			&nodeType,
+			&accessMode,
 			&relativePath,
 			&sourcePath,
 			&mountMode,
@@ -114,7 +125,7 @@ func (s *LocalFolderService) ListLocalFolders(ctx context.Context) ([]storagedto
 			return nil, err
 		}
 
-		if (capacityBytes == nil || availableBytes == nil) && strings.TrimSpace(sourcePath) != "" {
+		if nodeType == "LOCAL" && (capacityBytes == nil || availableBytes == nil) && strings.TrimSpace(sourcePath) != "" {
 			if total, free, usageErr := detectDiskUsage(sourcePath); usageErr == nil {
 				capacityBytes = &total
 				availableBytes = &free
@@ -135,9 +146,9 @@ func (s *LocalFolderService) ListLocalFolders(ctx context.Context) ([]storagedto
 			LibraryName:      libraryName,
 			NodeID:           nodeID,
 			NodeName:         nodeName,
-			NodeRootPath:     nodeRootPath,
+			NodeRootPath:     nodeAddress,
 			RelativePath:     relativePath,
-			FolderType:       "本地",
+			FolderType:       uiFolderType(nodeType),
 			Address:          sourcePath,
 			MountMode:        uiMountMode(mountMode),
 			Enabled:          enabled,
@@ -150,9 +161,9 @@ func (s *LocalFolderService) ListLocalFolders(ctx context.Context) ([]storagedto
 			FreeSpaceSummary: uiFreeSpaceSummary(availableBytes),
 			CapacityPercent:  uiCapacityPercent(capacityBytes, availableBytes),
 			RiskTags:         uiRiskTags(scanStatus, healthStatus, lastErrorMessage),
-			Badges:           []string{"本地", uiMountMode(mountMode)},
-			AuthStatus:       uiAuthStatus(authStatus),
-			AuthTone:         uiAuthTone(authStatus),
+			Badges:           buildMountBadges(nodeType, accessMode, mountMode),
+			AuthStatus:       uiMountAuthStatus(nodeType, authStatus),
+			AuthTone:         uiMountAuthTone(nodeType, authStatus),
 			Notes:            notes,
 		})
 	}
@@ -190,17 +201,33 @@ func (s *LocalFolderService) SaveLocalFolder(ctx context.Context, request storag
 		return storagedto.SaveLocalFolderResponse{}, apperrors.BadRequest("心跳策略无效")
 	}
 
-	now := s.now().UTC()
-	nextHeartbeat := computeNextHeartbeat(now, heartbeatPolicy)
-	nodeRootPath, _, err := s.loadLocalNodePath(ctx, request.NodeID)
+	node, err := s.loadStorageNodeForMount(ctx, request.NodeID)
 	if err != nil {
 		return storagedto.SaveLocalFolderResponse{}, err
 	}
-	relativePath := strings.TrimLeft(strings.TrimSpace(request.RelativePath), `/\`)
-	sourcePath := buildLocalMountPath(nodeRootPath, relativePath)
-	if mkdirErr := os.MkdirAll(sourcePath, 0o755); mkdirErr != nil {
-		return storagedto.SaveLocalFolderResponse{}, apperrors.BadRequest("挂载目录创建失败")
+
+	relativePath := strings.Trim(strings.TrimSpace(request.RelativePath), `/\`)
+	sourcePath, mountSourceType, err := buildMountSourcePath(node, relativePath)
+	if err != nil {
+		return storagedto.SaveLocalFolderResponse{}, err
 	}
+
+	if node.NodeType == "LOCAL" {
+		if mkdirErr := os.MkdirAll(sourcePath, 0o755); mkdirErr != nil {
+			return storagedto.SaveLocalFolderResponse{}, apperrors.BadRequest("挂载目录创建失败")
+		}
+	} else if node.NodeType == "NAS" {
+		password, decryptErr := s.cipher.Decrypt(node.SecretCiphertext)
+		if decryptErr != nil {
+			return storagedto.SaveLocalFolderResponse{}, apperrors.BadRequest("NAS 凭据无法读取，请重新保存账号和密码")
+		}
+		if ensureErr := s.nas.EnsureDirectory(ctx, sourcePath, node.Username, password); ensureErr != nil {
+			return storagedto.SaveLocalFolderResponse{}, apperrors.BadRequest(fmt.Sprintf("NAS 挂载目录创建失败：%s", ensureErr.Error()))
+		}
+	}
+
+	now := s.now().UTC()
+	nextHeartbeat := computeNextHeartbeat(now, heartbeatPolicy)
 
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -209,21 +236,23 @@ func (s *LocalFolderService) SaveLocalFolder(ctx context.Context, request storag
 	defer tx.Rollback(ctx)
 
 	if strings.TrimSpace(request.ID) == "" {
-		mountID := buildCode("local-mount-id", now)
+		mountID := buildCode("mount-id", now)
 		_, err = tx.Exec(ctx, `
 			INSERT INTO mounts (
 				id, code, library_id, library_name, storage_node_id, name, mount_source_type, mount_mode,
 				source_path, relative_root_path, heartbeat_policy, scan_policy, enabled, sort_order, created_at, updated_at
-			) VALUES ($1, $2, $3, $4, $5, $6, 'LOCAL_PATH', $7, $8, '/', $9, 'MANUAL', true, 0, $10, $10)
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'MANUAL', true, 0, $12, $12)
 		`,
 			mountID,
-			buildCode("local-mount", now),
+			buildCode("mount", now),
 			request.LibraryID,
 			request.LibraryName,
 			request.NodeID,
 			request.Name,
+			mountSourceType,
 			mountMode,
 			sourcePath,
+			relativePath,
 			heartbeatPolicy,
 			now,
 		)
@@ -234,38 +263,43 @@ func (s *LocalFolderService) SaveLocalFolder(ctx context.Context, request storag
 		_, err = tx.Exec(ctx, `
 			INSERT INTO mount_runtime (
 				id, mount_id, scan_status, next_heartbeat_at, auth_status, health_status, created_at, updated_at
-			) VALUES ($1, $2, 'IDLE', $3, 'NOT_REQUIRED', 'UNKNOWN', $4, $4)
-		`, buildCode("mount-runtime-id", now), mountID, nextHeartbeat, now)
+			) VALUES ($1, $2, 'IDLE', $3, $4, 'UNKNOWN', $5, $5)
+		`, buildCode("mount-runtime-id", now), mountID, nextHeartbeat, initialMountAuthStatus(node.NodeType), now)
 		if err != nil {
 			return storagedto.SaveLocalFolderResponse{}, err
 		}
 
 		request.ID = mountID
 	} else {
-		_, err = tx.Exec(ctx, `
+		tag, err := tx.Exec(ctx, `
 			UPDATE mounts
 			SET name = $2,
 			    library_id = $3,
 			    library_name = $4,
 			    storage_node_id = $5,
-			    mount_mode = $6,
-			    source_path = $7,
-			    relative_root_path = $8,
-			    heartbeat_policy = $9,
-			    updated_at = $10
+			    mount_source_type = $6,
+			    mount_mode = $7,
+			    source_path = $8,
+			    relative_root_path = $9,
+			    heartbeat_policy = $10,
+			    updated_at = $11
 			WHERE id = $1
 			  AND deleted_at IS NULL
-		`, request.ID, request.Name, request.LibraryID, request.LibraryName, request.NodeID, mountMode, sourcePath, relativePath, heartbeatPolicy, now)
+		`, request.ID, request.Name, request.LibraryID, request.LibraryName, request.NodeID, mountSourceType, mountMode, sourcePath, relativePath, heartbeatPolicy, now)
 		if err != nil {
 			return storagedto.SaveLocalFolderResponse{}, err
+		}
+		if tag.RowsAffected() == 0 {
+			return storagedto.SaveLocalFolderResponse{}, apperrors.NotFound("挂载文件夹不存在")
 		}
 
 		_, err = tx.Exec(ctx, `
 			UPDATE mount_runtime
 			SET next_heartbeat_at = $2,
-			    updated_at = $3
+			    auth_status = $3,
+			    updated_at = $4
 			WHERE mount_id = $1
-		`, request.ID, nextHeartbeat, now)
+		`, request.ID, nextHeartbeat, initialMountAuthStatus(node.NodeType), now)
 		if err != nil {
 			return storagedto.SaveLocalFolderResponse{}, err
 		}
@@ -293,30 +327,63 @@ func (s *LocalFolderService) RunLocalFolderScan(ctx context.Context, ids []strin
 
 	now := s.now().UTC()
 	for _, id := range ids {
-		path, name, err := s.loadLocalFolderPath(ctx, id)
+		mount, err := s.loadMountExecutionConfig(ctx, id)
 		if err != nil {
 			return storagedto.RunLocalFolderScanResponse{}, err
 		}
 
-		startedAt := now
-		entries, readErr := os.ReadDir(path)
 		finishedAt := s.now().UTC()
 		scanStatus := "SUCCESS"
-		summary := fmt.Sprintf("%s 扫描完成，发现 %d 个直接子项。", name, len(entries))
+		summary := fmt.Sprintf("%s 扫描完成，目录可读取。", mount.Name)
 		lastErrorCode := ""
 		lastErrorMessage := ""
 		healthStatus := "ONLINE"
-		capacityBytes, availableBytes, usageErr := detectDiskUsage(path)
-		if readErr != nil {
-			scanStatus = "FAILED"
-			summary = fmt.Sprintf("%s 扫描失败：%s", name, readErr.Error())
-			lastErrorCode = "scan_failed"
-			lastErrorMessage = readErr.Error()
-			healthStatus = "ERROR"
-		}
-		if usageErr != nil {
-			capacityBytes = 0
-			availableBytes = 0
+		authStatus := initialMountAuthStatus(mount.NodeType)
+		capacityBytes := int64(0)
+		availableBytes := int64(0)
+
+		switch mount.NodeType {
+		case "LOCAL":
+			entries, readErr := os.ReadDir(mount.SourcePath)
+			summary = fmt.Sprintf("%s 扫描完成，发现 %d 个直接子项。", mount.Name, len(entries))
+			if readErr != nil {
+				scanStatus = "FAILED"
+				summary = fmt.Sprintf("%s 扫描失败：%s", mount.Name, readErr.Error())
+				lastErrorCode = "scan_failed"
+				lastErrorMessage = readErr.Error()
+				healthStatus = "ERROR"
+			}
+			if total, free, usageErr := detectDiskUsage(mount.SourcePath); usageErr == nil {
+				capacityBytes = total
+				availableBytes = free
+			}
+		case "NAS":
+			password, decryptErr := s.cipher.Decrypt(mount.SecretCiphertext)
+			if decryptErr != nil {
+				scanStatus = "FAILED"
+				summary = fmt.Sprintf("%s 扫描失败：NAS 凭据无法读取，请重新保存账号和密码。", mount.Name)
+				healthStatus = "ERROR"
+				authStatus = "FAILED"
+				lastErrorCode = "credential_unreadable"
+				lastErrorMessage = decryptErr.Error()
+				break
+			}
+			probe, probeErr := s.nas.Test(ctx, mount.SourcePath, mount.Username, password)
+			if probeErr != nil {
+				return storagedto.RunLocalFolderScanResponse{}, probeErr
+			}
+			authStatus = probe.AuthStatus
+			healthStatus = probe.HealthStatus
+			if probe.OverallTone != "success" {
+				scanStatus = "FAILED"
+				summary = fmt.Sprintf("%s 扫描失败：%s", mount.Name, probe.Summary)
+				lastErrorCode = probe.LastErrorCode
+				lastErrorMessage = probe.LastErrorMessage
+			} else {
+				summary = fmt.Sprintf("%s 扫描完成，NAS 路径可读取。", mount.Name)
+			}
+		default:
+			return storagedto.RunLocalFolderScanResponse{}, apperrors.BadRequest("当前挂载类型暂不支持扫描")
 		}
 
 		_, err = s.pool.Exec(ctx, `
@@ -325,13 +392,14 @@ func (s *LocalFolderService) RunLocalFolderScan(ctx context.Context, ids []strin
 			    last_scan_at = $3,
 			    last_scan_summary = $4,
 			    health_status = $5,
-			    last_error_code = NULLIF($6, ''),
-			    last_error_message = NULLIF($7, ''),
-			    capacity_bytes = CASE WHEN $8::bigint > 0 THEN $8::bigint ELSE NULL END,
-			    available_bytes = CASE WHEN $9::bigint > 0 THEN $9::bigint ELSE NULL END,
+			    auth_status = $6,
+			    last_error_code = NULLIF($7, ''),
+			    last_error_message = NULLIF($8, ''),
+			    capacity_bytes = CASE WHEN $9::bigint > 0 THEN $9::bigint ELSE NULL END,
+			    available_bytes = CASE WHEN $10::bigint > 0 THEN $10::bigint ELSE NULL END,
 			    updated_at = $3
 			WHERE mount_id = $1
-		`, id, scanStatus, finishedAt, summary, healthStatus, lastErrorCode, lastErrorMessage, capacityBytes, availableBytes)
+		`, id, scanStatus, finishedAt, summary, healthStatus, authStatus, lastErrorCode, lastErrorMessage, capacityBytes, availableBytes)
 		if err != nil {
 			return storagedto.RunLocalFolderScanResponse{}, err
 		}
@@ -340,7 +408,7 @@ func (s *LocalFolderService) RunLocalFolderScan(ctx context.Context, ids []strin
 			INSERT INTO mount_scan_histories (
 				id, mount_id, started_at, finished_at, status, summary, trigger
 			) VALUES ($1, $2, $3, $4, $5, $6, '手动扫描')
-		`, buildCode("scan-history-id", finishedAt), id, startedAt, finishedAt, scanStatus, summary)
+		`, buildCode("scan-history-id", finishedAt), id, now, finishedAt, scanStatus, summary)
 		if err != nil {
 			return storagedto.RunLocalFolderScanResponse{}, err
 		}
@@ -359,7 +427,7 @@ func (s *LocalFolderService) RunLocalFolderConnectionTest(ctx context.Context, i
 	results := make([]storagedto.ConnectionTestResult, 0, len(ids))
 	now := s.now().UTC()
 	for _, id := range ids {
-		path, name, err := s.loadLocalFolderPath(ctx, id)
+		mount, err := s.loadMountExecutionConfig(ctx, id)
 		if err != nil {
 			results = append(results, storagedto.ConnectionTestResult{
 				ID:          id,
@@ -367,11 +435,7 @@ func (s *LocalFolderService) RunLocalFolderConnectionTest(ctx context.Context, i
 				OverallTone: "critical",
 				Summary:     "挂载记录读取失败。",
 				Checks: []storagedto.ConnectionCheck{
-					{
-						Label:  "挂载读取",
-						Status: "critical",
-						Detail: err.Error(),
-					},
+					{Label: "挂载读取", Status: "critical", Detail: err.Error()},
 				},
 				Suggestion: "检查挂载记录是否仍存在",
 				TestedAt:   "刚刚",
@@ -383,78 +447,105 @@ func (s *LocalFolderService) RunLocalFolderConnectionTest(ctx context.Context, i
 		summary := "目录可访问，当前配置可继续使用。"
 		checks := []storagedto.ConnectionCheck{}
 		healthStatus := "ONLINE"
+		authStatus := initialMountAuthStatus(mount.NodeType)
 		lastErrorCode := ""
 		lastErrorMessage := ""
 		capacityBytes := int64(0)
 		availableBytes := int64(0)
 
-		info, statErr := os.Stat(path)
-		if statErr != nil {
-			tone = "critical"
-			summary = "目录不可访问，请检查路径是否存在。"
-			healthStatus = "ERROR"
-			lastErrorCode = "path_unavailable"
-			lastErrorMessage = statErr.Error()
-			checks = append(checks, storagedto.ConnectionCheck{Label: "可达性", Status: "critical", Detail: statErr.Error()})
-		} else {
-			checks = append(checks, storagedto.ConnectionCheck{Label: "可达性", Status: "success", Detail: "目录存在。"})
-
-			if info.IsDir() {
-				checks = append(checks, storagedto.ConnectionCheck{Label: "目录类型", Status: "success", Detail: "目标路径是目录。"})
-			} else {
+		switch mount.NodeType {
+		case "LOCAL":
+			info, statErr := os.Stat(mount.SourcePath)
+			if statErr != nil {
 				tone = "critical"
-				summary = "目标路径不是目录，请重新选择。"
+				summary = "目录不可访问，请检查路径是否存在。"
 				healthStatus = "ERROR"
-				lastErrorCode = "not_directory"
-				lastErrorMessage = "目标路径不是目录"
-				checks = append(checks, storagedto.ConnectionCheck{Label: "目录类型", Status: "critical", Detail: "目标路径不是目录。"})
-			}
+				lastErrorCode = "path_unavailable"
+				lastErrorMessage = statErr.Error()
+				checks = append(checks, storagedto.ConnectionCheck{Label: "可达性", Status: "critical", Detail: statErr.Error()})
+			} else {
+				checks = append(checks, storagedto.ConnectionCheck{Label: "可达性", Status: "success", Detail: "目录存在。"})
 
-			if _, readErr := os.ReadDir(path); readErr == nil {
-				checks = append(checks, storagedto.ConnectionCheck{Label: "读权限", Status: "success", Detail: "目录可读取。"})
-				if total, free, usageErr := detectDiskUsage(path); usageErr == nil {
-					capacityBytes = total
-					availableBytes = free
-					checks = append(checks, storagedto.ConnectionCheck{
-						Label:  "容量",
-						Status: "success",
-						Detail: fmt.Sprintf("总容量 %s，可用 %s。", bytesSummary(total), bytesSummary(free)),
-					})
+				if info.IsDir() {
+					checks = append(checks, storagedto.ConnectionCheck{Label: "目录类型", Status: "success", Detail: "目标路径是目录。"})
+				} else {
+					tone = "critical"
+					summary = "目标路径不是目录，请重新选择。"
+					healthStatus = "ERROR"
+					lastErrorCode = "not_directory"
+					lastErrorMessage = "目标路径不是目录"
+					checks = append(checks, storagedto.ConnectionCheck{Label: "目录类型", Status: "critical", Detail: "目标路径不是目录。"})
 				}
-			} else {
-				tone = "critical"
-				summary = "目录存在，但当前进程无法读取。"
-				healthStatus = "ERROR"
-				lastErrorCode = "read_failed"
-				lastErrorMessage = readErr.Error()
-				checks = append(checks, storagedto.ConnectionCheck{Label: "读权限", Status: "critical", Detail: readErr.Error()})
+
+				if _, readErr := os.ReadDir(mount.SourcePath); readErr == nil {
+					checks = append(checks, storagedto.ConnectionCheck{Label: "读权限", Status: "success", Detail: "目录可读取。"})
+					if total, free, usageErr := detectDiskUsage(mount.SourcePath); usageErr == nil {
+						capacityBytes = total
+						availableBytes = free
+						checks = append(checks, storagedto.ConnectionCheck{
+							Label:  "容量",
+							Status: "success",
+							Detail: fmt.Sprintf("总容量 %s，可用 %s。", bytesSummary(total), bytesSummary(free)),
+						})
+					}
+				} else {
+					tone = "critical"
+					summary = "目录存在，但当前进程无法读取。"
+					healthStatus = "ERROR"
+					lastErrorCode = "read_failed"
+					lastErrorMessage = readErr.Error()
+					checks = append(checks, storagedto.ConnectionCheck{Label: "读权限", Status: "critical", Detail: readErr.Error()})
+				}
 			}
+		case "NAS":
+			password, decryptErr := s.cipher.Decrypt(mount.SecretCiphertext)
+			if decryptErr != nil {
+				tone = "critical"
+				summary = "NAS 凭据无法读取，请重新保存账号和密码。"
+				checks = []storagedto.ConnectionCheck{
+					{Label: "凭据读取", Status: "critical", Detail: decryptErr.Error()},
+				}
+				healthStatus = "ERROR"
+				authStatus = "FAILED"
+				lastErrorCode = "credential_unreadable"
+				lastErrorMessage = decryptErr.Error()
+				break
+			}
+			probe, probeErr := s.nas.Test(ctx, mount.SourcePath, mount.Username, password)
+			if probeErr != nil {
+				return storagedto.RunLocalFolderConnectionTestResponse{}, probeErr
+			}
+			tone = probe.OverallTone
+			summary = probe.Summary
+			checks = probe.Checks
+			healthStatus = probe.HealthStatus
+			authStatus = probe.AuthStatus
+			lastErrorCode = probe.LastErrorCode
+			lastErrorMessage = probe.LastErrorMessage
+		default:
+			return storagedto.RunLocalFolderConnectionTestResponse{}, apperrors.BadRequest("当前挂载类型暂不支持连接测试")
 		}
 
 		_, err = s.pool.Exec(ctx, `
 			UPDATE mount_runtime
-			SET auth_status = 'NOT_REQUIRED',
-			    health_status = $2,
-			    last_check_at = $3,
-			    last_error_code = NULLIF($4, ''),
-			    last_error_message = NULLIF($5, ''),
-			    capacity_bytes = CASE WHEN $6::bigint > 0 THEN $6::bigint ELSE NULL END,
-			    available_bytes = CASE WHEN $7::bigint > 0 THEN $7::bigint ELSE NULL END,
-			    updated_at = $3
+			SET auth_status = $2,
+			    health_status = $3,
+			    last_check_at = $4,
+			    last_error_code = NULLIF($5, ''),
+			    last_error_message = NULLIF($6, ''),
+			    capacity_bytes = CASE WHEN $7::bigint > 0 THEN $7::bigint ELSE NULL END,
+			    available_bytes = CASE WHEN $8::bigint > 0 THEN $8::bigint ELSE NULL END,
+			    updated_at = $4
 			WHERE mount_id = $1
-		`, id, healthStatus, now, lastErrorCode, lastErrorMessage, capacityBytes, availableBytes)
+		`, id, authStatus, healthStatus, now, lastErrorCode, lastErrorMessage, capacityBytes, availableBytes)
 		if err != nil {
 			results = append(results, storagedto.ConnectionTestResult{
 				ID:          id,
-				Name:        name,
+				Name:        mount.Name,
 				OverallTone: "critical",
-				Summary:     "检测结果生成后写入运行状态失败。",
+				Summary:     "检测结果写入运行状态失败。",
 				Checks: []storagedto.ConnectionCheck{
-					{
-						Label:  "状态写回",
-						Status: "critical",
-						Detail: err.Error(),
-					},
+					{Label: "状态回写", Status: "critical", Detail: err.Error()},
 				},
 				Suggestion: "检查中心服务数据库状态",
 				TestedAt:   "刚刚",
@@ -464,7 +555,7 @@ func (s *LocalFolderService) RunLocalFolderConnectionTest(ctx context.Context, i
 
 		results = append(results, storagedto.ConnectionTestResult{
 			ID:          id,
-			Name:        name,
+			Name:        mount.Name,
 			OverallTone: tone,
 			Summary:     summary,
 			Checks:      checks,
@@ -593,45 +684,89 @@ func (s *LocalFolderService) loadLocalFolderByID(ctx context.Context, id string)
 	return storagedto.LocalFolderRecord{}, apperrors.NotFound("挂载文件夹不存在")
 }
 
-func (s *LocalFolderService) loadLocalFolderPath(ctx context.Context, id string) (string, string, error) {
-	var (
-		path string
-		name string
-	)
+func (s *LocalFolderService) loadStorageNodeForMount(ctx context.Context, id string) (storageNodeMountRef, error) {
+	var node storageNodeMountRef
 	err := s.pool.QueryRow(ctx, `
-		SELECT source_path, name
-		FROM mounts
-		WHERE id = $1
-		  AND deleted_at IS NULL
-	`, id).Scan(&path, &name)
+		SELECT
+			sn.id,
+			sn.name,
+			sn.node_type,
+			sn.access_mode,
+			COALESCE(sn.address, ''),
+			COALESCE(snc.username, ''),
+			COALESCE(snc.secret_ciphertext, '')
+		FROM storage_nodes sn
+		LEFT JOIN storage_node_credentials snc ON snc.storage_node_id = sn.id
+		WHERE sn.id = $1
+		  AND sn.node_type IN ('LOCAL', 'NAS')
+		  AND sn.deleted_at IS NULL
+	`, id).Scan(&node.ID, &node.Name, &node.NodeType, &node.AccessMode, &node.Address, &node.Username, &node.SecretCiphertext)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return "", "", apperrors.NotFound("挂载文件夹不存在")
+			return storageNodeMountRef{}, apperrors.NotFound("所属节点不存在")
 		}
-		return "", "", err
+		return storageNodeMountRef{}, err
 	}
-	return path, name, nil
+	return node, nil
 }
 
-func (s *LocalFolderService) loadLocalNodePath(ctx context.Context, id string) (string, string, error) {
-	var (
-		path string
-		name string
-	)
+func (s *LocalFolderService) loadMountExecutionConfig(ctx context.Context, id string) (mountExecutionConfig, error) {
+	var mount mountExecutionConfig
 	err := s.pool.QueryRow(ctx, `
-		SELECT address, name
-		FROM storage_nodes
-		WHERE id = $1
-		  AND node_type = 'LOCAL'
-		  AND deleted_at IS NULL
-	`, id).Scan(&path, &name)
+		SELECT
+			m.id,
+			m.name,
+			sn.node_type,
+			m.source_path,
+			COALESCE(snc.username, ''),
+			COALESCE(snc.secret_ciphertext, '')
+		FROM mounts m
+		INNER JOIN storage_nodes sn ON sn.id = m.storage_node_id
+		LEFT JOIN storage_node_credentials snc ON snc.storage_node_id = sn.id
+		WHERE m.id = $1
+		  AND m.deleted_at IS NULL
+		  AND sn.deleted_at IS NULL
+	`, id).Scan(&mount.ID, &mount.Name, &mount.NodeType, &mount.SourcePath, &mount.Username, &mount.SecretCiphertext)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return "", "", apperrors.NotFound("所属节点不存在")
+			return mountExecutionConfig{}, apperrors.NotFound("挂载文件夹不存在")
 		}
-		return "", "", err
+		return mountExecutionConfig{}, err
 	}
-	return path, name, nil
+	return mount, nil
+}
+
+type storageNodeMountRef struct {
+	ID               string
+	Name             string
+	NodeType         string
+	AccessMode       string
+	Address          string
+	Username         string
+	SecretCiphertext string
+}
+
+type mountExecutionConfig struct {
+	ID               string
+	Name             string
+	NodeType         string
+	SourcePath       string
+	Username         string
+	SecretCiphertext string
+}
+
+func buildMountSourcePath(node storageNodeMountRef, relativePath string) (string, string, error) {
+	switch node.NodeType {
+	case "LOCAL":
+		return buildLocalMountPath(node.Address, relativePath), "LOCAL_PATH", nil
+	case "NAS":
+		if strings.TrimSpace(node.SecretCiphertext) == "" {
+			return "", "", apperrors.BadRequest("NAS 节点凭据缺失，请先重新保存 NAS 节点")
+		}
+		return joinSMBPath(node.Address, relativePath), "NAS_SHARE", nil
+	default:
+		return "", "", apperrors.BadRequest("当前节点类型暂不支持新增挂载")
+	}
 }
 
 func buildLocalMountPath(rootPath string, relativePath string) string {
@@ -806,17 +941,45 @@ func uiRiskTags(scanStatus string, healthStatus string, lastErrorMessage string)
 }
 
 func uiAuthStatus(status string) string {
-	if status == "NOT_REQUIRED" || status == "" {
+	switch status {
+	case "AUTHORIZED":
+		return "鉴权正常"
+	case "FAILED":
+		return "鉴权异常"
+	case "EXPIRED":
+		return "鉴权过期"
+	case "NOT_REQUIRED", "":
+		return "无需鉴权"
+	default:
+		return "待检测"
+	}
+}
+
+func uiMountAuthStatus(nodeType string, status string) string {
+	if nodeType == "LOCAL" {
 		return "无需鉴权"
 	}
-	return status
+	return uiAuthStatus(status)
 }
 
 func uiAuthTone(status string) string {
-	if status == "NOT_REQUIRED" || status == "" {
+	switch status {
+	case "AUTHORIZED":
+		return "success"
+	case "FAILED", "EXPIRED":
+		return "warning"
+	case "NOT_REQUIRED", "":
+		return "info"
+	default:
 		return "info"
 	}
-	return "warning"
+}
+
+func uiMountAuthTone(nodeType string, status string) string {
+	if nodeType == "LOCAL" {
+		return "info"
+	}
+	return uiAuthTone(status)
 }
 
 func uiHistoryStatus(status string) string {
@@ -857,4 +1020,28 @@ func bytesSummary(value int64) string {
 	default:
 		return fmt.Sprintf("%d B", value)
 	}
+}
+
+func uiFolderType(nodeType string) string {
+	switch nodeType {
+	case "NAS":
+		return "NAS"
+	default:
+		return "本地"
+	}
+}
+
+func buildMountBadges(nodeType string, accessMode string, mountMode string) []string {
+	sourceBadge := "本地"
+	if nodeType == "NAS" && accessMode == "SMB" {
+		sourceBadge = "SMB"
+	}
+	return []string{sourceBadge, uiMountMode(mountMode)}
+}
+
+func initialMountAuthStatus(nodeType string) string {
+	if nodeType == "NAS" {
+		return "UNKNOWN"
+	}
+	return "NOT_REQUIRED"
 }

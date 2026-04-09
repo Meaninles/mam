@@ -46,6 +46,7 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 
 	agentService := agentregistry.NewService(pool)
 	localFolderService := storage.NewLocalFolderService(pool)
+	nasNodeService := storage.NewNASNodeService(pool)
 	runtimeService := runtime.NewService(
 		cfg.ServiceName,
 		cfg.ServiceVersion,
@@ -61,6 +62,7 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 		Runtime:      runtimeService,
 		Agents:       agentService,
 		LocalNodes:   localFolderService,
+		NasNodes:     nasNodeService,
 		LocalFolders: localFolderService,
 	})
 

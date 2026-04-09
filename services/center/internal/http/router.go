@@ -41,11 +41,19 @@ type LocalNodeService interface {
 	DeleteLocalNode(ctx context.Context, id string) (storagedto.DeleteLocalNodeResponse, error)
 }
 
+type NASNodeService interface {
+	ListNasNodes(ctx context.Context) ([]storagedto.NasRecord, error)
+	SaveNasNode(ctx context.Context, request storagedto.SaveNasNodeRequest) (storagedto.SaveNasNodeResponse, error)
+	RunNasNodeConnectionTest(ctx context.Context, ids []string) (storagedto.RunNasNodeConnectionTestResponse, error)
+	DeleteNasNode(ctx context.Context, id string) (storagedto.DeleteNasNodeResponse, error)
+}
+
 type Dependencies struct {
 	Logger       *slog.Logger
 	Runtime      RuntimeService
 	Agents       AgentService
 	LocalNodes   LocalNodeService
+	NasNodes     NASNodeService
 	LocalFolders LocalFolderService
 }
 
@@ -156,6 +164,54 @@ func NewRouter(deps Dependencies) http.Handler {
 
 	mux.HandleFunc("DELETE /api/storage/local-nodes/{id}", func(w http.ResponseWriter, r *http.Request) {
 		result, err := deps.LocalNodes.DeleteLocalNode(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("GET /api/storage/nas-nodes", func(w http.ResponseWriter, r *http.Request) {
+		payload, err := deps.NasNodes.ListNasNodes(r.Context())
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("POST /api/storage/nas-nodes", func(w http.ResponseWriter, r *http.Request) {
+		var payload storagedto.SaveNasNodeRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("NAS 保存请求格式无效"))
+			return
+		}
+
+		result, err := deps.NasNodes.SaveNasNode(r.Context(), payload)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("POST /api/storage/nas-nodes/connection-test", func(w http.ResponseWriter, r *http.Request) {
+		var payload storagedto.RunNasNodeConnectionTestRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("NAS 连接测试请求格式无效"))
+			return
+		}
+
+		result, err := deps.NasNodes.RunNasNodeConnectionTest(r.Context(), payload.IDs)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("DELETE /api/storage/nas-nodes/{id}", func(w http.ResponseWriter, r *http.Request) {
+		result, err := deps.NasNodes.DeleteNasNode(r.Context(), r.PathValue("id"))
 		if err != nil {
 			writeError(deps.Logger, w, err)
 			return
