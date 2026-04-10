@@ -2264,11 +2264,6 @@ export default function App() {
           </button>
           {libraryMenuOpen ? (
             <div className="library-menu" role="menu">
-              <div className="library-menu-header">
-                <button aria-label="新增资产库" className="library-create-button" type="button" onClick={openCreateLibraryDialog}>
-                  <Plus size={14} />
-                </button>
-              </div>
               {libraries.map((library) => (
                 <div className={`library-option${library.id === currentLibrary.id ? ' active' : ''}`} key={library.id}>
                   <button className="library-option-main" type="button" onClick={() => switchLibrary(library.id)}>
@@ -2282,6 +2277,12 @@ export default function App() {
                   </IconButton>
                 </div>
               ))}
+              <div className="library-menu-footer">
+                <button aria-label="添加资产库" className="library-create-button" type="button" onClick={openCreateLibraryDialog}>
+                  <Plus size={15} />
+                  <span>添加资产库</span>
+                </button>
+              </div>
             </div>
           ) : null}
         </div>
