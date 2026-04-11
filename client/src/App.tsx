@@ -138,6 +138,9 @@ type TagEditorState = {
 type BatchAnnotationState = {
   items: FileCenterEntry[];
 } | null;
+type BatchTagState = {
+  items: FileCenterEntry[];
+} | null;
 type BatchEndpointAction = {
   endpointName: string;
   enabled: boolean;
@@ -776,6 +779,7 @@ export default function App() {
   const [pendingAction, setPendingAction] = useState<FileConfirmAction | null>(null);
   const [tagEditorState, setTagEditorState] = useState<TagEditorState>(null);
   const [batchAnnotationState, setBatchAnnotationState] = useState<BatchAnnotationState>(null);
+  const [batchTagState, setBatchTagState] = useState<BatchTagState>(null);
   const [selectedFileEntries, setSelectedFileEntries] = useState<FileCenterEntry[]>([]);
   const [folderDraft, setFolderDraft] = useState<string | null>(null);
   const [pendingFileCenterJump, setPendingFileCenterJump] = useState<PendingFileCenterJump>(null);
@@ -2243,6 +2247,33 @@ export default function App() {
     setFileCenterVersion((current) => current + 1);
   };
 
+  const saveBatchTags = async (tags: string[]) => {
+    if (!batchTagState || batchTagState.items.length === 0) {
+      setFeedback({ message: '请先选择要批量设置标签的条目', tone: 'info' });
+      return;
+    }
+
+    await Promise.all(
+      batchTagState.items.map((item) =>
+        fileCenterApi.updateAnnotations(item.id, {
+          rating: item.rating,
+          colorLabel: item.colorLabel,
+          tags: Array.from(new Set([...item.tags, ...tags])),
+        }),
+      ),
+    );
+
+    const shouldRefreshDetail = batchTagState.items.some((item) => item.id === fileDetail?.id);
+    const updatedItem = shouldRefreshDetail && fileDetail ? await fileCenterApi.loadEntryDetail(fileDetail.id) : null;
+    setFeedback({ message: `已更新 ${batchTagState.items.length} 项条目的标签`, tone: 'success' });
+    setAvailableTags(await fileCenterApi.loadTagSuggestions('', activeLibraryId));
+    if (updatedItem) {
+      setFileDetail(updatedItem);
+    }
+    setBatchTagState(null);
+    setFileCenterVersion((current) => current + 1);
+  };
+
   const handleUploadSelection = async (mode: 'files' | 'folder', files: File[]) => {
     try {
       const result = await fileCenterApi.uploadSelection({
@@ -2473,6 +2504,7 @@ export default function App() {
             onOpenItem={(item) => void openEntry(item)}
             onOpenItemDetail={(item) => void openEntryDetail(item)}
             onOpenBatchAnnotationEditor={() => setBatchAnnotationState({ items: selectedActionItems })}
+            onOpenBatchTagEditor={() => setBatchTagState({ items: selectedActionItems })}
             onOpenTagEditor={(item) => setTagEditorState({ item })}
             onDeleteSelected={() => void requestDeleteAssets(selectedFileIds)}
             onRefreshIndex={() => {
@@ -3012,6 +3044,15 @@ export default function App() {
           count={batchAnnotationState.items.length}
           onClose={() => setBatchAnnotationState(null)}
           onSave={(input) => void saveBatchAnnotations(input)}
+        />
+      ) : null}
+
+      {activeView === 'file-center' && batchTagState ? (
+        <BatchTagDialog
+          availableTags={availableTags}
+          items={batchTagState.items}
+          onClose={() => setBatchTagState(null)}
+          onSave={(tags) => void saveBatchTags(tags)}
         />
       ) : null}
 
@@ -3669,6 +3710,111 @@ function TagEditorDialog({
       </section>
     </div>
   );
+}
+
+function BatchTagDialog({
+  availableTags,
+  items,
+  onClose,
+  onSave,
+}: {
+  availableTags: FileCenterTagSuggestion[];
+  items: FileCenterEntry[];
+  onClose: () => void;
+  onSave: (tags: string[]) => void;
+}) {
+  const [searchText, setSearchText] = useState('');
+  const [selectedTags, setSelectedTags] = useState<string[]>(resolveCommonTags(items));
+
+  useEffect(() => {
+    setSelectedTags(resolveCommonTags(items));
+    setSearchText('');
+  }, [items]);
+
+  const filteredTags = useMemo(() => {
+    const keyword = searchText.trim().toLowerCase();
+    return availableTags.filter((tag) => (keyword ? tag.name.toLowerCase().includes(keyword) : true)).slice(0, 18);
+  }, [availableTags, searchText]);
+
+  function toggleTag(tag: string) {
+    setSelectedTags((current) =>
+      current.includes(tag) ? current.filter((itemTag) => itemTag !== tag) : [...current, tag],
+    );
+  }
+
+  function addCurrentInput() {
+    const next = searchText.trim();
+    if (!next) {
+      return;
+    }
+    setSelectedTags((current) => (current.includes(next) ? current : [...current, next]));
+  }
+
+  return (
+    <div className="dialog-backdrop" role="presentation" onClick={onClose}>
+      <section className="dialog-panel tag-editor-dialog" role="dialog" aria-label="批量标签" onClick={(event) => event.stopPropagation()}>
+        <div className="sheet-header">
+          <strong>批量标签</strong>
+        </div>
+        <div className="dialog-card">
+          <p className="muted-paragraph">将为选中的 {items.length} 项条目统一设置标签。当前默认勾选的是这些条目共同已有的标签。</p>
+        </div>
+        <div className="tag-editor-toolbar">
+          <div className="tag-editor-search">
+            <input
+              aria-label="批量标签搜索"
+              placeholder="搜索标签"
+              value={searchText}
+              onChange={(event) => setSearchText(event.target.value)}
+            />
+            <ActionButton onClick={() => setSearchText(searchText.trim())}>搜索</ActionButton>
+          </div>
+          <ActionButton tone="primary" onClick={addCurrentInput}>
+            新增标签
+          </ActionButton>
+        </div>
+        <div className="sheet-section">
+          <div className="endpoint-row">
+            {selectedTags.map((tag) => (
+              <button key={tag} className="tag-chip-button" type="button" onClick={() => toggleTag(tag)}>
+                {tag}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="sheet-section">
+          <strong>常用标签</strong>
+          <div className="tag-suggestion-list">
+            {filteredTags.map((tag) => (
+              <button
+                aria-label={`${tag.name} ${tag.count} 次使用`}
+                key={tag.name}
+                className={selectedTags.includes(tag.name) ? 'active' : ''}
+                type="button"
+                onClick={() => toggleTag(tag.name)}
+              >
+                <span>{tag.name}</span>
+                <span>{tag.count} 次使用</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="sheet-actions right">
+          <ActionButton onClick={onClose}>取消</ActionButton>
+          <ActionButton tone="primary" onClick={() => onSave(selectedTags)}>
+            保存标签
+          </ActionButton>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function resolveCommonTags(items: FileCenterEntry[]) {
+  if (items.length === 0) {
+    return [];
+  }
+  return items[0].tags.filter((tag) => items.every((item) => item.tags.includes(tag)));
 }
 
 function resolveBatchColorClass(colorLabel: FileCenterColorLabel) {

@@ -298,7 +298,10 @@ export function TagManagementPage({
             onClick={() =>
               setCreateTagState({
                 name: '',
-                groupId: selectedGroupId === ALL_GROUP_ID ? 'tag-group-project' : selectedGroupId,
+                groupId:
+                  selectedGroupId === ALL_GROUP_ID
+                    ? (snapshot?.groups[0]?.id ?? '')
+                    : selectedGroupId,
                 libraryIds: [],
                 isPinned: false,
                 saving: false,
@@ -550,14 +553,6 @@ export function TagManagementPage({
                 </div>
 
                 <div className="toolbar-group wrap">
-                  <ActionButton
-                    onClick={() =>
-                      setTagDraft((current) => (current ? { ...current, isPinned: !current.isPinned } : current))
-                    }
-                  >
-                    {tagDraft.isPinned ? <PinOff size={14} /> : <Pin size={14} />}
-                    {tagDraft.isPinned ? '取消置顶' : '设为置顶'}
-                  </ActionButton>
                   <ActionButton tone="primary" onClick={() => void handleSaveTag()}>
                     <Save size={14} />
                     保存标签配置

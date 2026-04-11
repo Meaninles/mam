@@ -16,6 +16,7 @@ import (
 	"mare/services/center/internal/runtime"
 	assetdto "mare/shared/contracts/dto/asset"
 	storagedto "mare/shared/contracts/dto/storage"
+	tagdto "mare/shared/contracts/dto/tag"
 )
 
 type RuntimeService interface {
@@ -75,6 +76,19 @@ type AssetService interface {
 	ScanDirectory(ctx context.Context, libraryID string, request assetdto.ScanDirectoryRequest) (assetdto.ScanDirectoryResponse, error)
 }
 
+type TagService interface {
+	LoadManagementSnapshot(ctx context.Context, searchText string) (tagdto.ManagementSnapshot, error)
+	ListSuggestions(ctx context.Context, searchText string, libraryID *string) ([]tagdto.Suggestion, error)
+	CreateGroup(ctx context.Context, request tagdto.CreateGroupRequest) (tagdto.CreateGroupResponse, error)
+	UpdateGroup(ctx context.Context, id string, request tagdto.UpdateGroupRequest) (tagdto.MutationResponse, error)
+	MoveGroup(ctx context.Context, id string, request tagdto.MoveRequest) (tagdto.MutationResponse, error)
+	CreateTag(ctx context.Context, request tagdto.CreateTagRequest) (tagdto.CreateTagResponse, error)
+	UpdateTag(ctx context.Context, id string, request tagdto.UpdateTagRequest) (tagdto.MutationResponse, error)
+	MoveTag(ctx context.Context, id string, request tagdto.MoveRequest) (tagdto.MutationResponse, error)
+	MergeTag(ctx context.Context, id string, request tagdto.MergeTagRequest) (tagdto.MutationResponse, error)
+	DeleteTag(ctx context.Context, id string) (tagdto.MutationResponse, error)
+}
+
 type Dependencies struct {
 	Logger       *slog.Logger
 	Runtime      RuntimeService
@@ -84,6 +98,7 @@ type Dependencies struct {
 	CloudNodes   CloudNodeService
 	LocalFolders LocalFolderService
 	Assets       AssetService
+	Tags         TagService
 }
 
 func NewRouter(deps Dependencies) http.Handler {
@@ -468,6 +483,135 @@ func NewRouter(deps Dependencies) http.Handler {
 			return
 		}
 		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("GET /api/tags/management", func(w http.ResponseWriter, r *http.Request) {
+		payload, err := deps.Tags.LoadManagementSnapshot(r.Context(), strings.TrimSpace(r.URL.Query().Get("searchText")))
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("GET /api/tags/suggestions", func(w http.ResponseWriter, r *http.Request) {
+		var libraryID *string
+		if value := strings.TrimSpace(r.URL.Query().Get("libraryId")); value != "" {
+			libraryID = &value
+		}
+		payload, err := deps.Tags.ListSuggestions(r.Context(), strings.TrimSpace(r.URL.Query().Get("searchText")), libraryID)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("POST /api/tags/groups", func(w http.ResponseWriter, r *http.Request) {
+		var payload tagdto.CreateGroupRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("标签分组创建请求格式无效"))
+			return
+		}
+		result, err := deps.Tags.CreateGroup(r.Context(), payload)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("PATCH /api/tags/groups/{id}", func(w http.ResponseWriter, r *http.Request) {
+		var payload tagdto.UpdateGroupRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("标签分组更新请求格式无效"))
+			return
+		}
+		result, err := deps.Tags.UpdateGroup(r.Context(), r.PathValue("id"), payload)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("POST /api/tags/groups/{id}/move", func(w http.ResponseWriter, r *http.Request) {
+		var payload tagdto.MoveRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("标签分组排序请求格式无效"))
+			return
+		}
+		result, err := deps.Tags.MoveGroup(r.Context(), r.PathValue("id"), payload)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("POST /api/tags", func(w http.ResponseWriter, r *http.Request) {
+		var payload tagdto.CreateTagRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("标签创建请求格式无效"))
+			return
+		}
+		result, err := deps.Tags.CreateTag(r.Context(), payload)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("PATCH /api/tags/{id}", func(w http.ResponseWriter, r *http.Request) {
+		var payload tagdto.UpdateTagRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("标签更新请求格式无效"))
+			return
+		}
+		result, err := deps.Tags.UpdateTag(r.Context(), r.PathValue("id"), payload)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("POST /api/tags/{id}/move", func(w http.ResponseWriter, r *http.Request) {
+		var payload tagdto.MoveRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("标签排序请求格式无效"))
+			return
+		}
+		result, err := deps.Tags.MoveTag(r.Context(), r.PathValue("id"), payload)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("POST /api/tags/{id}/merge", func(w http.ResponseWriter, r *http.Request) {
+		var payload tagdto.MergeTagRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("标签合并请求格式无效"))
+			return
+		}
+		result, err := deps.Tags.MergeTag(r.Context(), r.PathValue("id"), payload)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("DELETE /api/tags/{id}", func(w http.ResponseWriter, r *http.Request) {
+		result, err := deps.Tags.DeleteTag(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
 	})
 
 	mux.HandleFunc("POST /api/storage/local-folders", func(w http.ResponseWriter, r *http.Request) {

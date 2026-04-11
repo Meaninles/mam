@@ -711,7 +711,7 @@ func TestUploadSelectionWritesLocalFilesAndIndexesAssets(t *testing.T) {
 	}
 }
 
-func TestUpdateAnnotationsPersistsRatingAndColorLabel(t *testing.T) {
+func TestUpdateAnnotationsPersistsRatingColorLabelAndTags(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in short mode")
 	}
@@ -785,6 +785,7 @@ func TestUpdateAnnotationsPersistsRatingAndColorLabel(t *testing.T) {
 	if _, err := service.UpdateAnnotations(ctx, fileID, assetdto.UpdateAnnotationsRequest{
 		Rating:     5,
 		ColorLabel: "红标",
+		Tags:       []string{"直播切片", "客户精选"},
 	}); err != nil {
 		t.Fatalf("update annotations: %v", err)
 	}
@@ -795,6 +796,132 @@ func TestUpdateAnnotationsPersistsRatingAndColorLabel(t *testing.T) {
 	}
 	if detail == nil || detail.Rating != 5 || detail.ColorLabel != "红标" {
 		t.Fatalf("expected updated annotations, got %#v", detail)
+	}
+	if len(detail.Tags) != 2 || detail.Tags[0] != "直播切片" || detail.Tags[1] != "客户精选" {
+		t.Fatalf("expected updated tags, got %#v", detail.Tags)
+	}
+
+	filtered, err := service.BrowseLibrary(ctx, "photo", assetdto.BrowseQuery{
+		Page:          1,
+		PageSize:      20,
+		SearchText:    "直播切片",
+		FileType:      "全部",
+		StatusFilter:  "全部",
+		SortValue:     "名称",
+		SortDirection: "asc",
+	})
+	if err != nil {
+		t.Fatalf("browse by tag: %v", err)
+	}
+	if len(filtered.Items) != 1 || filtered.Items[0].ID != fileID {
+		t.Fatalf("expected file returned by tag search, got %#v", filtered.Items)
+	}
+}
+
+func TestUpdateAnnotationsPersistsDirectoryTags(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	defer pool.Close()
+	resetSchema(t, ctx, pool)
+
+	migrator := db.NewMigrator()
+	if _, err := migrator.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	rootDir := t.TempDir()
+	localNodes := storage.NewLocalFolderService(pool)
+	node, err := localNodes.SaveLocalNode(ctx, storagedto.SaveLocalNodeRequest{
+		Name:     "Directory tag local node",
+		RootPath: rootDir,
+		Notes:    "directory tag test",
+	})
+	if err != nil {
+		t.Fatalf("save local node: %v", err)
+	}
+
+	mount, err := localNodes.SaveLocalFolder(ctx, storagedto.SaveLocalFolderRequest{
+		Name:            "Directory tag mount",
+		LibraryID:       "photo",
+		LibraryName:     "Photo library",
+		NodeID:          node.Record.ID,
+		MountMode:       "可写",
+		HeartbeatPolicy: "从不",
+		RelativePath:    "source",
+		Notes:           "directory tag test",
+	})
+	if err != nil {
+		t.Fatalf("save mount: %v", err)
+	}
+
+	sourceDir := filepath.Join(rootDir, "source")
+	if err := os.MkdirAll(filepath.Join(sourceDir, "已修图"), 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "已修图", "cover.jpg"), []byte("cover-image"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	if _, err := localNodes.RunLocalFolderScan(ctx, []string{mount.Record.ID}); err != nil {
+		t.Fatalf("run scan: %v", err)
+	}
+
+	service := assets.NewService(pool)
+	root, err := service.BrowseLibrary(ctx, "photo", assetdto.BrowseQuery{
+		Page:          1,
+		PageSize:      20,
+		FileType:      "全部",
+		StatusFilter:  "全部",
+		SortValue:     "名称",
+		SortDirection: "asc",
+	})
+	if err != nil {
+		t.Fatalf("browse root: %v", err)
+	}
+	if len(root.Items) != 1 || root.Items[0].Type != "folder" {
+		t.Fatalf("expected one folder at root, got %#v", root.Items)
+	}
+
+	folderID := root.Items[0].ID
+	if _, err := service.UpdateAnnotations(ctx, folderID, assetdto.UpdateAnnotationsRequest{
+		Rating:     0,
+		ColorLabel: "无",
+		Tags:       []string{"归档目录", "精选"},
+	}); err != nil {
+		t.Fatalf("update directory annotations: %v", err)
+	}
+
+	detail, err := service.LoadEntry(ctx, folderID)
+	if err != nil {
+		t.Fatalf("load detail: %v", err)
+	}
+	if detail == nil || len(detail.Tags) != 2 {
+		t.Fatalf("expected directory tags, got %#v", detail)
+	}
+	if detail.Tags[0] != "归档目录" || detail.Tags[1] != "精选" {
+		t.Fatalf("unexpected directory tags: %#v", detail.Tags)
+	}
+
+	filtered, err := service.BrowseLibrary(ctx, "photo", assetdto.BrowseQuery{
+		Page:          1,
+		PageSize:      20,
+		SearchText:    "归档目录",
+		FileType:      "全部",
+		StatusFilter:  "全部",
+		SortValue:     "名称",
+		SortDirection: "asc",
+	})
+	if err != nil {
+		t.Fatalf("browse by directory tag: %v", err)
+	}
+	if len(filtered.Items) != 1 || filtered.Items[0].ID != folderID {
+		t.Fatalf("expected tagged directory returned by browse, got %#v", filtered.Items)
 	}
 }
 
@@ -844,6 +971,11 @@ func resetSchema(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
 
 	if _, err := pool.Exec(ctx, `
+		DROP TABLE IF EXISTS directory_tag_links;
+		DROP TABLE IF EXISTS asset_tag_links;
+		DROP TABLE IF EXISTS tag_library_scopes;
+		DROP TABLE IF EXISTS tags;
+		DROP TABLE IF EXISTS tag_groups;
 		DROP TABLE IF EXISTS asset_metadata;
 		DROP TABLE IF EXISTS directory_presences;
 		DROP TABLE IF EXISTS asset_replicas;

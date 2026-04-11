@@ -147,7 +147,7 @@ describe('fileCenterApi', () => {
   });
 
   it('按星级排序时目录保持原顺序', () => {
-    const rows = [
+    const rows: Parameters<typeof __FILE_CENTER_TESTING__.sortEntryRowsForDisplay>[0] = [
       {
         id: 'dir-b',
         library_id: 'photo',
@@ -477,8 +477,88 @@ describe('fileCenterApi', () => {
         body: JSON.stringify({
           rating: 5,
           colorLabel: '红标',
+          tags: ['发布会'],
         }),
       }),
+    );
+  });
+
+  it('标签管理快照走中心服务接口', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: {
+          overview: {
+            totalTags: 1,
+            usedTagCount: 1,
+            ungroupedTagCount: 1,
+            crossLibraryTagCount: 0,
+          },
+          groups: [
+            {
+              id: 'tag-group-ungrouped',
+              name: '未分组',
+              orderIndex: 0,
+              tagCount: 1,
+              usedTagCount: 1,
+            },
+          ],
+          tags: [
+            {
+              id: 'tag-1',
+              name: '直播切片',
+              normalizedName: '直播切片',
+              groupId: 'tag-group-ungrouped',
+              groupName: '未分组',
+              orderIndex: 0,
+              isPinned: false,
+              usageCount: 1,
+              libraryIds: ['photo'],
+              linkedLibraryIds: ['photo'],
+              outOfScopeUsageCount: 0,
+              createdAt: '2026-04-11 10:00',
+              updatedAt: '2026-04-11 10:00',
+            },
+          ],
+          libraries: [{ id: 'photo', name: '商业摄影资产库' }],
+        },
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const snapshot = await fileCenterApi.loadTagManagementSnapshot('直播');
+
+    expect(snapshot.tags[0]?.name).toBe('直播切片');
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8080/api/tags/management?searchText=%E7%9B%B4%E6%92%AD',
+      undefined,
+    );
+  });
+
+  it('标签建议走中心服务接口', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [
+          {
+            id: 'tag-1',
+            name: '直播切片',
+            count: 3,
+            groupName: '未分组',
+            isPinned: true,
+            libraryIds: ['photo'],
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const suggestions = await fileCenterApi.loadTagSuggestions('直播', 'photo');
+
+    expect(suggestions[0]?.name).toBe('直播切片');
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8080/api/tags/suggestions?searchText=%E7%9B%B4%E6%92%AD&libraryId=photo',
+      undefined,
     );
   });
 });

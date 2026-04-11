@@ -174,38 +174,6 @@ type TagRow = {
   kind: 'badge' | 'risk' | 'tag';
 };
 
-type TagGroupRow = {
-  id: string;
-  name: string;
-  order_index: number;
-  created_at: string;
-  updated_at: string;
-};
-
-type ManagedTagRow = {
-  id: string;
-  name: string;
-  normalized_name: string;
-  group_id: string;
-  order_index: number;
-  is_pinned: number;
-  usage_count: number;
-  created_at: string;
-  updated_at: string;
-};
-
-type TagLibraryScopeRow = {
-  tag_id: string;
-  library_id: string;
-};
-
-type EntryTagLinkRow = {
-  entry_id: string;
-  tag_id: string;
-  order_index: number;
-  created_at: string;
-};
-
 const FILE_CENTER_DB_KEY = 'mare-file-center-sqlite-v4';
 let sqlModulePromise: Promise<SqlJsModule> | null = null;
 let databasePromise: Promise<SqlDatabase> | null = null;
@@ -213,28 +181,6 @@ const fileCenterListeners = new Set<() => void>();
 const pendingSyncTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const libraryEndpointNamesCache = new Map<string, string[]>();
 const fileNameCollator = new Intl.Collator('zh-CN-u-co-pinyin', { numeric: true, sensitivity: 'base' });
-const UNGROUPED_TAG_GROUP_ID = 'tag-group-ungrouped';
-const TAG_GROUP_SEEDS = [
-  { id: UNGROUPED_TAG_GROUP_ID, name: '未分组' },
-  { id: 'tag-group-workflow', name: '工作流阶段' },
-  { id: 'tag-group-project', name: '项目语义' },
-  { id: 'tag-group-delivery', name: '交付与精选' },
-  { id: 'tag-group-archive', name: '归档治理' },
-] as const;
-const TAG_SEEDS = [
-  { id: 'tag-launch', name: '发布会', groupId: 'tag-group-project', isPinned: true, libraryIds: ['photo'] },
-  { id: 'tag-retouch', name: '待修图', groupId: 'tag-group-workflow', isPinned: true, libraryIds: ['photo'] },
-  { id: 'tag-social-candidate', name: '社媒候选', groupId: 'tag-group-project', isPinned: false, libraryIds: ['photo'] },
-  { id: 'tag-cover', name: '封面图', groupId: 'tag-group-delivery', isPinned: true, libraryIds: ['photo'] },
-  { id: 'tag-client-picked', name: '客户精选', groupId: 'tag-group-delivery', isPinned: true, libraryIds: ['photo', 'family'] },
-  { id: 'tag-broll', name: 'B-roll', groupId: 'tag-group-project', isPinned: false, libraryIds: ['video'] },
-  { id: 'tag-voiceover', name: '口播素材', groupId: 'tag-group-project', isPinned: true, libraryIds: ['video'] },
-  { id: 'tag-priority-fix', name: '高优先级返修', groupId: 'tag-group-workflow', isPinned: false, libraryIds: ['video'] },
-  { id: 'tag-review', name: '待校验', groupId: 'tag-group-workflow', isPinned: false, libraryIds: ['video', 'family'] },
-  { id: 'tag-year-best', name: '年度精选', groupId: UNGROUPED_TAG_GROUP_ID, isPinned: true, libraryIds: ['photo', 'family'] },
-  { id: 'tag-archive-contract', name: '合同归档', groupId: 'tag-group-archive', isPinned: false, libraryIds: ['photo'] },
-  { id: 'tag-paused', name: '待停用术语', groupId: UNGROUPED_TAG_GROUP_ID, isPinned: false, libraryIds: [] },
-] as const;
 
 export const fileCenterApi = {
   listLibraryEndpointNames(libraryId: string) {
@@ -611,87 +557,49 @@ export const fileCenterApi = {
   },
 
   async loadTagManagementSnapshot(searchText = ''): Promise<TagManagementSnapshot> {
-    const db = await getDatabase();
-    recomputeAllTagUsageCounts(db);
-    persistDatabase(db);
-    return buildTagManagementSnapshot(db, searchText);
+    const query = new URLSearchParams();
+    if (searchText.trim()) {
+      query.set('searchText', searchText.trim());
+    }
+    return fetchFileCenterData<TagManagementSnapshot>(
+      `/api/tags/management${query.size > 0 ? `?${query.toString()}` : ''}`,
+    );
   },
 
   async createTagGroup(name: string): Promise<{ message: string; groupId: string }> {
-    const db = await getDatabase();
-    const trimmedName = name.trim();
-    if (!trimmedName) {
-      throw new Error('请输入分组名称');
-    }
-    const duplicated = querySingle<{ id: string }>(
-      db,
-      'SELECT id FROM tag_groups WHERE name = $name',
-      { $name: trimmedName },
-    );
-    if (duplicated) {
-      throw new Error('分组名称已存在');
-    }
-
-    const orderIndex =
-      (querySingle<{ max_order: number | null }>(
-        db,
-        'SELECT MAX(order_index) AS max_order FROM tag_groups',
-        {},
-      )?.max_order ?? -1) + 1;
-    const now = formatDetailedTimestamp(Date.now());
-    const groupId = `tag-group-${Math.random().toString(36).slice(2, 10)}`;
-
-    db.run(
-      `INSERT INTO tag_groups (id, name, order_index, created_at, updated_at)
-       VALUES ($id, $name, $orderIndex, $createdAt, $updatedAt)`,
-      {
-        $id: groupId,
-        $name: trimmedName,
-        $orderIndex: orderIndex,
-        $createdAt: now,
-        $updatedAt: now,
+    const result = await fetchFileCenterData<{ message: string; groupId: string }>('/api/tags/groups', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
       },
-    );
-    persistDatabase(db);
+      body: JSON.stringify({ name: name.trim() }),
+    });
     emitFileCenterUpdate();
-    return { message: '分组已创建', groupId };
+    return result;
   },
 
   async updateTagGroup(id: string, name: string): Promise<{ message: string }> {
-    const db = await getDatabase();
-    const trimmedName = name.trim();
-    if (!trimmedName) {
-      throw new Error('请输入分组名称');
-    }
-    const duplicated = querySingle<{ id: string }>(
-      db,
-      'SELECT id FROM tag_groups WHERE name = $name AND id != $id',
-      { $name: trimmedName, $id: id },
-    );
-    if (duplicated) {
-      throw new Error('分组名称已存在');
-    }
-    db.run(
-      `UPDATE tag_groups
-       SET name = $name, updated_at = $updatedAt
-       WHERE id = $id`,
-      {
-        $id: id,
-        $name: trimmedName,
-        $updatedAt: formatDetailedTimestamp(Date.now()),
+    const result = await fetchFileCenterData<{ message: string }>(`/api/tags/groups/${id}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
       },
-    );
-    persistDatabase(db);
+      body: JSON.stringify({ name: name.trim() }),
+    });
     emitFileCenterUpdate();
-    return { message: '分组已更新' };
+    return result;
   },
 
   async moveTagGroup(id: string, direction: 'up' | 'down'): Promise<{ message: string }> {
-    const db = await getDatabase();
-    moveOrderedRecord(db, 'tag_groups', id, direction, {});
-    persistDatabase(db);
+    const result = await fetchFileCenterData<{ message: string }>(`/api/tags/groups/${id}/move`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ direction }),
+    });
     emitFileCenterUpdate();
-    return { message: '分组顺序已更新' };
+    return result;
   },
 
   async createManagedTag(input: {
@@ -700,12 +608,15 @@ export const fileCenterApi = {
     libraryIds: string[];
     name: string;
   }): Promise<{ message: string; tagId: string }> {
-    const db = await getDatabase();
-    const tagId = createManagedTagRecord(db, input);
-    recomputeAllTagUsageCounts(db);
-    persistDatabase(db);
+    const result = await fetchFileCenterData<{ message: string; tagId: string }>('/api/tags', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(input),
+    });
     emitFileCenterUpdate();
-    return { message: '标签已创建', tagId };
+    return result;
   },
 
   async updateManagedTag(
@@ -717,45 +628,47 @@ export const fileCenterApi = {
       name: string;
     },
   ): Promise<{ message: string }> {
-    const db = await getDatabase();
-    updateManagedTagRecord(db, id, input);
-    recomputeAllTagUsageCounts(db);
-    persistDatabase(db);
+    const result = await fetchFileCenterData<{ message: string }>(`/api/tags/${id}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(input),
+    });
     emitFileCenterUpdate();
-    return { message: '标签已更新' };
+    return result;
   },
 
   async moveManagedTag(id: string, direction: 'up' | 'down'): Promise<{ message: string }> {
-    const db = await getDatabase();
-    const target = querySingle<ManagedTagRow>(db, 'SELECT * FROM tags WHERE id = $id', { $id: id });
-    if (!target) {
-      throw new Error('未找到标签');
-    }
-    moveOrderedRecord(db, 'tags', id, direction, {
-      group_id: target.group_id,
-      is_pinned: target.is_pinned,
+    const result = await fetchFileCenterData<{ message: string }>(`/api/tags/${id}/move`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ direction }),
     });
-    persistDatabase(db);
     emitFileCenterUpdate();
-    return { message: '标签顺序已更新' };
+    return result;
   },
 
   async mergeManagedTag(sourceId: string, targetId: string): Promise<{ message: string }> {
-    const db = await getDatabase();
-    mergeManagedTags(db, sourceId, targetId);
-    recomputeAllTagUsageCounts(db);
-    persistDatabase(db);
+    const result = await fetchFileCenterData<{ message: string }>(`/api/tags/${sourceId}/merge`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ targetId }),
+    });
     emitFileCenterUpdate();
-    return { message: '标签已合并' };
+    return result;
   },
 
   async deleteManagedTag(id: string): Promise<{ message: string }> {
-    const db = await getDatabase();
-    deleteManagedTagRecord(db, id);
-    recomputeAllTagUsageCounts(db);
-    persistDatabase(db);
+    const result = await fetchFileCenterData<{ message: string }>(`/api/tags/${id}`, {
+      method: 'DELETE',
+    });
     emitFileCenterUpdate();
-    return { message: '标签已删除' };
+    return result;
   },
 
   async updateAnnotations(
@@ -763,7 +676,7 @@ export const fileCenterApi = {
     input: { rating: number; colorLabel: FileCenterColorLabel; tags: string[] },
   ): Promise<{ message: string }> {
     try {
-      return fetchFileCenterData<{ message: string }>(`/api/file-entries/${id}/annotations`, {
+      return await fetchFileCenterData<{ message: string }>(`/api/file-entries/${id}/annotations`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -771,6 +684,7 @@ export const fileCenterApi = {
         body: JSON.stringify({
           rating: Math.max(0, Math.min(5, input.rating)),
           colorLabel: input.colorLabel,
+          tags: input.tags,
         }),
       });
     } catch (error) {
@@ -790,8 +704,7 @@ export const fileCenterApi = {
         $colorLabel: input.colorLabel,
       },
     );
-    replaceEntryTagsByNamesInDatabase(db, id, input.tags, { allowCreate: true });
-    recomputeAllTagUsageCounts(db);
+    replaceEntryDisplayTagsInDatabase(db, id, input.tags);
     persistDatabase(db);
     return { message: '资产标记已更新' };
   },
@@ -800,19 +713,30 @@ export const fileCenterApi = {
     entryId: string,
     tags: string[],
   ): Promise<{ message: string }> {
-    const db = await getDatabase();
-    replaceEntryTagsByNamesInDatabase(db, entryId, tags, { allowCreate: true });
-    recomputeAllTagUsageCounts(db);
-    persistDatabase(db);
+    const detail = await fileCenterApi.loadEntryDetail(entryId);
+    if (!detail) {
+      throw new Error('未找到资产');
+    }
+    const result = await fileCenterApi.updateAnnotations(entryId, {
+      rating: detail.rating,
+      colorLabel: detail.colorLabel,
+      tags,
+    });
     emitFileCenterUpdate();
-    return { message: '标签已更新' };
+    return result;
   },
 
   async loadTagSuggestions(searchText = '', libraryId?: string): Promise<FileCenterTagSuggestion[]> {
-    const db = await getDatabase();
-    recomputeAllTagUsageCounts(db);
-    const keyword = searchText.trim();
-    return loadScopedTagSuggestions(db, keyword, libraryId);
+    const query = new URLSearchParams();
+    if (searchText.trim()) {
+      query.set('searchText', searchText.trim());
+    }
+    if (libraryId?.trim()) {
+      query.set('libraryId', libraryId.trim());
+    }
+    return fetchFileCenterData<FileCenterTagSuggestion[]>(
+      `/api/tags/suggestions${query.size > 0 ? `?${query.toString()}` : ''}`,
+    );
   },
 
   async refreshIndex(): Promise<{ message: string }> {
@@ -1191,47 +1115,10 @@ function createSchema(db: SqlDatabase) {
       PRIMARY KEY (entry_id, kind, tag)
     );
 
-    CREATE TABLE tag_groups (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      order_index INTEGER NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-
-    CREATE TABLE tags (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      normalized_name TEXT NOT NULL UNIQUE,
-      group_id TEXT NOT NULL,
-      order_index INTEGER NOT NULL,
-      is_pinned INTEGER NOT NULL DEFAULT 0,
-      usage_count INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-
-    CREATE TABLE tag_library_scopes (
-      tag_id TEXT NOT NULL,
-      library_id TEXT NOT NULL,
-      PRIMARY KEY (tag_id, library_id)
-    );
-
-    CREATE TABLE entry_tag_links (
-      entry_id TEXT NOT NULL,
-      tag_id TEXT NOT NULL,
-      order_index INTEGER NOT NULL,
-      created_at TEXT NOT NULL,
-      PRIMARY KEY (entry_id, tag_id)
-    );
-
     CREATE INDEX idx_entries_library_parent ON entries(library_id, parent_id);
     CREATE INDEX idx_entries_modified ON entries(library_id, modified_at_sort DESC);
     CREATE INDEX idx_entry_endpoints_entry ON entry_endpoints(entry_id, order_index);
     CREATE INDEX idx_entry_tags_entry ON entry_tags(entry_id, order_index);
-    CREATE INDEX idx_tags_group_order ON tags(group_id, is_pinned DESC, order_index ASC);
-    CREATE INDEX idx_entry_tag_links_entry ON entry_tag_links(entry_id, order_index);
-    CREATE INDEX idx_entry_tag_links_tag ON entry_tag_links(tag_id);
   `);
 }
 
@@ -1273,8 +1160,6 @@ export function canDeleteFileCenterEndpoint(endpoint: Pick<FileCenterEndpoint, '
 }
 
 function migrateFileCenterDatabase(db: SqlDatabase) {
-  ensureTagDomainSchema(db);
-
   const rows = queryAll<{ entry_id: string; name: string; state: string; tone: Severity }>(
     db,
     'SELECT entry_id, name, state, tone FROM entry_endpoints',
@@ -1302,10 +1187,6 @@ function migrateFileCenterDatabase(db: SqlDatabase) {
     );
     changed = true;
   });
-
-  if (migrateLegacyTextTags(db)) {
-    changed = true;
-  }
 
   return changed;
 }
@@ -2281,25 +2162,13 @@ function hydrateEntries(db: SqlDatabase, rows: EntryRow[]): FileCenterEntry[] {
      ORDER BY entry_id ASC, order_index ASC`,
     placeholders.parameters,
   );
-  const linkedTagRows = queryAll<{ entry_id: string; order_index: number; tag_id: string; name: string }>(
-    db,
-    `SELECT entry_tag_links.entry_id, entry_tag_links.order_index, entry_tag_links.tag_id, tags.name
-     FROM entry_tag_links
-     JOIN tags ON tags.id = entry_tag_links.tag_id
-     WHERE entry_tag_links.entry_id IN (${placeholders.sql})
-     ORDER BY entry_tag_links.entry_id ASC, entry_tag_links.order_index ASC`,
-    placeholders.parameters,
-  );
-
   const endpointMap = groupBy(endpointRows, (row) => row.entry_id);
   const metadataMap = groupBy(metadataRows, (row) => row.entry_id);
   const tagMap = groupBy(tagRows, (row) => row.entry_id);
-  const linkedTagMap = groupBy(linkedTagRows, (row) => row.entry_id);
   const folderEndpointStateCache = new Map<string, FileCenterEndpointState>();
 
   return rows.map((row) => {
     const tags = tagMap.get(row.id) ?? [];
-    const managedTags = linkedTagMap.get(row.id) ?? [];
     const endpoints =
       row.type === 'folder'
         ? deriveFolderEndpoints(db, row.id, row.library_id, folderEndpointStateCache)
@@ -2331,7 +2200,7 @@ function hydrateEntries(db: SqlDatabase, rows: EntryRow[]): FileCenterEntry[] {
       colorLabel: row.color_label,
       badges: tags.filter((item) => item.kind === 'badge').map((item) => item.tag),
       riskTags: tags.filter((item) => item.kind === 'risk').map((item) => item.tag),
-      tags: managedTags.map((item) => item.name),
+      tags: tags.filter((item) => item.kind === 'tag').map((item) => item.tag),
       endpoints,
       metadata: (metadataMap.get(row.id) ?? []).map((item) => ({
         label: item.label,
@@ -2567,679 +2436,20 @@ export const __FILE_CENTER_TESTING__ = {
   sortEntryRowsForDisplay,
 };
 
-function ensureTagDomainSchema(db: SqlDatabase) {
-  const existing = new Set(
-    queryAll<{ name: string }>(db, "SELECT name FROM sqlite_master WHERE type = 'table'", {}).map((row) => row.name),
-  );
-
-  if (!existing.has('tag_groups')) {
-    db.run(`
-      CREATE TABLE tag_groups (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        order_index INTEGER NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      )
-    `);
-  }
-
-  if (!existing.has('tags')) {
-    db.run(`
-      CREATE TABLE tags (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        normalized_name TEXT NOT NULL UNIQUE,
-        group_id TEXT NOT NULL,
-        order_index INTEGER NOT NULL,
-        is_pinned INTEGER NOT NULL DEFAULT 0,
-        usage_count INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      )
-    `);
-  }
-
-  if (!existing.has('tag_library_scopes')) {
-    db.run(`
-      CREATE TABLE tag_library_scopes (
-        tag_id TEXT NOT NULL,
-        library_id TEXT NOT NULL,
-        PRIMARY KEY (tag_id, library_id)
-      )
-    `);
-  }
-
-  if (!existing.has('entry_tag_links')) {
-    db.run(`
-      CREATE TABLE entry_tag_links (
-        entry_id TEXT NOT NULL,
-        tag_id TEXT NOT NULL,
-        order_index INTEGER NOT NULL,
-        created_at TEXT NOT NULL,
-        PRIMARY KEY (entry_id, tag_id)
-      )
-    `);
-  }
-
-  ensureIndex(
-    db,
-    'idx_tags_group_order',
-    'CREATE INDEX idx_tags_group_order ON tags(group_id, is_pinned DESC, order_index ASC)',
-  );
-  ensureIndex(
-    db,
-    'idx_entry_tag_links_entry',
-    'CREATE INDEX idx_entry_tag_links_entry ON entry_tag_links(entry_id, order_index)',
-  );
-  ensureIndex(
-    db,
-    'idx_entry_tag_links_tag',
-    'CREATE INDEX idx_entry_tag_links_tag ON entry_tag_links(tag_id)',
-  );
-}
-
-function ensureIndex(db: SqlDatabase, name: string, sql: string) {
-  const existing = querySingle<{ name: string }>(
-    db,
-    "SELECT name FROM sqlite_master WHERE type = 'index' AND name = $name",
-    { $name: name },
-  );
-  if (!existing) {
-    db.run(sql);
-  }
-}
-
-function migrateLegacyTextTags(db: SqlDatabase) {
-  let changed = seedManagedTagCatalog(db);
-  const legacyRows = queryAll<{ entry_id: string; order_index: number; tag: string }>(
-    db,
-    "SELECT entry_id, order_index, tag FROM entry_tags WHERE kind = 'tag' ORDER BY entry_id ASC, order_index ASC",
-    {},
-  );
-
-  if (legacyRows.length === 0) {
-    recomputeAllTagUsageCounts(db);
-    return changed;
-  }
-
-  legacyRows.forEach((row) => {
-    const tagId = ensureManagedTagForName(db, row.tag, row.entry_id);
-    db.run(
-      `INSERT OR IGNORE INTO entry_tag_links (entry_id, tag_id, order_index, created_at)
-       VALUES ($entryId, $tagId, $orderIndex, $createdAt)`,
-      {
-        $entryId: row.entry_id,
-        $tagId: tagId,
-        $orderIndex: row.order_index,
-        $createdAt: formatDetailedTimestamp(Date.now()),
-      },
-    );
-  });
-
-  db.run("DELETE FROM entry_tags WHERE kind = 'tag'");
-  recomputeAllTagUsageCounts(db);
-  changed = true;
-  return changed;
-}
-
-function seedManagedTagCatalog(db: SqlDatabase) {
-  let changed = false;
-  const groupCount = querySingle<{ total: number }>(db, 'SELECT COUNT(*) AS total FROM tag_groups', {})?.total ?? 0;
-  if (groupCount === 0) {
-    const timestamp = formatDetailedTimestamp(Date.now());
-    TAG_GROUP_SEEDS.forEach((group, index) => {
-      db.run(
-        `INSERT INTO tag_groups (id, name, order_index, created_at, updated_at)
-         VALUES ($id, $name, $orderIndex, $createdAt, $updatedAt)`,
-        {
-          $id: group.id,
-          $name: group.name,
-          $orderIndex: index,
-          $createdAt: timestamp,
-          $updatedAt: timestamp,
-        },
-      );
-    });
-    changed = true;
-  }
-
-  const tagCount = querySingle<{ total: number }>(db, 'SELECT COUNT(*) AS total FROM tags', {})?.total ?? 0;
-  if (tagCount === 0) {
-    const timestamp = formatDetailedTimestamp(Date.now());
-    TAG_SEEDS.forEach((tag, index) => {
-      db.run(
-        `INSERT INTO tags (
-          id, name, normalized_name, group_id, order_index, is_pinned, usage_count, created_at, updated_at
-        ) VALUES (
-          $id, $name, $normalizedName, $groupId, $orderIndex, $isPinned, 0, $createdAt, $updatedAt
-        )`,
-        {
-          $id: tag.id,
-          $name: tag.name,
-          $normalizedName: normalizeTagName(tag.name),
-          $groupId: tag.groupId,
-          $orderIndex: index,
-          $isPinned: tag.isPinned ? 1 : 0,
-          $createdAt: timestamp,
-          $updatedAt: timestamp,
-        },
-      );
-      tag.libraryIds.forEach((libraryId) => {
-        db.run(
-          'INSERT OR IGNORE INTO tag_library_scopes (tag_id, library_id) VALUES ($tagId, $libraryId)',
-          { $tagId: tag.id, $libraryId: libraryId },
-        );
-      });
-    });
-    changed = true;
-  }
-
-  return changed;
-}
-
-function ensureManagedTagForName(db: SqlDatabase, name: string, entryId?: string) {
-  const normalizedName = normalizeTagName(name);
-  const existing = querySingle<{ id: string }>(
-    db,
-    'SELECT id FROM tags WHERE normalized_name = $normalizedName',
-    { $normalizedName: normalizedName },
-  );
-  if (existing) {
-    if (entryId) {
-      const libraryId = querySingle<{ library_id: string }>(
-        db,
-        'SELECT library_id FROM entries WHERE id = $id',
-        { $id: entryId },
-      )?.library_id;
-      if (libraryId) {
-        db.run(
-          'INSERT OR IGNORE INTO tag_library_scopes (tag_id, library_id) VALUES ($tagId, $libraryId)',
-          { $tagId: existing.id, $libraryId: libraryId },
-        );
-      }
-    }
-    return existing.id;
-  }
-
-  const libraryId =
-    entryId
-      ? querySingle<{ library_id: string }>(
-          db,
-          'SELECT library_id FROM entries WHERE id = $id',
-          { $id: entryId },
-        )?.library_id
-      : undefined;
-  return createManagedTagRecord(db, {
-    name,
-    groupId: UNGROUPED_TAG_GROUP_ID,
-    isPinned: false,
-    libraryIds: libraryId ? [libraryId] : [],
-  });
-}
-
-function normalizeTagName(value: string) {
-  return value
-    .trim()
-    .replace(/\s+/g, ' ')
-    .toLocaleLowerCase('zh-CN');
-}
-
-function createManagedTagRecord(
-  db: SqlDatabase,
-  input: {
-    name: string;
-    groupId: string;
-    isPinned: boolean;
-    libraryIds: string[];
-  },
-) {
-  const trimmedName = input.name.trim();
-  if (!trimmedName) {
-    throw new Error('请输入标签名称');
-  }
-  const group = querySingle<{ id: string }>(
-    db,
-    'SELECT id FROM tag_groups WHERE id = $id',
-    { $id: input.groupId },
-  );
-  if (!group) {
-    throw new Error('请选择所属分组');
-  }
-  assertManagedTagUniqueName(db, trimmedName);
-  const timestamp = formatDetailedTimestamp(Date.now());
-  const tagId = `tag-${Math.random().toString(36).slice(2, 10)}`;
-  const orderIndex = findNextTagOrderIndex(db, input.groupId, input.isPinned);
-  db.run(
-    `INSERT INTO tags (
-      id, name, normalized_name, group_id, order_index, is_pinned, usage_count, created_at, updated_at
-    ) VALUES (
-      $id, $name, $normalizedName, $groupId, $orderIndex, $isPinned, 0, $createdAt, $updatedAt
-    )`,
-    {
-      $id: tagId,
-      $name: trimmedName,
-      $normalizedName: normalizeTagName(trimmedName),
-      $groupId: input.groupId,
-      $orderIndex: orderIndex,
-      $isPinned: input.isPinned ? 1 : 0,
-      $createdAt: timestamp,
-      $updatedAt: timestamp,
-    },
-  );
-  setManagedTagScopes(db, tagId, input.libraryIds);
-  return tagId;
-}
-
-function updateManagedTagRecord(
-  db: SqlDatabase,
-  id: string,
-  input: {
-    name: string;
-    groupId: string;
-    isPinned: boolean;
-    libraryIds: string[];
-  },
-) {
-  const current = querySingle<ManagedTagRow>(
-    db,
-    'SELECT * FROM tags WHERE id = $id',
-    { $id: id },
-  );
-  if (!current) {
-    throw new Error('未找到标签');
-  }
-  const trimmedName = input.name.trim();
-  if (!trimmedName) {
-    throw new Error('请输入标签名称');
-  }
-  assertManagedTagUniqueName(db, trimmedName, id);
-  const group = querySingle<{ id: string }>(
-    db,
-    'SELECT id FROM tag_groups WHERE id = $id',
-    { $id: input.groupId },
-  );
-  if (!group) {
-    throw new Error('请选择所属分组');
-  }
-
-  const nextOrderIndex =
-    current.group_id !== input.groupId || Boolean(current.is_pinned) !== input.isPinned
-      ? findNextTagOrderIndex(db, input.groupId, input.isPinned, id)
-      : current.order_index;
-
-  db.run(
-    `UPDATE tags
-     SET name = $name,
-         normalized_name = $normalizedName,
-         group_id = $groupId,
-         order_index = $orderIndex,
-         is_pinned = $isPinned,
-         updated_at = $updatedAt
-     WHERE id = $id`,
-    {
-      $id: id,
-      $name: trimmedName,
-      $normalizedName: normalizeTagName(trimmedName),
-      $groupId: input.groupId,
-      $orderIndex: nextOrderIndex,
-      $isPinned: input.isPinned ? 1 : 0,
-      $updatedAt: formatDetailedTimestamp(Date.now()),
-    },
-  );
-  setManagedTagScopes(db, id, input.libraryIds);
-}
-
-function assertManagedTagUniqueName(db: SqlDatabase, name: string, currentId?: string) {
-  const normalizedName = normalizeTagName(name);
-  const duplicate = querySingle<{ id: string }>(
-    db,
-    currentId
-      ? 'SELECT id FROM tags WHERE normalized_name = $normalizedName AND id != $id'
-      : 'SELECT id FROM tags WHERE normalized_name = $normalizedName',
-    currentId ? { $normalizedName: normalizedName, $id: currentId } : { $normalizedName: normalizedName },
-  );
-  if (duplicate) {
-    throw new Error('标签名称已存在');
-  }
-}
-
-function setManagedTagScopes(db: SqlDatabase, tagId: string, libraryIds: string[]) {
-  const uniqueLibraryIds = Array.from(new Set(libraryIds));
-  db.run('DELETE FROM tag_library_scopes WHERE tag_id = $tagId', { $tagId: tagId });
-  uniqueLibraryIds.forEach((libraryId) => {
-    db.run(
-      'INSERT OR IGNORE INTO tag_library_scopes (tag_id, library_id) VALUES ($tagId, $libraryId)',
-      { $tagId: tagId, $libraryId: libraryId },
-    );
-  });
-}
-
-function findNextTagOrderIndex(db: SqlDatabase, groupId: string, isPinned: boolean, excludingId?: string) {
-  const maxOrder = querySingle<{ max_order: number | null }>(
-    db,
-    excludingId
-      ? `SELECT MAX(order_index) AS max_order
-         FROM tags
-         WHERE group_id = $groupId AND is_pinned = $isPinned AND id != $id`
-      : `SELECT MAX(order_index) AS max_order
-         FROM tags
-         WHERE group_id = $groupId AND is_pinned = $isPinned`,
-    excludingId
-      ? { $groupId: groupId, $isPinned: isPinned ? 1 : 0, $id: excludingId }
-      : { $groupId: groupId, $isPinned: isPinned ? 1 : 0 },
-  )?.max_order;
-  return (maxOrder ?? -1) + 1;
-}
-
-function moveOrderedRecord(
-  db: SqlDatabase,
-  tableName: 'tag_groups' | 'tags',
-  id: string,
-  direction: 'up' | 'down',
-  filters: Record<string, string | number>,
-) {
-  const whereParts = Object.keys(filters).map((key) => `${key} = $${key}`);
-  const params: Record<string, string | number> = { $id: id };
-  Object.entries(filters).forEach(([key, value]) => {
-    params[`$${key}`] = value;
-  });
-  const whereClause = whereParts.length > 0 ? `WHERE ${whereParts.join(' AND ')}` : '';
-  const rows = queryAll<{ id: string; order_index: number }>(
-    db,
-    `SELECT id, order_index FROM ${tableName} ${whereClause} ORDER BY order_index ASC`,
-    params,
-  );
-  const index = rows.findIndex((row) => row.id === id);
-  if (index === -1) {
-    throw new Error(tableName === 'tag_groups' ? '未找到分组' : '未找到标签');
-  }
-  const targetIndex = direction === 'up' ? index - 1 : index + 1;
-  if (targetIndex < 0 || targetIndex >= rows.length) {
-    return;
-  }
-  const current = rows[index];
-  const adjacent = rows[targetIndex];
-  db.run(`UPDATE ${tableName} SET order_index = $orderIndex WHERE id = $id`, {
-    $id: current.id,
-    $orderIndex: adjacent.order_index,
-  });
-  db.run(`UPDATE ${tableName} SET order_index = $orderIndex WHERE id = $id`, {
-    $id: adjacent.id,
-    $orderIndex: current.order_index,
-  });
-}
-
-function mergeManagedTags(db: SqlDatabase, sourceId: string, targetId: string) {
-  if (sourceId === targetId) {
-    throw new Error('请选择不同的目标标签');
-  }
-  const source = querySingle<ManagedTagRow>(db, 'SELECT * FROM tags WHERE id = $id', { $id: sourceId });
-  const target = querySingle<ManagedTagRow>(db, 'SELECT * FROM tags WHERE id = $id', { $id: targetId });
-  if (!source || !target) {
-    throw new Error('未找到要合并的标签');
-  }
-
-  const sourceScopes = queryAll<TagLibraryScopeRow>(
-    db,
-    'SELECT tag_id, library_id FROM tag_library_scopes WHERE tag_id = $tagId',
-    { $tagId: sourceId },
-  );
-  sourceScopes.forEach((scope) => {
-    db.run(
-      'INSERT OR IGNORE INTO tag_library_scopes (tag_id, library_id) VALUES ($tagId, $libraryId)',
-      { $tagId: targetId, $libraryId: scope.library_id },
-    );
-  });
-
-  const sourceLinks = queryAll<EntryTagLinkRow>(
-    db,
-    'SELECT entry_id, tag_id, order_index, created_at FROM entry_tag_links WHERE tag_id = $tagId',
-    { $tagId: sourceId },
-  );
-  sourceLinks.forEach((link) => {
-    db.run(
-      `INSERT OR IGNORE INTO entry_tag_links (entry_id, tag_id, order_index, created_at)
-       VALUES ($entryId, $tagId, $orderIndex, $createdAt)`,
-      {
-        $entryId: link.entry_id,
-        $tagId: targetId,
-        $orderIndex: link.order_index,
-        $createdAt: link.created_at,
-      },
-    );
-  });
-
-  db.run('DELETE FROM entry_tag_links WHERE tag_id = $tagId', { $tagId: sourceId });
-  db.run('DELETE FROM tag_library_scopes WHERE tag_id = $tagId', { $tagId: sourceId });
-  db.run('DELETE FROM tags WHERE id = $id', { $id: sourceId });
-
-  if (source.is_pinned && !target.is_pinned) {
-    db.run(
-      `UPDATE tags
-       SET is_pinned = 1, updated_at = $updatedAt
-       WHERE id = $id`,
-      {
-        $id: targetId,
-        $updatedAt: formatDetailedTimestamp(Date.now()),
-      },
-    );
-  }
-}
-
-function deleteManagedTagRecord(db: SqlDatabase, id: string) {
-  db.run('DELETE FROM entry_tag_links WHERE tag_id = $tagId', { $tagId: id });
-  db.run('DELETE FROM tag_library_scopes WHERE tag_id = $tagId', { $tagId: id });
-  db.run('DELETE FROM tags WHERE id = $id', { $id: id });
-}
-
-function replaceEntryTagsByNamesInDatabase(
-  db: SqlDatabase,
-  entryId: string,
-  names: string[],
-  options: { allowCreate: boolean },
-) {
-  const entry = querySingle<{ library_id: string }>(
-    db,
-    'SELECT library_id FROM entries WHERE id = $id',
-    { $id: entryId },
-  );
-  if (!entry) {
-    throw new Error('未找到资产');
-  }
-
-  const currentLinkedTagIds = new Set(
-    queryAll<{ tag_id: string }>(
-      db,
-      'SELECT tag_id FROM entry_tag_links WHERE entry_id = $entryId',
-      { $entryId: entryId },
-    ).map((row) => row.tag_id),
-  );
+function replaceEntryDisplayTagsInDatabase(db: SqlDatabase, entryId: string, names: string[]) {
   const uniqueNames = Array.from(new Set(names.map((name) => name.trim()).filter(Boolean)));
-  const resolvedTagIds = uniqueNames.map((name) => {
-    const normalizedName = normalizeTagName(name);
-    const existingTag = querySingle<ManagedTagRow>(
-      db,
-      'SELECT * FROM tags WHERE normalized_name = $normalizedName',
-      { $normalizedName: normalizedName },
-    );
-    if (existingTag) {
-      const inScope = querySingle<{ total: number }>(
-        db,
-        `SELECT COUNT(*) AS total
-         FROM tag_library_scopes
-         WHERE tag_id = $tagId AND library_id = $libraryId`,
-        { $tagId: existingTag.id, $libraryId: entry.library_id },
-      )?.total;
-      if (inScope || currentLinkedTagIds.has(existingTag.id)) {
-        return existingTag.id;
-      }
-      throw new Error('标签已存在，但当前资产库不可用，请先在标签管理中调整作用范围');
-    }
-    if (!options.allowCreate) {
-      throw new Error('存在未收录的标签，无法直接保存');
-    }
-    return createManagedTagRecord(db, {
-      name,
-      groupId: UNGROUPED_TAG_GROUP_ID,
-      isPinned: false,
-      libraryIds: [entry.library_id],
-    });
-  });
-
-  db.run('DELETE FROM entry_tag_links WHERE entry_id = $entryId', { $entryId: entryId });
-  resolvedTagIds.forEach((tagId, index) => {
+  db.run("DELETE FROM entry_tags WHERE entry_id = $entryId AND kind = 'tag'", { $entryId: entryId });
+  uniqueNames.forEach((name, index) => {
     db.run(
-      `INSERT INTO entry_tag_links (entry_id, tag_id, order_index, created_at)
-       VALUES ($entryId, $tagId, $orderIndex, $createdAt)`,
+      `INSERT INTO entry_tags (entry_id, order_index, tag, kind)
+       VALUES ($entryId, $orderIndex, $tag, 'tag')`,
       {
         $entryId: entryId,
-        $tagId: tagId,
         $orderIndex: index,
-        $createdAt: formatDetailedTimestamp(Date.now()),
+        $tag: name,
       },
     );
   });
-}
-
-function recomputeAllTagUsageCounts(db: SqlDatabase) {
-  db.run('UPDATE tags SET usage_count = 0');
-  const counts = queryAll<{ tag_id: string; total: number }>(
-    db,
-    'SELECT tag_id, COUNT(*) AS total FROM entry_tag_links GROUP BY tag_id',
-    {},
-  );
-  counts.forEach((row) => {
-    db.run(
-      'UPDATE tags SET usage_count = $usageCount WHERE id = $id',
-      { $id: row.tag_id, $usageCount: Number(row.total) },
-    );
-  });
-}
-
-function buildTagManagementSnapshot(db: SqlDatabase, searchText = ''): TagManagementSnapshot {
-  const keyword = searchText.trim().toLocaleLowerCase('zh-CN');
-  const libraries = queryAll<{ id: string; name: string }>(db, 'SELECT id, name FROM libraries ORDER BY name ASC', {});
-  const groups = queryAll<TagGroupRow>(
-    db,
-    'SELECT id, name, order_index, created_at, updated_at FROM tag_groups ORDER BY order_index ASC',
-    {},
-  );
-  const tags = queryAll<ManagedTagRow>(
-    db,
-    `SELECT id, name, normalized_name, group_id, order_index, is_pinned, usage_count, created_at, updated_at
-     FROM tags
-     ORDER BY is_pinned DESC, order_index ASC, name ASC`,
-    {},
-  );
-  const scopes = queryAll<TagLibraryScopeRow>(
-    db,
-    'SELECT tag_id, library_id FROM tag_library_scopes ORDER BY tag_id ASC, library_id ASC',
-    {},
-  );
-  const linkLibraries = queryAll<{ tag_id: string; library_id: string; total: number }>(
-    db,
-    `SELECT entry_tag_links.tag_id, entries.library_id, COUNT(*) AS total
-     FROM entry_tag_links
-     JOIN entries ON entries.id = entry_tag_links.entry_id
-     GROUP BY entry_tag_links.tag_id, entries.library_id`,
-    {},
-  );
-
-  const scopeMap = groupBy(scopes, (row) => row.tag_id);
-  const linkLibraryMap = groupBy(linkLibraries, (row) => row.tag_id);
-  const groupNameMap = new Map(groups.map((group) => [group.id, group.name]));
-
-  const managedTags = tags
-    .map<ManagedTag>((tag) => {
-      const tagScopes = (scopeMap.get(tag.id) ?? []).map((row) => row.library_id);
-      const linkedLibraries = (linkLibraryMap.get(tag.id) ?? []).map((row) => row.library_id);
-      const outOfScopeUsageCount = (linkLibraryMap.get(tag.id) ?? [])
-        .filter((row) => !tagScopes.includes(row.library_id))
-        .reduce((sum, row) => sum + Number(row.total), 0);
-      return {
-        id: tag.id,
-        name: tag.name,
-        normalizedName: tag.normalized_name,
-        groupId: tag.group_id,
-        groupName: groupNameMap.get(tag.group_id) ?? '未分组',
-        orderIndex: tag.order_index,
-        isPinned: Boolean(tag.is_pinned),
-        usageCount: Number(tag.usage_count),
-        libraryIds: tagScopes,
-        linkedLibraryIds: linkedLibraries,
-        outOfScopeUsageCount,
-        createdAt: tag.created_at,
-        updatedAt: tag.updated_at,
-      };
-    })
-    .filter((tag) => (keyword ? tag.name.toLocaleLowerCase('zh-CN').includes(keyword) : true))
-    .sort((left, right) => {
-      if (left.groupId !== right.groupId) {
-        const leftGroupOrder = groups.find((group) => group.id === left.groupId)?.order_index ?? 999;
-        const rightGroupOrder = groups.find((group) => group.id === right.groupId)?.order_index ?? 999;
-        return leftGroupOrder - rightGroupOrder;
-      }
-      if (left.isPinned !== right.isPinned) {
-        return left.isPinned ? -1 : 1;
-      }
-      if (left.orderIndex !== right.orderIndex) {
-        return left.orderIndex - right.orderIndex;
-      }
-      return fileNameCollator.compare(left.name, right.name);
-    });
-
-  const groupSummaries = groups.map<ManagedTagGroup>((group) => {
-    const groupTags = managedTags.filter((tag) => tag.groupId === group.id);
-    return {
-      id: group.id,
-      name: group.name,
-      orderIndex: group.order_index,
-      tagCount: groupTags.length,
-      usedTagCount: groupTags.filter((tag) => tag.usageCount > 0).length,
-    };
-  });
-
-  const allTags = tags.map((tag) => ({
-    groupId: tag.group_id,
-    usageCount: Number(tag.usage_count),
-    scopeCount: (scopeMap.get(tag.id) ?? []).length,
-  }));
-
-  return {
-    overview: {
-      totalTags: tags.length,
-      usedTagCount: allTags.filter((tag) => tag.usageCount > 0).length,
-      ungroupedTagCount: allTags.filter((tag) => tag.groupId === UNGROUPED_TAG_GROUP_ID).length,
-      crossLibraryTagCount: allTags.filter((tag) => tag.scopeCount > 1).length,
-    },
-    groups: groupSummaries,
-    tags: managedTags,
-    libraries,
-  };
-}
-
-function loadScopedTagSuggestions(db: SqlDatabase, searchText: string, libraryId?: string): FileCenterTagSuggestion[] {
-  const snapshot = buildTagManagementSnapshot(db, searchText);
-  return snapshot.tags
-    .filter((tag) => (libraryId ? tag.libraryIds.includes(libraryId) : true))
-    .sort((left, right) => {
-      if (left.isPinned !== right.isPinned) {
-        return left.isPinned ? -1 : 1;
-      }
-      if (left.usageCount !== right.usageCount) {
-        return right.usageCount - left.usageCount;
-      }
-      return fileNameCollator.compare(left.name, right.name);
-    })
-    .map((tag) => ({
-      id: tag.id,
-      name: tag.name,
-      count: tag.usageCount,
-      groupName: tag.groupName,
-      isPinned: tag.isPinned,
-      libraryIds: tag.libraryIds,
-    }));
 }
 
 function syncLifecycleMetadata(db: SqlDatabase, ids: string[], lifecycleState: AssetLifecycleState) {

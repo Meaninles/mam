@@ -15,6 +15,7 @@ import (
 	"mare/services/center/internal/logging"
 	"mare/services/center/internal/runtime"
 	"mare/services/center/internal/storage"
+	"mare/services/center/internal/tags"
 )
 
 type ServerApplication struct {
@@ -47,6 +48,7 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 
 	agentService := agentregistry.NewService(pool)
 	assetService := assets.NewService(pool)
+	tagService := tags.NewService(pool)
 	localFolderService := storage.NewLocalFolderService(pool)
 	localFolderService.SetAssetService(assetService)
 	nasNodeService := storage.NewNASNodeService(pool)
@@ -70,6 +72,7 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 		CloudNodes:   cloudNodeService,
 		LocalFolders: localFolderService,
 		Assets:       assetService,
+		Tags:         tagService,
 	})
 
 	return &ServerApplication{

@@ -13,6 +13,7 @@ import (
 	"mare/services/center/internal/runtime"
 	assetdto "mare/shared/contracts/dto/asset"
 	storagedto "mare/shared/contracts/dto/storage"
+	tagdto "mare/shared/contracts/dto/tag"
 )
 
 type fakeRuntimeService struct {
@@ -42,6 +43,7 @@ type fakeLocalFolderService struct{}
 type fakeLocalNodeService struct{}
 type fakeNASNodeService struct{}
 type fakeAssetService struct{}
+type fakeTagService struct{}
 
 func (fakeAgentService) Register(_ context.Context, registration agentregistry.Registration) (agentregistry.Agent, error) {
 	return agentregistry.Agent{
@@ -372,6 +374,100 @@ func (fakeAssetService) ScanDirectory(context.Context, string, assetdto.ScanDire
 	return assetdto.ScanDirectoryResponse{Message: "当前目录扫描已完成"}, nil
 }
 
+func (fakeTagService) LoadManagementSnapshot(context.Context, string) (tagdto.ManagementSnapshot, error) {
+	return tagdto.ManagementSnapshot{
+		Overview: tagdto.ManagementOverview{
+			TotalTags:            2,
+			UsedTagCount:         1,
+			UngroupedTagCount:    1,
+			CrossLibraryTagCount: 0,
+		},
+		Groups: []tagdto.GroupRecord{
+			{
+				ID:           "tag-group-ungrouped",
+				Name:         "未分组",
+				OrderIndex:   0,
+				TagCount:     2,
+				UsedTagCount: 1,
+			},
+		},
+		Tags: []tagdto.Record{
+			{
+				ID:             "tag-1",
+				Name:           "直播切片",
+				NormalizedName: "直播切片",
+				GroupID:        "tag-group-ungrouped",
+				GroupName:      "未分组",
+				OrderIndex:     0,
+				IsPinned:       true,
+				UsageCount:     1,
+				LibraryIDs:     []string{"photo"},
+				LinkedLibraryIDs: []string{"photo"},
+				CreatedAt:      "2026-04-11 10:00",
+				UpdatedAt:      "2026-04-11 10:00",
+			},
+		},
+		Libraries: []tagdto.LibraryRecord{
+			{ID: "photo", Name: "商业摄影资产库"},
+		},
+	}, nil
+}
+
+func (fakeTagService) ListSuggestions(_ context.Context, _ string, libraryID *string) ([]tagdto.Suggestion, error) {
+	libraryIDs := []string{}
+	if libraryID != nil {
+		libraryIDs = append(libraryIDs, *libraryID)
+	}
+	return []tagdto.Suggestion{
+		{
+			ID:         "tag-1",
+			Name:       "直播切片",
+			Count:      3,
+			GroupName:  "未分组",
+			IsPinned:   true,
+			LibraryIDs: libraryIDs,
+		},
+	}, nil
+}
+
+func (fakeTagService) CreateGroup(_ context.Context, request tagdto.CreateGroupRequest) (tagdto.CreateGroupResponse, error) {
+	return tagdto.CreateGroupResponse{Message: "分组已创建", GroupID: "tag-group-new"}, nil
+}
+
+func (fakeTagService) UpdateGroup(_ context.Context, _ string, request tagdto.UpdateGroupRequest) (tagdto.MutationResponse, error) {
+	_ = request
+	return tagdto.MutationResponse{Message: "分组已更新"}, nil
+}
+
+func (fakeTagService) MoveGroup(_ context.Context, _ string, request tagdto.MoveRequest) (tagdto.MutationResponse, error) {
+	_ = request
+	return tagdto.MutationResponse{Message: "分组顺序已更新"}, nil
+}
+
+func (fakeTagService) CreateTag(_ context.Context, request tagdto.CreateTagRequest) (tagdto.CreateTagResponse, error) {
+	_ = request
+	return tagdto.CreateTagResponse{Message: "标签已创建", TagID: "tag-new"}, nil
+}
+
+func (fakeTagService) UpdateTag(_ context.Context, _ string, request tagdto.UpdateTagRequest) (tagdto.MutationResponse, error) {
+	_ = request
+	return tagdto.MutationResponse{Message: "标签已更新"}, nil
+}
+
+func (fakeTagService) MoveTag(_ context.Context, _ string, request tagdto.MoveRequest) (tagdto.MutationResponse, error) {
+	_ = request
+	return tagdto.MutationResponse{Message: "标签顺序已更新"}, nil
+}
+
+func (fakeTagService) MergeTag(_ context.Context, _ string, request tagdto.MergeTagRequest) (tagdto.MutationResponse, error) {
+	_ = request
+	return tagdto.MutationResponse{Message: "标签已合并"}, nil
+}
+
+func (fakeTagService) DeleteTag(context.Context, string) (tagdto.MutationResponse, error) {
+	return tagdto.MutationResponse{Message: "标签已删除"}, nil
+}
+
 func TestHealthzReturnsSuccessEnvelope(t *testing.T) {
 	t.Parallel()
 
@@ -536,6 +632,114 @@ func TestRuntimeStatusRouteReturnsAggregatedState(t *testing.T) {
 	})
 
 	request := httptest.NewRequest(http.MethodGet, "/api/runtime/status", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+}
+
+func TestTagManagementRouteReturnsSnapshot(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(Dependencies{
+		Runtime:      fakeRuntimeService{},
+		Agents:       fakeAgentService{},
+		LocalFolders: fakeLocalFolderService{},
+		Assets:       fakeAssetService{},
+		Tags:         fakeTagService{},
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/api/tags/management?searchText=%E7%9B%B4%E6%92%AD", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte(`"totalTags":2`)) {
+		t.Fatalf("expected snapshot payload, got %s", recorder.Body.String())
+	}
+}
+
+func TestTagSuggestionRouteReturnsSuggestions(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(Dependencies{
+		Runtime:      fakeRuntimeService{},
+		Agents:       fakeAgentService{},
+		LocalFolders: fakeLocalFolderService{},
+		Assets:       fakeAssetService{},
+		Tags:         fakeTagService{},
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/api/tags/suggestions?libraryId=photo", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte(`"name":"直播切片"`)) {
+		t.Fatalf("expected suggestion payload, got %s", recorder.Body.String())
+	}
+}
+
+func TestCreateTagRouteAcceptsValidPayload(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(Dependencies{
+		Runtime:      fakeRuntimeService{},
+		Agents:       fakeAgentService{},
+		LocalFolders: fakeLocalFolderService{},
+		Assets:       fakeAssetService{},
+		Tags:         fakeTagService{},
+	})
+
+	body, err := json.Marshal(tagdto.CreateTagRequest{
+		Name:       "直播切片",
+		GroupID:    "tag-group-ungrouped",
+		LibraryIDs: []string{"photo"},
+		IsPinned:   true,
+	})
+	if err != nil {
+		t.Fatalf("marshal tag payload: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/tags", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte(`"tagId":"tag-new"`)) {
+		t.Fatalf("expected tag create response, got %s", recorder.Body.String())
+	}
+}
+
+func TestUpdateAnnotationsRouteAcceptsTagsPayload(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(Dependencies{
+		Runtime:      fakeRuntimeService{},
+		Agents:       fakeAgentService{},
+		LocalFolders: fakeLocalFolderService{},
+		Assets:       fakeAssetService{},
+		Tags:         fakeTagService{},
+	})
+
+	body, err := json.Marshal(assetdto.UpdateAnnotationsRequest{
+		Rating:     4,
+		ColorLabel: "蓝标",
+		Tags:       []string{"直播切片", "客户精选"},
+	})
+	if err != nil {
+		t.Fatalf("marshal annotations payload: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPatch, "/api/file-entries/asset-1/annotations", bytes.NewReader(body))
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
 

@@ -125,8 +125,9 @@ type UploadSelectionResponse struct {
 }
 
 type UpdateAnnotationsRequest struct {
-	Rating     int    `json:"rating"`
-	ColorLabel string `json:"colorLabel"`
+	Rating     int      `json:"rating"`
+	ColorLabel string   `json:"colorLabel"`
+	Tags       []string `json:"tags"`
 }
 
 type UpdateAnnotationsResponse struct {

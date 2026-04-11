@@ -417,6 +417,11 @@ func (s *Service) buildDirectoryEntry(ctx context.Context, library libraryModel,
 		}
 	}
 
+	tags, err := s.loadDirectoryTags(ctx, directory.ID)
+	if err != nil {
+		return assetdto.EntryRecord{}, err
+	}
+
 	return assetdto.EntryRecord{
 		ID:             directory.ID,
 		LibraryID:      library.ID,
@@ -438,7 +443,7 @@ func (s *Service) buildDirectoryEntry(ctx context.Context, library libraryModel,
 		ColorLabel:     "无",
 		Badges:         []string{},
 		RiskTags:       []string{},
-		Tags:           []string{},
+		Tags:           tags,
 		Endpoints:      endpoints,
 		Metadata:       metadata,
 	}, nil
@@ -464,6 +469,10 @@ func (s *Service) buildAssetEntry(ctx context.Context, library libraryModel, ass
 	}
 
 	parentID := asset.DirectoryID
+	tags, err := s.loadAssetTags(ctx, asset.ID)
+	if err != nil {
+		return assetdto.EntryRecord{}, err
+	}
 	return assetdto.EntryRecord{
 		ID:             asset.ID,
 		LibraryID:      asset.LibraryID,
@@ -485,7 +494,7 @@ func (s *Service) buildAssetEntry(ctx context.Context, library libraryModel, ass
 		ColorLabel:     mapColorLabel(asset.ColorLabel),
 		Badges:         []string{},
 		RiskTags:       []string{},
-		Tags:           []string{},
+		Tags:           tags,
 		Endpoints:      endpoints,
 		Metadata:       metadata,
 	}, nil
@@ -825,7 +834,8 @@ func filterEntries(items []assetdto.EntryRecord, query assetdto.BrowseQuery) []a
 		if keyword := strings.ToLower(strings.TrimSpace(query.SearchText)); keyword != "" {
 			if !strings.Contains(strings.ToLower(item.Name), keyword) &&
 				!strings.Contains(strings.ToLower(item.Path), keyword) &&
-				!strings.Contains(strings.ToLower(item.SourceLabel), keyword) {
+				!strings.Contains(strings.ToLower(item.SourceLabel), keyword) &&
+				!entryContainsTag(item.Tags, keyword) {
 				continue
 			}
 		}
@@ -835,6 +845,15 @@ func filterEntries(items []assetdto.EntryRecord, query assetdto.BrowseQuery) []a
 		filtered = append(filtered, item)
 	}
 	return filtered
+}
+
+func entryContainsTag(tags []string, keyword string) bool {
+	for _, tag := range tags {
+		if strings.Contains(strings.ToLower(tag), keyword) {
+			return true
+		}
+	}
+	return false
 }
 
 func matchesStatus(item assetdto.EntryRecord, statusFilter string, partialSyncEndpointNames []string) bool {

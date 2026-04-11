@@ -70,6 +70,7 @@ describe('FileCenterPage', () => {
         onNavigateBreadcrumb={vi.fn()}
         onOpenItem={vi.fn()}
         onOpenBatchAnnotationEditor={vi.fn()}
+        onOpenBatchTagEditor={vi.fn()}
         onOpenItemDetail={vi.fn()}
         onOpenTagEditor={vi.fn()}
         onRefreshIndex={vi.fn()}
@@ -138,6 +139,7 @@ describe('FileCenterPage', () => {
         onNavigateBreadcrumb={vi.fn()}
         onOpenItem={vi.fn()}
         onOpenBatchAnnotationEditor={vi.fn()}
+        onOpenBatchTagEditor={vi.fn()}
         onOpenItemDetail={vi.fn()}
         onOpenTagEditor={vi.fn()}
         onRefreshIndex={vi.fn()}
@@ -219,6 +221,7 @@ describe('FileCenterPage', () => {
         onNavigateBreadcrumb={vi.fn()}
         onOpenItem={vi.fn()}
         onOpenBatchAnnotationEditor={vi.fn()}
+        onOpenBatchTagEditor={vi.fn()}
         onOpenItemDetail={vi.fn()}
         onOpenTagEditor={vi.fn()}
         onRefreshIndex={vi.fn()}
@@ -288,6 +291,7 @@ describe('FileCenterPage', () => {
         onNavigateBreadcrumb={vi.fn()}
         onOpenItem={vi.fn()}
         onOpenBatchAnnotationEditor={vi.fn()}
+        onOpenBatchTagEditor={vi.fn()}
         onOpenItemDetail={vi.fn()}
         onOpenTagEditor={vi.fn()}
         onRefreshIndex={vi.fn()}
@@ -365,6 +369,7 @@ describe('FileCenterPage', () => {
         onNavigateBreadcrumb={vi.fn()}
         onOpenItem={vi.fn()}
         onOpenBatchAnnotationEditor={vi.fn()}
+        onOpenBatchTagEditor={vi.fn()}
         onOpenItemDetail={vi.fn()}
         onOpenTagEditor={vi.fn()}
         onRefreshIndex={vi.fn()}
@@ -410,5 +415,75 @@ describe('FileCenterPage', () => {
       configurable: true,
       value: originalInnerHeight,
     });
+  });
+
+  it('选中条目后显示批量标签按钮并触发回调', async () => {
+    const user = userEvent.setup();
+    const onOpenBatchTagEditor = vi.fn();
+
+    render(
+      <FileCenterPage
+        breadcrumbs={[{ id: null, label: '商业摄影资产库' }]}
+        batchDeleteEndpointActions={[]}
+        batchSyncEndpointActions={[]}
+        canGoBack={false}
+        canGoForward={false}
+        currentEntries={[sampleEntry]}
+        currentPage={1}
+        currentPathChildren={1}
+        fileTypeFilter="全部"
+        loading={false}
+        pageCount={1}
+        pageSize={10}
+        partialSyncEndpointNames={[]}
+        refreshing={false}
+        searchText=""
+        selectedIds={['photo-file-raw-002']}
+        sortDirection="desc"
+        sortValue="修改时间"
+        statusFilterEndpointNames={['本地NVMe', '影像NAS', '115']}
+        statusFilter="全部"
+        theme="light"
+        total={1}
+        onChangeSort={vi.fn()}
+        onClearSelection={vi.fn()}
+        onCreateFolder={vi.fn()}
+        onDeleteAssetDirect={vi.fn()}
+        onDeleteSelected={vi.fn()}
+        onGoBack={vi.fn()}
+        onGoForward={vi.fn()}
+        onNavigateBreadcrumb={vi.fn()}
+        onOpenItem={vi.fn()}
+        onOpenBatchAnnotationEditor={vi.fn()}
+        onOpenBatchTagEditor={onOpenBatchTagEditor}
+        onOpenItemDetail={vi.fn()}
+        onOpenTagEditor={vi.fn()}
+        onRefreshIndex={vi.fn()}
+        onUploadFiles={vi.fn()}
+        onUploadFolder={vi.fn()}
+        onRequestBatchDeleteEndpoint={vi.fn()}
+        onRequestBatchSyncEndpoint={vi.fn()}
+        onRequestDeleteEndpoint={vi.fn()}
+        onRequestSyncEndpoint={vi.fn()}
+        onSetCurrentPage={vi.fn()}
+        onSetFileTypeFilter={vi.fn()}
+        onSetPageSize={vi.fn()}
+        onSetSearchText={vi.fn()}
+        onSetStatusFilter={vi.fn()}
+        onClearPartialSyncEndpoints={vi.fn()}
+        onTogglePartialSyncEndpoint={vi.fn()}
+        onToggleSortDirection={vi.fn()}
+        onToggleSelect={vi.fn()}
+        onToggleSelectVisible={vi.fn()}
+      />,
+    );
+
+    const toolbar = screen.getByText('已选择 1 项').closest('.selection-toolbar') as HTMLElement;
+    const buttons = within(toolbar).getAllByRole('button');
+    expect(buttons[0]).toHaveTextContent('批量标记');
+    expect(buttons[1]).toHaveTextContent('批量标签');
+
+    await user.click(within(toolbar).getByRole('button', { name: '批量标签' }));
+    expect(onOpenBatchTagEditor).toHaveBeenCalledTimes(1);
   });
 });

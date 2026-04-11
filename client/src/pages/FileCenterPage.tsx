@@ -102,6 +102,7 @@ export function FileCenterPage(props: {
   onNavigateBreadcrumb: (index: number) => void;
   onOpenItem: (item: FileCenterEntry) => void;
   onOpenBatchAnnotationEditor: () => void;
+  onOpenBatchTagEditor: () => void;
   onOpenItemDetail: (item: FileCenterEntry) => void;
   onOpenTagEditor: (item: FileCenterEntry) => void;
   onRefreshIndex: () => void;
@@ -155,6 +156,7 @@ export function FileCenterPage(props: {
     onNavigateBreadcrumb,
     onOpenItem,
     onOpenBatchAnnotationEditor,
+    onOpenBatchTagEditor,
     onOpenItemDetail,
     onOpenTagEditor,
     onRefreshIndex,
@@ -435,6 +437,9 @@ export function FileCenterPage(props: {
           <div className="toolbar-group wrap">
             <ActionButton ariaLabel="批量标记" onClick={onOpenBatchAnnotationEditor}>
               批量标记
+            </ActionButton>
+            <ActionButton ariaLabel="批量标签" onClick={onOpenBatchTagEditor}>
+              批量标签
             </ActionButton>
             <div className="selection-action-anchor">
               <button

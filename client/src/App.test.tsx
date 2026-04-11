@@ -787,6 +787,53 @@ describe('MARE 客户端', () => {
     const editor = await screen.findByRole('dialog', { name: '标签编辑' });
     expect(within(editor).getByRole('button', { name: '直播切片 0 次使用' })).toBeInTheDocument();
   });
+
+  it('支持在文件中心为文件设置已有标签并新增标签', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(fileCenterApi, 'loadTagSuggestions').mockResolvedValue([]);
+    render(<App />);
+
+    await user.dblClick(await screen.findByText('拍摄原片'));
+    const row = (await screen.findByText('2026-03-29_上海发布会_A-cam_001.RAW')).closest('tr');
+    expect(row).not.toBeNull();
+
+    await user.click(within(row!).getByRole('button', { name: '更多操作 2026-03-29_上海发布会_A-cam_001.RAW' }));
+    await user.click(screen.getByRole('button', { name: '标签' }));
+
+    const editor = await screen.findByRole('dialog', { name: '标签编辑' });
+    await user.type(within(editor).getByLabelText('标签搜索'), '直播切片');
+    await user.click(within(editor).getByRole('button', { name: '新增标签' }));
+    await user.click(within(editor).getByRole('button', { name: '保存标签' }));
+
+    expect(await screen.findByText('资产标记已更新')).toBeInTheDocument();
+    await waitFor(() => expect(within(row!).getByText('直播切片')).toBeInTheDocument());
+    expect(within(row!).getByText('发布会')).toBeInTheDocument();
+  });
+
+  it('支持在文件中心批量设置标签', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(fileCenterApi, 'loadTagSuggestions').mockResolvedValue([]);
+    render(<App />);
+
+    await user.dblClick(await screen.findByText('拍摄原片'));
+    await user.click(screen.getByLabelText('选择 2026-03-29_上海发布会_A-cam_001.RAW'));
+    await user.click(screen.getByLabelText('选择 2026-03-29_上海发布会_B-cam_018.RAW'));
+
+    await user.click(screen.getByRole('button', { name: '批量标签' }));
+    const dialog = await screen.findByRole('dialog', { name: '批量标签' });
+    await user.type(within(dialog).getByLabelText('批量标签搜索'), '批量精选');
+    await user.click(within(dialog).getByRole('button', { name: '新增标签' }));
+    await user.click(within(dialog).getByRole('button', { name: '保存标签' }));
+
+    expect(await screen.findByText('已更新 2 项条目的标签')).toBeInTheDocument();
+    const firstRow = screen.getByText('2026-03-29_上海发布会_A-cam_001.RAW').closest('tr') as HTMLElement;
+    const secondRow = screen.getByText('2026-03-29_上海发布会_B-cam_018.RAW').closest('tr') as HTMLElement;
+    await waitFor(() => expect(within(firstRow).getByText('批量精选')).toBeInTheDocument());
+    expect(within(firstRow).getByText('社媒候选')).toBeInTheDocument();
+    expect(within(secondRow).getByText('批量精选')).toBeInTheDocument();
+    expect(within(secondRow).getByText('发布会')).toBeInTheDocument();
+  });
+
   it('recalculates transfer size after cancel and shows primary path meta for single task', async () => {
     const user = userEvent.setup();
     render(<App />);

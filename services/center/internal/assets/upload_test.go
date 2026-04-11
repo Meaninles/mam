@@ -185,6 +185,11 @@ func resetUploadSchema(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
 
 	if _, err := pool.Exec(ctx, `
+		DROP TABLE IF EXISTS directory_tag_links;
+		DROP TABLE IF EXISTS asset_tag_links;
+		DROP TABLE IF EXISTS tag_library_scopes;
+		DROP TABLE IF EXISTS tags;
+		DROP TABLE IF EXISTS tag_groups;
 		DROP TABLE IF EXISTS asset_metadata;
 		DROP TABLE IF EXISTS directory_presences;
 		DROP TABLE IF EXISTS asset_replicas;

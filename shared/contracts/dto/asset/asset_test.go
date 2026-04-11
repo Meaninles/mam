@@ -100,3 +100,28 @@ func TestBrowseLibraryResponseJSONShape(t *testing.T) {
 		t.Fatalf("expected two breadcrumbs, got %#v", decoded["breadcrumbs"])
 	}
 }
+
+func TestUpdateAnnotationsRequestJSONShape(t *testing.T) {
+	t.Parallel()
+
+	payload := UpdateAnnotationsRequest{
+		Rating:     4,
+		ColorLabel: "蓝标",
+		Tags:       []string{"直播切片", "客户精选"},
+	}
+
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal update annotations request: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal update annotations request: %v", err)
+	}
+
+	tags, ok := decoded["tags"].([]any)
+	if !ok || len(tags) != 2 {
+		t.Fatalf("expected two tags, got %#v", decoded["tags"])
+	}
+}
