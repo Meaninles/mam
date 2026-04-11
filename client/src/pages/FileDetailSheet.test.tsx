@@ -26,14 +26,51 @@ const baseItem: FileCenterEntry = {
   badges: ['RAW'],
   riskTags: [],
   tags: ['发布会'],
-  endpoints: [
-    { name: '本地NVMe', state: '已同步', tone: 'success', lastSyncAt: '今天 09:18', endpointType: 'local' },
-  ],
+  endpoints: [{ name: '本地NVMe', state: '已同步', tone: 'success', lastSyncAt: '今天 09:18', endpointType: 'local' }],
   metadata: [{ label: '设备', value: 'Sony A7R V' }],
 };
 
 describe('FileDetailSheet', () => {
-  it('保存标记后会自动关闭详情页', async () => {
+  it('目录详情页不显示星级和色标编辑', () => {
+    const folderItem: FileCenterEntry = {
+      ...baseItem,
+      id: 'photo-folder-raw',
+      type: 'folder',
+      name: '拍摄原片',
+      displayType: '文件夹',
+      fileKind: '文件夹',
+      size: '12 项',
+    };
+
+    render(<FileDetailSheet item={folderItem} onClose={vi.fn()} onSaveAnnotations={vi.fn()} />);
+
+    expect(screen.queryByRole('group', { name: '资产星级' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '保存标记' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '红标' })).toBeNull();
+  });
+
+  it('可以在详情页修改星级后保存', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const onSaveAnnotations = vi.fn().mockResolvedValue(undefined);
+
+    render(<FileDetailSheet item={baseItem} onClose={onClose} onSaveAnnotations={onSaveAnnotations} />);
+
+    await user.click(screen.getByRole('button', { name: '5 星' }));
+    await user.click(screen.getByRole('button', { name: '保存标记' }));
+
+    await waitFor(() =>
+      expect(onSaveAnnotations).toHaveBeenCalledWith({
+        id: baseItem.id,
+        rating: 5,
+        colorLabel: baseItem.colorLabel,
+        tags: baseItem.tags,
+      }),
+    );
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  });
+
+  it('保存色标后会自动关闭详情页', async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
     const onSaveAnnotations = vi.fn().mockResolvedValue(undefined);

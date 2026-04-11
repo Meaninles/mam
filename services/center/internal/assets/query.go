@@ -15,8 +15,9 @@ import (
 )
 
 type Service struct {
-	pool *pgxpool.Pool
-	now  func() time.Time
+	pool             *pgxpool.Pool
+	now              func() time.Time
+	executorResolver func(nodeType string) (mountPathExecutor, error)
 }
 
 type libraryModel struct {
@@ -62,7 +63,7 @@ type mountModel struct {
 }
 
 func NewService(pool *pgxpool.Pool) *Service {
-	return &Service{pool: pool, now: time.Now}
+	return &Service{pool: pool, now: time.Now, executorResolver: executorForNodeType}
 }
 
 func (s *Service) ListLibraries(ctx context.Context) ([]assetdto.LibraryRecord, error) {
@@ -157,7 +158,7 @@ func (s *Service) BrowseLibrary(ctx context.Context, libraryID string, query ass
 
 	currentPathChildren := len(entries)
 	filtered := filterEntries(entries, query)
-	sortEntries(filtered, query.SortValue, query.SortDirection)
+	sortEntriesForBrowse(filtered, query.SortValue, query.SortDirection)
 
 	page := query.Page
 	if page <= 0 {
@@ -901,6 +902,37 @@ func sortEntries(items []assetdto.EntryRecord, sortValue string, sortDirection s
 				}
 				return left.Size < right.Size
 			}
+		}
+		if desc {
+			return left.ModifiedAt > right.ModifiedAt
+		}
+		return left.ModifiedAt < right.ModifiedAt
+	})
+}
+
+func sortEntriesForBrowse(items []assetdto.EntryRecord, sortValue string, sortDirection string) {
+	if sortValue != "星级" {
+		sortEntries(items, sortValue, sortDirection)
+		return
+	}
+
+	desc := sortDirection != "asc"
+	sort.SliceStable(items, func(i, j int) bool {
+		left := items[i]
+		right := items[j]
+
+		if left.Type != right.Type {
+			return left.Type == "folder"
+		}
+		if left.Type == "folder" {
+			return false
+		}
+
+		if left.Rating != right.Rating {
+			if desc {
+				return left.Rating > right.Rating
+			}
+			return left.Rating < right.Rating
 		}
 		if desc {
 			return left.ModifiedAt > right.ModifiedAt

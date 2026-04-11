@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fileCenterApi, resetFileCenterMock } from './fileCenterApi';
+import { __FILE_CENTER_TESTING__, fileCenterApi, resetFileCenterMock } from './fileCenterApi';
 
 vi.mock('./runtimeConfig', () => ({
   getRuntimeConfig: () => ({
@@ -83,6 +83,163 @@ describe('fileCenterApi', () => {
     expect(result.breadcrumbs[0]?.label).toBe('商业摄影资产库');
     expect(result.items[0]?.name).toBe('原片');
     expect(fileCenterApi.listLibraryEndpointNames('photo')).toEqual(['商业摄影原片库']);
+  });
+
+  it('目录项会清空星级和色标', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: {
+            breadcrumbs: [{ id: null, label: '商业摄影资产库' }],
+            items: [
+              {
+                id: 'dir-raw',
+                libraryId: 'photo',
+                parentId: null,
+                type: 'folder',
+                lifecycleState: 'ACTIVE',
+                name: '拍摄原片',
+                fileKind: '文件夹',
+                displayType: '文件夹',
+                modifiedAt: '2026-04-10 12:20',
+                createdAt: '2026-04-10 12:20',
+                size: '2 项',
+                path: '商业摄影资产库 / 拍摄原片',
+                sourceLabel: '统一目录',
+                notes: '',
+                lastTaskText: '暂无任务',
+                lastTaskTone: 'info',
+                rating: 5,
+                colorLabel: '红标',
+                badges: [],
+                riskTags: [],
+                tags: [],
+                endpoints: [],
+                metadata: [],
+              },
+            ],
+            total: 1,
+            currentPathChildren: 1,
+            endpointNames: [],
+          },
+        }),
+      }),
+    );
+
+    const result = await fileCenterApi.loadDirectory({
+      libraryId: 'photo',
+      parentId: null,
+      page: 1,
+      pageSize: 20,
+      searchText: '',
+      fileTypeFilter: '全部',
+      statusFilter: '全部',
+      sortValue: '修改时间',
+      sortDirection: 'desc',
+      partialSyncEndpointNames: [],
+    });
+
+    expect(result.items[0]?.type).toBe('folder');
+    expect(result.items[0]?.rating).toBe(0);
+    expect(result.items[0]?.colorLabel).toBe('无');
+  });
+
+  it('按星级排序时目录保持原顺序', () => {
+    const rows = [
+      {
+        id: 'dir-b',
+        library_id: 'photo',
+        parent_id: null,
+        type: 'folder',
+        lifecycle_state: 'ACTIVE',
+        name: 'B目录',
+        file_kind: '文件夹',
+        display_type: '文件夹',
+        modified_at: '2026-04-10 10:00',
+        modified_at_sort: 10,
+        created_at: '2026-04-10 10:00',
+        size_label: '0 项',
+        size_bytes: 0,
+        path: 'B',
+        source_label: '',
+        notes: '',
+        last_task_text: '',
+        last_task_tone: 'info',
+        rating: 5,
+        color_label: '红标',
+      },
+      {
+        id: 'dir-a',
+        library_id: 'photo',
+        parent_id: null,
+        type: 'folder',
+        lifecycle_state: 'ACTIVE',
+        name: 'A目录',
+        file_kind: '文件夹',
+        display_type: '文件夹',
+        modified_at: '2026-04-10 09:00',
+        modified_at_sort: 9,
+        created_at: '2026-04-10 09:00',
+        size_label: '0 项',
+        size_bytes: 0,
+        path: 'A',
+        source_label: '',
+        notes: '',
+        last_task_text: '',
+        last_task_tone: 'info',
+        rating: 1,
+        color_label: '无',
+      },
+      {
+        id: 'file-1',
+        library_id: 'photo',
+        parent_id: null,
+        type: 'file',
+        lifecycle_state: 'ACTIVE',
+        name: 'one.jpg',
+        file_kind: '图片',
+        display_type: 'JPG 图片',
+        modified_at: '2026-04-10 09:00',
+        modified_at_sort: 9,
+        created_at: '2026-04-10 09:00',
+        size_label: '1 KB',
+        size_bytes: 1,
+        path: 'one.jpg',
+        source_label: '',
+        notes: '',
+        last_task_text: '',
+        last_task_tone: 'info',
+        rating: 1,
+        color_label: '无',
+      },
+      {
+        id: 'file-2',
+        library_id: 'photo',
+        parent_id: null,
+        type: 'file',
+        lifecycle_state: 'ACTIVE',
+        name: 'two.jpg',
+        file_kind: '图片',
+        display_type: 'JPG 图片',
+        modified_at: '2026-04-10 10:00',
+        modified_at_sort: 10,
+        created_at: '2026-04-10 10:00',
+        size_label: '1 KB',
+        size_bytes: 1,
+        path: 'two.jpg',
+        source_label: '',
+        notes: '',
+        last_task_text: '',
+        last_task_tone: 'info',
+        rating: 5,
+        color_label: '无',
+      },
+    ];
+
+    const sorted = __FILE_CENTER_TESTING__.sortEntryRowsForDisplay(rows, '星级', 'desc');
+    expect(sorted.map((row) => row.id)).toEqual(['dir-b', 'dir-a', 'file-2', 'file-1']);
   });
 
   it('从中心服务读取文件详情', async () => {
@@ -195,6 +352,132 @@ describe('fileCenterApi', () => {
       'http://127.0.0.1:8080/api/file-entries/dir-new',
       expect.objectContaining({
         method: 'DELETE',
+      }),
+    );
+  });
+
+  it('进入目录后的自动扫描会带上当前目录 id', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: {
+          message: '当前目录扫描已完成',
+        },
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      fileCenterApi.scanDirectory({
+        libraryId: 'photo',
+        parentId: 'dir-raw',
+      }),
+    ).resolves.toEqual({
+      message: '当前目录扫描已完成',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8080/api/libraries/photo/scan',
+      expect.objectContaining({
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          parentId: 'dir-raw',
+        }),
+      }),
+    );
+  });
+
+  it('上传会通过 FormData 把文件和清单发送到中心服务', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: {
+          message: '已上传 1 个文件',
+          createdCount: 1,
+        },
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const file = new File(['cover-image'], 'cover.jpg', { type: 'image/jpeg' });
+    const result = await fileCenterApi.uploadSelection({
+      libraryId: 'photo',
+      parentId: 'dir-raw',
+      mode: 'files',
+      items: [
+        {
+          file,
+          name: 'cover.jpg',
+          size: file.size,
+          relativePath: 'cover.jpg',
+        },
+      ],
+    });
+
+    expect(result).toEqual({
+      message: '已上传 1 个文件',
+      createdCount: 1,
+    });
+
+    const requestUrl = String(fetchMock.mock.calls[0]?.[0] ?? '');
+    const requestInit = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+    expect(requestUrl).toBe('http://127.0.0.1:8080/api/libraries/photo/uploads');
+    expect(requestInit?.method).toBe('POST');
+    expect(requestInit?.body).toBeInstanceOf(FormData);
+
+    const formData = requestInit?.body as FormData;
+    expect(formData.get('mode')).toBe('files');
+    expect(formData.get('parentId')).toBe('dir-raw');
+    const uploadedFile = formData.get('file0');
+    expect(uploadedFile).toBeInstanceOf(File);
+    expect((uploadedFile as File).name).toBe('cover.jpg');
+    expect((uploadedFile as File).size).toBe(file.size);
+    expect(formData.get('manifest')).toBe(
+      JSON.stringify([
+        {
+          field: 'file0',
+          name: 'cover.jpg',
+          relativePath: 'cover.jpg',
+        },
+      ]),
+    );
+  });
+
+  it('详情页保存星级和色标会调用中心服务注解接口', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: {
+          message: '资产标记已更新',
+        },
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      fileCenterApi.updateAnnotations('asset-cover', {
+        rating: 5,
+        colorLabel: '红标',
+        tags: ['发布会'],
+      }),
+    ).resolves.toEqual({
+      message: '资产标记已更新',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8080/api/file-entries/asset-cover/annotations',
+      expect.objectContaining({
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          rating: 5,
+          colorLabel: '红标',
+        }),
       }),
     );
   });

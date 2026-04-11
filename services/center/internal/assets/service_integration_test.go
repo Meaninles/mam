@@ -2,12 +2,12 @@ package assets_test
 
 import (
 	"context"
+	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
-	"fmt"
-	"net/url"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -86,11 +86,11 @@ func TestMountScanIndexesFilesForFileCenterQueries(t *testing.T) {
 	}
 
 	root, err := service.BrowseLibrary(ctx, "photo", assetdto.BrowseQuery{
-		Page:         1,
-		PageSize:     20,
-		FileType:     "全部",
-		StatusFilter: "全部",
-		SortValue:    "修改时间",
+		Page:          1,
+		PageSize:      20,
+		FileType:      "全部",
+		StatusFilter:  "全部",
+		SortValue:     "修改时间",
 		SortDirection: "desc",
 	})
 	if err != nil {
@@ -164,6 +164,127 @@ func TestMountScanIndexesFilesForFileCenterQueries(t *testing.T) {
 	}
 	if len(detail.Endpoints) != 1 || detail.Endpoints[0].Name != "商业摄影原片库" {
 		t.Fatalf("expected mount-based endpoint detail, got %#v", detail.Endpoints)
+	}
+}
+
+func TestScanDirectoryIndexesOnlyCurrentLevelUntilChildDirectoryIsScanned(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	defer pool.Close()
+	resetSchema(t, ctx, pool)
+
+	migrator := db.NewMigrator()
+	if _, err := migrator.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	rootDir := t.TempDir()
+	localNodes := storage.NewLocalFolderService(pool)
+	node, err := localNodes.SaveLocalNode(ctx, storagedto.SaveLocalNodeRequest{
+		Name:     "Auto scan local node",
+		RootPath: rootDir,
+		Notes:    "directory scan test",
+	})
+	if err != nil {
+		t.Fatalf("save local node: %v", err)
+	}
+
+	_, err = localNodes.SaveLocalFolder(ctx, storagedto.SaveLocalFolderRequest{
+		Name:            "Auto scan mount",
+		LibraryID:       "photo",
+		LibraryName:     "Photo library",
+		NodeID:          node.Record.ID,
+		MountMode:       "可写",
+		HeartbeatPolicy: "从不",
+		RelativePath:    "source",
+		Notes:           "auto scan",
+	})
+	if err != nil {
+		t.Fatalf("save mount: %v", err)
+	}
+
+	sourceDir := filepath.Join(rootDir, "source")
+	if err := os.MkdirAll(filepath.Join(sourceDir, "nested"), 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "cover.jpg"), []byte("cover-image"), 0o644); err != nil {
+		t.Fatalf("write root file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "nested", "final.txt"), []byte("nested-file"), 0o644); err != nil {
+		t.Fatalf("write nested file: %v", err)
+	}
+
+	service := assets.NewService(pool)
+	if _, err := service.ScanDirectory(ctx, "photo", assetdto.ScanDirectoryRequest{}); err != nil {
+		t.Fatalf("scan root directory: %v", err)
+	}
+
+	root, err := service.BrowseLibrary(ctx, "photo", assetdto.BrowseQuery{
+		Page:          1,
+		PageSize:      20,
+		FileType:      "",
+		StatusFilter:  "",
+		SortValue:     "",
+		SortDirection: "asc",
+	})
+	if err != nil {
+		t.Fatalf("browse root: %v", err)
+	}
+
+	if root.Total != 2 {
+		t.Fatalf("expected 2 root entries after root scan, got %d", root.Total)
+	}
+
+	var nestedFolderID string
+	for _, item := range root.Items {
+		if item.Name == "nested" && item.Type == "folder" {
+			nestedFolderID = item.ID
+		}
+	}
+	if nestedFolderID == "" {
+		t.Fatalf("expected nested directory in root items, got %#v", root.Items)
+	}
+
+	childBefore, err := service.BrowseLibrary(ctx, "photo", assetdto.BrowseQuery{
+		ParentID:      &nestedFolderID,
+		Page:          1,
+		PageSize:      20,
+		FileType:      "",
+		StatusFilter:  "",
+		SortValue:     "",
+		SortDirection: "asc",
+	})
+	if err != nil {
+		t.Fatalf("browse child before nested scan: %v", err)
+	}
+	if childBefore.Total != 0 {
+		t.Fatalf("expected nested directory to stay unscanned before entering it, got %#v", childBefore.Items)
+	}
+
+	if _, err := service.ScanDirectory(ctx, "photo", assetdto.ScanDirectoryRequest{ParentID: &nestedFolderID}); err != nil {
+		t.Fatalf("scan nested directory: %v", err)
+	}
+
+	childAfter, err := service.BrowseLibrary(ctx, "photo", assetdto.BrowseQuery{
+		ParentID:      &nestedFolderID,
+		Page:          1,
+		PageSize:      20,
+		FileType:      "",
+		StatusFilter:  "",
+		SortValue:     "",
+		SortDirection: "asc",
+	})
+	if err != nil {
+		t.Fatalf("browse child after nested scan: %v", err)
+	}
+	if childAfter.Total != 1 || childAfter.Items[0].Name != "final.txt" {
+		t.Fatalf("expected final.txt after nested scan, got %#v", childAfter.Items)
 	}
 }
 
@@ -484,6 +605,196 @@ func TestDeleteAssetRemovesPhysicalFileAndLogicalRecord(t *testing.T) {
 	}
 	if len(next.Items) != 0 {
 		t.Fatalf("expected file removed from root, got %#v", next.Items)
+	}
+}
+
+func TestUploadSelectionWritesLocalFilesAndIndexesAssets(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	defer pool.Close()
+	resetSchema(t, ctx, pool)
+
+	migrator := db.NewMigrator()
+	if _, err := migrator.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	rootDir := t.TempDir()
+	localNodes := storage.NewLocalFolderService(pool)
+	node, err := localNodes.SaveLocalNode(ctx, storagedto.SaveLocalNodeRequest{
+		Name:     "Upload local node",
+		RootPath: rootDir,
+		Notes:    "upload test",
+	})
+	if err != nil {
+		t.Fatalf("save local node: %v", err)
+	}
+
+	_, err = localNodes.SaveLocalFolder(ctx, storagedto.SaveLocalFolderRequest{
+		Name:            "Upload local mount",
+		LibraryID:       "photo",
+		LibraryName:     "Photo library",
+		NodeID:          node.Record.ID,
+		MountMode:       "可写",
+		HeartbeatPolicy: "从不",
+		RelativePath:    "uploads",
+		Notes:           "upload test",
+	})
+	if err != nil {
+		t.Fatalf("save mount: %v", err)
+	}
+
+	service := assets.NewService(pool)
+	result, err := service.UploadSelection(ctx, "photo", assetdto.UploadSelectionRequest{
+		Mode: "folder",
+		Files: []assetdto.UploadSelectionFile{
+			{
+				Name:         "cover.jpg",
+				RelativePath: "nested/cover.jpg",
+				Size:         int64(len([]byte("cover-image"))),
+				Content:      []byte("cover-image"),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("upload selection: %v", err)
+	}
+	if result.CreatedCount != 1 {
+		t.Fatalf("expected 1 uploaded file, got %#v", result)
+	}
+
+	targetFile := filepath.Join(rootDir, "uploads", "nested", "cover.jpg")
+	content, err := os.ReadFile(targetFile)
+	if err != nil {
+		t.Fatalf("expected uploaded local file: %v", err)
+	}
+	if string(content) != "cover-image" {
+		t.Fatalf("unexpected uploaded content: %s", string(content))
+	}
+
+	root, err := service.BrowseLibrary(ctx, "photo", assetdto.BrowseQuery{
+		Page:          1,
+		PageSize:      20,
+		FileType:      "全部",
+		StatusFilter:  "全部",
+		SortValue:     "名称",
+		SortDirection: "asc",
+	})
+	if err != nil {
+		t.Fatalf("browse root: %v", err)
+	}
+	if len(root.Items) != 1 || root.Items[0].Name != "nested" || root.Items[0].Type != "folder" {
+		t.Fatalf("expected nested folder at root, got %#v", root.Items)
+	}
+
+	folderID := root.Items[0].ID
+	child, err := service.BrowseLibrary(ctx, "photo", assetdto.BrowseQuery{
+		ParentID:      &folderID,
+		Page:          1,
+		PageSize:      20,
+		FileType:      "全部",
+		StatusFilter:  "全部",
+		SortValue:     "名称",
+		SortDirection: "asc",
+	})
+	if err != nil {
+		t.Fatalf("browse nested folder: %v", err)
+	}
+	if len(child.Items) != 1 || child.Items[0].Name != "cover.jpg" {
+		t.Fatalf("expected uploaded file in nested folder, got %#v", child.Items)
+	}
+}
+
+func TestUpdateAnnotationsPersistsRatingAndColorLabel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	defer pool.Close()
+	resetSchema(t, ctx, pool)
+
+	migrator := db.NewMigrator()
+	if _, err := migrator.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	rootDir := t.TempDir()
+	localNodes := storage.NewLocalFolderService(pool)
+	node, err := localNodes.SaveLocalNode(ctx, storagedto.SaveLocalNodeRequest{
+		Name:     "Annotation local node",
+		RootPath: rootDir,
+		Notes:    "annotation test",
+	})
+	if err != nil {
+		t.Fatalf("save local node: %v", err)
+	}
+
+	mount, err := localNodes.SaveLocalFolder(ctx, storagedto.SaveLocalFolderRequest{
+		Name:            "Annotation mount",
+		LibraryID:       "photo",
+		LibraryName:     "Photo library",
+		NodeID:          node.Record.ID,
+		MountMode:       "可写",
+		HeartbeatPolicy: "从不",
+		RelativePath:    "source",
+		Notes:           "annotation test",
+	})
+	if err != nil {
+		t.Fatalf("save mount: %v", err)
+	}
+
+	sourceDir := filepath.Join(rootDir, "source")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("mkdir source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "cover.jpg"), []byte("cover-image"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	if _, err := localNodes.RunLocalFolderScan(ctx, []string{mount.Record.ID}); err != nil {
+		t.Fatalf("run scan: %v", err)
+	}
+
+	service := assets.NewService(pool)
+	root, err := service.BrowseLibrary(ctx, "photo", assetdto.BrowseQuery{
+		Page:          1,
+		PageSize:      20,
+		FileType:      "全部",
+		StatusFilter:  "全部",
+		SortValue:     "名称",
+		SortDirection: "asc",
+	})
+	if err != nil {
+		t.Fatalf("browse root: %v", err)
+	}
+	if len(root.Items) != 1 {
+		t.Fatalf("expected one file at root, got %#v", root.Items)
+	}
+
+	fileID := root.Items[0].ID
+	if _, err := service.UpdateAnnotations(ctx, fileID, assetdto.UpdateAnnotationsRequest{
+		Rating:     5,
+		ColorLabel: "红标",
+	}); err != nil {
+		t.Fatalf("update annotations: %v", err)
+	}
+
+	detail, err := service.LoadEntry(ctx, fileID)
+	if err != nil {
+		t.Fatalf("load detail: %v", err)
+	}
+	if detail == nil || detail.Rating != 5 || detail.ColorLabel != "红标" {
+		t.Fatalf("expected updated annotations, got %#v", detail)
 	}
 }
 

@@ -290,6 +290,18 @@ func (fakeAssetService) CreateDirectory(_ context.Context, libraryID string, req
 	}, nil
 }
 
+func (fakeAssetService) UploadSelection(_ context.Context, _ string, request assetdto.UploadSelectionRequest) (assetdto.UploadSelectionResponse, error) {
+	return assetdto.UploadSelectionResponse{
+		Message:      "已上传文件",
+		CreatedCount: len(request.Files),
+	}, nil
+}
+
+func (fakeAssetService) UpdateAnnotations(_ context.Context, _ string, request assetdto.UpdateAnnotationsRequest) (assetdto.UpdateAnnotationsResponse, error) {
+	_ = request
+	return assetdto.UpdateAnnotationsResponse{Message: "资产标记已更新"}, nil
+}
+
 func (fakeAssetService) DeleteEntry(context.Context, string) (assetdto.DeleteEntryResponse, error) {
 	return assetdto.DeleteEntryResponse{Message: "条目已删除"}, nil
 }
@@ -354,6 +366,10 @@ func (fakeAssetService) LoadEntry(context.Context, string) (*assetdto.EntryRecor
 		},
 		Metadata: []assetdto.MetadataRow{{Label: "逻辑路径", Value: "/原片/cover.jpg"}},
 	}, nil
+}
+
+func (fakeAssetService) ScanDirectory(context.Context, string, assetdto.ScanDirectoryRequest) (assetdto.ScanDirectoryResponse, error) {
+	return assetdto.ScanDirectoryResponse{Message: "当前目录扫描已完成"}, nil
 }
 
 func TestHealthzReturnsSuccessEnvelope(t *testing.T) {
@@ -775,6 +791,35 @@ func TestDeleteEntryRouteReturnsSuccess(t *testing.T) {
 	})
 
 	request := httptest.NewRequest(http.MethodDelete, "/api/file-entries/dir-new", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+}
+
+func TestUpdateAnnotationsRouteAcceptsValidPayload(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(Dependencies{
+		Runtime:      fakeRuntimeService{},
+		Agents:       fakeAgentService{},
+		LocalNodes:   fakeLocalNodeService{},
+		NasNodes:     fakeNASNodeService{},
+		LocalFolders: fakeLocalFolderService{},
+		Assets:       fakeAssetService{},
+	})
+
+	body, err := json.Marshal(assetdto.UpdateAnnotationsRequest{
+		Rating:     5,
+		ColorLabel: "红标",
+	})
+	if err != nil {
+		t.Fatalf("marshal annotations payload: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPatch, "/api/file-entries/asset-1/annotations", bytes.NewReader(body))
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
 

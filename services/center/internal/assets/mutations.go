@@ -128,7 +128,7 @@ func (s *Service) CreateDirectory(ctx context.Context, libraryID string, request
 	}
 	for _, mount := range mounts {
 		physicalPath := resolveMountPhysicalDirectoryPath(mount.SourcePath, mount.RelativeRootPath, relativePath)
-		executor, err := executorForNodeType(mount.NodeType)
+		executor, err := s.resolveExecutor(mount.NodeType)
 		if err != nil {
 			return assetdto.CreateDirectoryResponse{}, apperrors.BadRequest("当前挂载类型暂不支持创建目录")
 		}
@@ -182,7 +182,7 @@ func (s *Service) DeleteEntry(ctx context.Context, id string) (assetdto.DeleteEn
 		if replica.NodeType == "CLOUD" {
 			return assetdto.DeleteEntryResponse{}, apperrors.BadRequest("当前暂不支持删除云端副本文件")
 		}
-		executor, err := executorForNodeType(replica.NodeType)
+		executor, err := s.resolveExecutor(replica.NodeType)
 		if err != nil {
 			return assetdto.DeleteEntryResponse{}, apperrors.BadRequest("当前副本类型暂不支持删除")
 		}
@@ -209,10 +209,10 @@ func (s *Service) DeleteEntry(ctx context.Context, id string) (assetdto.DeleteEn
 }
 
 type assetReplicaDeletion struct {
-	PhysicalPath      string
-	NodeType          string
-	Username          string
-	SecretCiphertext  string
+	PhysicalPath     string
+	NodeType         string
+	Username         string
+	SecretCiphertext string
 }
 
 func loadAssetReplicaDeletions(ctx context.Context, pool *pgxpool.Pool, assetID string) ([]assetReplicaDeletion, error) {
@@ -363,7 +363,7 @@ func (s *Service) deleteDirectory(ctx context.Context, directory directoryModel)
 		if strings.TrimSpace(physicalPath.PhysicalPath) == "" {
 			continue
 		}
-		executor, err := executorForNodeType(physicalPath.NodeType)
+		executor, err := s.resolveExecutor(physicalPath.NodeType)
 		if err != nil {
 			return assetdto.DeleteEntryResponse{}, apperrors.BadRequest("当前目录所在挂载类型暂不支持删除")
 		}

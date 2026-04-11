@@ -769,6 +769,8 @@ export default function App() {
     endpointNames: [],
   });
   const [fileCenterLoading, setFileCenterLoading] = useState(true);
+  const [fileCenterRefreshing, setFileCenterRefreshing] = useState(false);
+  const [loadedFileCenterLocationKey, setLoadedFileCenterLocationKey] = useState<string | null>(null);
   const [fileCenterVersion, setFileCenterVersion] = useState(0);
   const [availableTags, setAvailableTags] = useState<FileCenterTagSuggestion[]>([]);
   const [pendingAction, setPendingAction] = useState<FileConfirmAction | null>(null);
@@ -819,10 +821,11 @@ export default function App() {
       return;
     }
 
-    setActiveLibraryId(resolveDefaultLibraryId(persisted.settings, libraries));
-  }, [activeLibraryId, libraries, persisted.settings]);
+    setActiveLibraryId(resolveDefaultLibraryId(persisted.settings, libraries, persisted.lastSelectedLibraryId));
+  }, [activeLibraryId, libraries, persisted.lastSelectedLibraryId, persisted.settings]);
   const pendingTaskSizeCalcIdsRef = useRef<Set<string>>(new Set());
   const workspaceStageRef = useRef<HTMLDivElement | null>(null);
+  const fileCenterScanSequenceRef = useRef(0);
   const workspaceContainersRef = useRef<Partial<Record<WorkspaceView, HTMLDivElement>>>({});
   const activeView: MainView = activeWorkspaceView;
   const unreadNotificationCount = useMemo(() => getUnconsumedNoticeCount(persisted.noticeRecords), [persisted.noticeRecords]);
@@ -984,6 +987,16 @@ export default function App() {
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
   }, [persisted]);
+
+  useEffect(() => {
+    if (!activeLibraryId || persisted.lastSelectedLibraryId === activeLibraryId) {
+      return;
+    }
+    setPersisted((current) => ({
+      ...current,
+      lastSelectedLibraryId: activeLibraryId,
+    }));
+  }, [activeLibraryId, persisted.lastSelectedLibraryId]);
 
   useEffect(() => {
     setSettingsDraft(cloneSettingsRecord(persisted.settings));
@@ -1201,6 +1214,9 @@ export default function App() {
     ? fileCenterState.breadcrumbs
     : [{ id: null as string | null, label: currentLibrary.name }];
   const pageCount = Math.max(1, Math.ceil(fileCenterState.total / pageSize));
+  const currentFileCenterLocationKey = `${activeLibraryId}:${currentFolderId ?? 'root'}`;
+  const isFileCenterBackgroundLoading =
+    fileCenterLoading && loadedFileCenterLocationKey === currentFileCenterLocationKey;
 
   useEffect(() => {
     if (currentPage > pageCount) {
@@ -1210,6 +1226,7 @@ export default function App() {
 
   useEffect(() => {
     let disposed = false;
+    const requestLocationKey = `${activeLibraryId}:${currentFolderId ?? 'root'}`;
     setFileCenterLoading(true);
 
     if (!activeLibraryId) {
@@ -1220,6 +1237,7 @@ export default function App() {
         currentPathChildren: 0,
         endpointNames: [],
       });
+      setLoadedFileCenterLocationKey(null);
       setFileCenterLoading(false);
       return () => {
         disposed = true;
@@ -1244,6 +1262,7 @@ export default function App() {
           return;
         }
         setFileCenterState(result);
+        setLoadedFileCenterLocationKey(requestLocationKey);
       })
       .catch(() => {
         if (disposed) {
@@ -1256,6 +1275,7 @@ export default function App() {
           currentPathChildren: 0,
           endpointNames: [],
         });
+        setLoadedFileCenterLocationKey(requestLocationKey);
         setFeedback({ message: '加载文件中心失败，请稍后重试', tone: 'critical' });
       })
       .finally(() => {
@@ -1281,6 +1301,40 @@ export default function App() {
     partialSyncEndpointNames,
     pageSize,
   ]);
+
+  useEffect(() => {
+    if (activeView !== 'file-center' || !activeLibraryId) {
+      setFileCenterRefreshing(false);
+      return;
+    }
+
+    const scanSequence = fileCenterScanSequenceRef.current + 1;
+    fileCenterScanSequenceRef.current = scanSequence;
+    setFileCenterRefreshing(true);
+
+    void fileCenterApi
+      .scanDirectory({
+        libraryId: activeLibraryId,
+        parentId: currentFolderId,
+      })
+      .then(() => {
+        if (fileCenterScanSequenceRef.current !== scanSequence) {
+          return;
+        }
+        setFileCenterVersion((current) => current + 1);
+      })
+      .catch(() => {
+        if (fileCenterScanSequenceRef.current !== scanSequence) {
+          return;
+        }
+        setFeedback({ message: '当前目录自动扫描失败，请稍后重试', tone: 'warning' });
+      })
+      .finally(() => {
+        if (fileCenterScanSequenceRef.current === scanSequence) {
+          setFileCenterRefreshing(false);
+        }
+      });
+  }, [activeLibraryId, activeView, currentFolderId]);
 
   useEffect(() => {
     let disposed = false;
@@ -2190,21 +2244,26 @@ export default function App() {
   };
 
   const handleUploadSelection = async (mode: 'files' | 'folder', files: File[]) => {
-    const result = await fileCenterApi.uploadSelection({
-      libraryId: activeLibraryId,
-      parentId: currentFolderId,
-      mode,
-      items: files.map((file) => ({
-        name: file.name,
-        size: file.size,
-        relativePath:
-          mode === 'folder'
-            ? ((file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name)
-            : file.name,
-      })),
-    });
-    setFeedback({ message: result.message, tone: 'success' });
-    setFileCenterVersion((current) => current + 1);
+    try {
+      const result = await fileCenterApi.uploadSelection({
+        libraryId: activeLibraryId,
+        parentId: currentFolderId,
+        mode,
+        items: files.map((file) => ({
+          file,
+          name: file.name,
+          size: file.size,
+          relativePath:
+            mode === 'folder'
+              ? ((file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name)
+              : file.name,
+        })),
+      });
+      setFeedback({ message: result.message, tone: 'success' });
+      setFileCenterVersion((current) => current + 1);
+    } catch {
+      setFeedback({ message: '上传失败，请稍后重试', tone: 'critical' });
+    }
   };
 
   const openEntry = async (item: FileCenterEntry) => {
@@ -2379,10 +2438,11 @@ export default function App() {
             currentPage={currentPage}
             currentPathChildren={fileCenterState.currentPathChildren}
             fileTypeFilter={fileTypeFilter}
-            loading={fileCenterLoading}
+            loading={!isFileCenterBackgroundLoading && fileCenterLoading}
             pageCount={pageCount}
             pageSize={pageSize}
             partialSyncEndpointNames={partialSyncEndpointNames}
+            refreshing={fileCenterRefreshing || isFileCenterBackgroundLoading}
             searchText={searchText}
             selectedIds={selectedFileIds}
             sortValue={fileSort}
@@ -2415,17 +2475,37 @@ export default function App() {
             onOpenBatchAnnotationEditor={() => setBatchAnnotationState({ items: selectedActionItems })}
             onOpenTagEditor={(item) => setTagEditorState({ item })}
             onDeleteSelected={() => void requestDeleteAssets(selectedFileIds)}
-            onRefreshIndex={() =>
+            onRefreshIndex={() => {
+              if (!activeLibraryId) {
+                return;
+              }
+              const scanSequence = fileCenterScanSequenceRef.current + 1;
+              fileCenterScanSequenceRef.current = scanSequence;
+              setFileCenterRefreshing(true);
               void fileCenterApi
-                .refreshIndex()
+                .scanDirectory({
+                  libraryId: activeLibraryId,
+                  parentId: currentFolderId,
+                })
                 .then((result) => {
+                  if (fileCenterScanSequenceRef.current !== scanSequence) {
+                    return;
+                  }
                   setFeedback({ message: result.message, tone: 'info' });
                   setFileCenterVersion((current) => current + 1);
                 })
                 .catch(() => {
+                  if (fileCenterScanSequenceRef.current !== scanSequence) {
+                    return;
+                  }
                   setFeedback({ message: '索引刷新失败，请稍后重试', tone: 'critical' });
                 })
-            }
+                .finally(() => {
+                  if (fileCenterScanSequenceRef.current === scanSequence) {
+                    setFileCenterRefreshing(false);
+                  }
+                });
+            }}
             onSetCurrentPage={setCurrentPage}
             onSetFileTypeFilter={setFileTypeFilter}
             onSetPageSize={setPageSize}

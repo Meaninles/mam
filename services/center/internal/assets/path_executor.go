@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
+	pathpkg "path"
 	"strings"
 	"time"
 
@@ -11,13 +13,15 @@ import (
 )
 
 type pathExecutionContext struct {
-	PhysicalPath      string
-	Username          string
-	SecretCiphertext  string
+	PhysicalPath     string
+	Username         string
+	SecretCiphertext string
+	FileContent      []byte
 }
 
 type mountPathExecutor interface {
 	EnsureDirectory(ctx context.Context, input pathExecutionContext) error
+	WriteFile(ctx context.Context, input pathExecutionContext) error
 	DeleteFile(ctx context.Context, input pathExecutionContext) error
 	DeleteDirectory(ctx context.Context, input pathExecutionContext) error
 }
@@ -27,6 +31,11 @@ type localPathExecutor struct{}
 func (localPathExecutor) EnsureDirectory(ctx context.Context, input pathExecutionContext) error {
 	_ = ctx
 	return ensureLocalDirectory(input.PhysicalPath)
+}
+
+func (localPathExecutor) WriteFile(ctx context.Context, input pathExecutionContext) error {
+	_ = ctx
+	return writeLocalFile(input.PhysicalPath, input.FileContent)
 }
 
 func (localPathExecutor) DeleteFile(ctx context.Context, input pathExecutionContext) error {
@@ -57,6 +66,27 @@ func (n nasPathExecutor) EnsureDirectory(ctx context.Context, input pathExecutio
 			return nil
 		}
 		return share.MkdirAll(relativePath, 0o755)
+	})
+}
+
+func (n nasPathExecutor) WriteFile(ctx context.Context, input pathExecutionContext) error {
+	return n.withShare(ctx, input, func(share *smb2.Share, relativePath string) error {
+		if relativePath == "" {
+			return fmt.Errorf("missing SMB relative path")
+		}
+		parent := pathpkg.Dir(relativePath)
+		if parent != "." && parent != "" {
+			if err := share.MkdirAll(parent, 0o755); err != nil {
+				return err
+			}
+		}
+		file, err := share.OpenFile(relativePath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		_, err = file.Write(input.FileContent)
+		return err
 	})
 }
 

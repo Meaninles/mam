@@ -52,6 +52,7 @@ export interface PersistedState {
   storageNodes: StorageNode[];
   taskItemRecords: TaskItemRecord[];
   taskRecords: TaskRecord[];
+  lastSelectedLibraryId: string;
 }
 
 export const STORAGE_KEY = 'mare-client-state-v4';
@@ -73,6 +74,7 @@ export function createInitialState(): PersistedState {
     storageNodes: structuredClone(storageNodes),
     taskItemRecords: structuredClone(taskItemRecords),
     taskRecords: structuredClone(taskRecords),
+    lastSelectedLibraryId: '',
   };
 }
 
@@ -115,6 +117,7 @@ export function loadPersistedState(): PersistedState {
       settings: parsed.settings ? cloneSettingsRecord(parsed.settings) : cloneSettingsContent(),
       taskItemRecords: taskSeeds.taskItemRecords,
       taskRecords: taskSeeds.taskRecords,
+      lastSelectedLibraryId: parsed.lastSelectedLibraryId ?? '',
     };
   } catch {
     return createInitialState();
@@ -157,7 +160,12 @@ export function resolveStartupWorkspace(settings: Record<SettingsTab, SettingSec
 export function resolveDefaultLibraryId(
   settings: Record<SettingsTab, SettingSection[]>,
   availableLibraries: Array<{ id: string; name: string }>,
+  lastSelectedLibraryId = '',
 ): string {
+  const lastSelected = availableLibraries.find((library) => library.id === lastSelectedLibraryId)?.id;
+  if (lastSelected) {
+    return lastSelected;
+  }
   const value = findSettingValue(settings, 'general', 'launch', 'default-library');
   if (value === '上次使用') {
     return availableLibraries[0]?.id ?? '';

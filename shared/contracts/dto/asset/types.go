@@ -39,14 +39,14 @@ type Breadcrumb struct {
 }
 
 type BrowseQuery struct {
-	ParentID                *string
-	Page                    int
-	PageSize                int
-	SearchText              string
-	FileType                string
-	StatusFilter            string
-	SortValue               string
-	SortDirection           string
+	ParentID                 *string
+	Page                     int
+	PageSize                 int
+	SearchText               string
+	FileType                 string
+	StatusFilter             string
+	SortValue                string
+	SortDirection            string
 	PartialSyncEndpointNames []string
 }
 
@@ -96,4 +96,39 @@ type BrowseLibraryResponse struct {
 	Total               int           `json:"total"`
 	CurrentPathChildren int           `json:"currentPathChildren"`
 	EndpointNames       []string      `json:"endpointNames"`
+}
+
+type ScanDirectoryRequest struct {
+	ParentID *string `json:"parentId,omitempty"`
+}
+
+type ScanDirectoryResponse struct {
+	Message string `json:"message"`
+}
+
+type UploadSelectionFile struct {
+	Name         string
+	RelativePath string
+	Size         int64
+	Content      []byte
+}
+
+type UploadSelectionRequest struct {
+	ParentID *string               `json:"parentId,omitempty"`
+	Mode     string                `json:"mode"`
+	Files    []UploadSelectionFile `json:"files"`
+}
+
+type UploadSelectionResponse struct {
+	Message      string `json:"message"`
+	CreatedCount int    `json:"createdCount"`
+}
+
+type UpdateAnnotationsRequest struct {
+	Rating     int    `json:"rating"`
+	ColorLabel string `json:"colorLabel"`
+}
+
+type UpdateAnnotationsResponse struct {
+	Message string `json:"message"`
 }

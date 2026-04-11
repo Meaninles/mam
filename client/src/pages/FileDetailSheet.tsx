@@ -1,9 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Star } from 'lucide-react';
-import type {
-  FileCenterColorLabel,
-  FileCenterEntry,
-} from '../lib/fileCenterApi';
+import type { FileCenterColorLabel, FileCenterEntry } from '../lib/fileCenterApi';
 import { ActionButton, DenseRow, Sheet, TonePill } from '../components/Shared';
 
 const COLOR_OPTIONS: FileCenterColorLabel[] = ['无', '红标', '黄标', '绿标', '蓝标', '紫标'];
@@ -30,9 +27,7 @@ export function FileDetailSheet({
     setColorLabel(item.colorLabel);
   }, [item]);
 
-  const hasChanged =
-    rating !== item.rating ||
-    colorLabel !== item.colorLabel;
+  const hasChanged = rating !== item.rating || colorLabel !== item.colorLabel;
 
   const handleSaveAnnotations = async () => {
     await onSaveAnnotations({
@@ -77,63 +72,64 @@ export function FileDetailSheet({
         ))}
       </div>
 
-      <div className="sheet-section">
-        <div className="annotation-section">
-          <strong>星级</strong>
-          <div className="rating-editor" role="group" aria-label="资产星级">
-            <button
-              className={rating === 0 ? 'active' : ''}
-              type="button"
-              onClick={() => setRating(0)}
-            >
-              无评级
-            </button>
-            {Array.from({ length: 5 }, (_, index) => {
-              const value = index + 1;
-              return (
-                <button
-                  key={value}
-                  className={rating === value ? 'active' : ''}
-                  type="button"
-                  onClick={() => setRating(value)}
-                >
-                  <span className="file-rating">
-                    {Array.from({ length: value }, (_, starIndex) => (
-                      <Star key={`${value}-${starIndex}`} size={12} fill="currentColor" />
-                    ))}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        <div className="annotation-section">
-          <strong>色标</strong>
-          <div className="color-label-editor">
-            {COLOR_OPTIONS.map((option) => (
+      {item.type === 'file' ? (
+        <div className="sheet-section">
+          <div className="annotation-section">
+            <strong>星级</strong>
+            <div className="rating-editor" role="group" aria-label="资产星级">
               <button
-                key={option}
-                className={option === colorLabel ? 'active' : ''}
+                aria-label="无评级"
+                className={rating === 0 ? 'active' : ''}
                 type="button"
-                onClick={() => setColorLabel(option)}
+                onClick={() => setRating(0)}
               >
-                <span className={`color-label-dot ${resolveColorClass(option)}`} />
-                <span>{option}</span>
+                无评级
               </button>
-            ))}
+              {Array.from({ length: 5 }, (_, index) => {
+                const value = index + 1;
+                return (
+                  <button
+                    key={value}
+                    aria-label={`${value} 星`}
+                    className={rating === value ? 'active' : ''}
+                    type="button"
+                    onClick={() => setRating(value)}
+                  >
+                    <span className="file-rating">
+                      {Array.from({ length: value }, (_, starIndex) => (
+                        <Star key={`${value}-${starIndex}`} size={12} fill="currentColor" />
+                      ))}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="annotation-section">
+            <strong>色标</strong>
+            <div className="color-label-editor">
+              {COLOR_OPTIONS.map((option) => (
+                <button
+                  key={option}
+                  className={option === colorLabel ? 'active' : ''}
+                  type="button"
+                  onClick={() => setColorLabel(option)}
+                >
+                  <span className={`color-label-dot ${resolveColorClass(option)}`} />
+                  <span>{option}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="sheet-actions right">
+            <ActionButton tone="primary" onClick={() => void handleSaveAnnotations()}>
+              {hasChanged ? '保存标记' : '已保存'}
+            </ActionButton>
           </div>
         </div>
-
-        <div className="sheet-actions right">
-          <ActionButton
-            tone="primary"
-            onClick={() => void handleSaveAnnotations()}
-          >
-            {hasChanged ? '保存标记' : '已保存'}
-          </ActionButton>
-        </div>
-      </div>
+      ) : null}
 
       {item.notes ? (
         <div className="sheet-section">

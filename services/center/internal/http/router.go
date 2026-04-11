@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -66,9 +67,12 @@ type AssetService interface {
 	ListLibraries(ctx context.Context) ([]assetdto.LibraryRecord, error)
 	CreateLibrary(ctx context.Context, request assetdto.CreateLibraryRequest) (assetdto.CreateLibraryResponse, error)
 	CreateDirectory(ctx context.Context, libraryID string, request assetdto.CreateDirectoryRequest) (assetdto.CreateDirectoryResponse, error)
+	UploadSelection(ctx context.Context, libraryID string, request assetdto.UploadSelectionRequest) (assetdto.UploadSelectionResponse, error)
+	UpdateAnnotations(ctx context.Context, id string, request assetdto.UpdateAnnotationsRequest) (assetdto.UpdateAnnotationsResponse, error)
 	DeleteEntry(ctx context.Context, id string) (assetdto.DeleteEntryResponse, error)
 	BrowseLibrary(ctx context.Context, libraryID string, query assetdto.BrowseQuery) (assetdto.BrowseLibraryResponse, error)
 	LoadEntry(ctx context.Context, id string) (*assetdto.EntryRecord, error)
+	ScanDirectory(ctx context.Context, libraryID string, request assetdto.ScanDirectoryRequest) (assetdto.ScanDirectoryResponse, error)
 }
 
 type Dependencies struct {
@@ -389,6 +393,21 @@ func NewRouter(deps Dependencies) http.Handler {
 		response.WriteSuccess(w, http.StatusOK, result)
 	})
 
+	mux.HandleFunc("POST /api/libraries/{libraryId}/uploads", func(w http.ResponseWriter, r *http.Request) {
+		payload, err := parseUploadSelectionRequest(r)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+
+		result, err := deps.Assets.UploadSelection(r.Context(), r.PathValue("libraryId"), payload)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
 	mux.HandleFunc("GET /api/libraries/{libraryId}/browse", func(w http.ResponseWriter, r *http.Request) {
 		query, err := parseBrowseQuery(r.URL)
 		if err != nil {
@@ -403,6 +422,21 @@ func NewRouter(deps Dependencies) http.Handler {
 		response.WriteSuccess(w, http.StatusOK, payload)
 	})
 
+	mux.HandleFunc("POST /api/libraries/{libraryId}/scan", func(w http.ResponseWriter, r *http.Request) {
+		var payload assetdto.ScanDirectoryRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("目录扫描请求格式无效"))
+			return
+		}
+
+		result, err := deps.Assets.ScanDirectory(r.Context(), r.PathValue("libraryId"), payload)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
 	mux.HandleFunc("GET /api/file-entries/{id}", func(w http.ResponseWriter, r *http.Request) {
 		payload, err := deps.Assets.LoadEntry(r.Context(), r.PathValue("id"))
 		if err != nil {
@@ -410,6 +444,21 @@ func NewRouter(deps Dependencies) http.Handler {
 			return
 		}
 		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("PATCH /api/file-entries/{id}/annotations", func(w http.ResponseWriter, r *http.Request) {
+		var payload assetdto.UpdateAnnotationsRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("标记更新请求格式无效"))
+			return
+		}
+
+		result, err := deps.Assets.UpdateAnnotations(r.Context(), r.PathValue("id"), payload)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
 	})
 
 	mux.HandleFunc("DELETE /api/file-entries/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -502,6 +551,12 @@ func NewRouter(deps Dependencies) http.Handler {
 	return withCORS(mux)
 }
 
+type uploadManifestItem struct {
+	Field        string `json:"field"`
+	Name         string `json:"name"`
+	RelativePath string `json:"relativePath"`
+}
+
 func parseBrowseQuery(raw *url.URL) (assetdto.BrowseQuery, error) {
 	values := raw.Query()
 	page := 1
@@ -537,6 +592,55 @@ func parseBrowseQuery(raw *url.URL) (assetdto.BrowseQuery, error) {
 		SortValue:                values.Get("sortValue"),
 		SortDirection:            values.Get("sortDirection"),
 		PartialSyncEndpointNames: values["partialSyncEndpointName"],
+	}, nil
+}
+
+func parseUploadSelectionRequest(r *http.Request) (assetdto.UploadSelectionRequest, error) {
+	if err := r.ParseMultipartForm(128 << 20); err != nil {
+		return assetdto.UploadSelectionRequest{}, apperrors.BadRequest("上传请求格式无效")
+	}
+
+	mode := strings.TrimSpace(r.FormValue("mode"))
+	var parentID *string
+	if value := strings.TrimSpace(r.FormValue("parentId")); value != "" {
+		parentID = &value
+	}
+
+	var manifest []uploadManifestItem
+	if err := json.Unmarshal([]byte(r.FormValue("manifest")), &manifest); err != nil {
+		return assetdto.UploadSelectionRequest{}, apperrors.BadRequest("上传清单格式无效")
+	}
+	if len(manifest) == 0 {
+		return assetdto.UploadSelectionRequest{}, apperrors.BadRequest("未选择任何上传内容")
+	}
+
+	files := make([]assetdto.UploadSelectionFile, 0, len(manifest))
+	for _, item := range manifest {
+		headers := r.MultipartForm.File[item.Field]
+		if len(headers) == 0 {
+			return assetdto.UploadSelectionRequest{}, apperrors.BadRequest("上传文件内容缺失")
+		}
+		file, err := headers[0].Open()
+		if err != nil {
+			return assetdto.UploadSelectionRequest{}, apperrors.BadRequest("上传文件读取失败")
+		}
+		content, readErr := io.ReadAll(file)
+		_ = file.Close()
+		if readErr != nil {
+			return assetdto.UploadSelectionRequest{}, apperrors.BadRequest("上传文件读取失败")
+		}
+		files = append(files, assetdto.UploadSelectionFile{
+			Name:         item.Name,
+			RelativePath: item.RelativePath,
+			Size:         int64(len(content)),
+			Content:      content,
+		})
+	}
+
+	return assetdto.UploadSelectionRequest{
+		ParentID: parentID,
+		Mode:     mode,
+		Files:    files,
 	}, nil
 }
 

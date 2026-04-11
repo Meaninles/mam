@@ -83,6 +83,7 @@ export function FileCenterPage(props: {
   pageCount: number;
   pageSize: PageSize;
   partialSyncEndpointNames: string[];
+  refreshing: boolean;
   searchText: string;
   selectedIds: string[];
   sortDirection: FileCenterSortDirection;
@@ -135,6 +136,7 @@ export function FileCenterPage(props: {
     pageCount,
     pageSize,
     partialSyncEndpointNames,
+    refreshing,
     searchText,
     selectedIds,
     sortDirection,
@@ -220,7 +222,7 @@ export function FileCenterPage(props: {
       return '正在读取目录索引…';
     }
     return `当前目录 ${currentPathChildren} 项，匹配 ${total} 项`;
-  }, [currentPathChildren, loading, total]);
+  }, [currentPathChildren, loading, refreshing, total]);
 
   const statusFilterLabel =
     statusFilter === '部分同步' && partialSyncEndpointNames.length > 0
@@ -421,7 +423,7 @@ export function FileCenterPage(props: {
             />
           </div>
           <ActionButton onClick={onRefreshIndex}>
-            <RefreshCw size={14} />
+            <RefreshCw className={refreshing ? 'spin' : undefined} size={14} />
             刷新索引
           </ActionButton>
         </div>

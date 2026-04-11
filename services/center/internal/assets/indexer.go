@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	apperrors "mare/services/center/internal/errors"
+	assetdto "mare/shared/contracts/dto/asset"
 )
 
 type mountConfig struct {
@@ -20,6 +21,62 @@ type mountConfig struct {
 	SourcePath       string
 	RelativeRootPath string
 	NodeType         string
+}
+
+type directorySyncTarget struct {
+	MountID      string
+	LibraryID    string
+	LibraryName  string
+	DirectoryID  string
+	RelativePath string
+	PhysicalPath string
+}
+
+func (s *Service) ScanDirectory(
+	ctx context.Context,
+	libraryID string,
+	request assetdto.ScanDirectoryRequest,
+) (assetdto.ScanDirectoryResponse, error) {
+	library, err := s.loadLibrary(ctx, libraryID)
+	if err != nil {
+		return assetdto.ScanDirectoryResponse{}, err
+	}
+
+	currentDir, _, err := s.resolveCurrentDirectory(ctx, libraryID, request.ParentID)
+	if err != nil {
+		return assetdto.ScanDirectoryResponse{}, err
+	}
+
+	targets, err := s.loadDirectorySyncTargets(ctx, libraryID, currentDir)
+	if err != nil {
+		return assetdto.ScanDirectoryResponse{}, err
+	}
+
+	now := s.now().UTC()
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return assetdto.ScanDirectoryResponse{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	if err := s.upsertLibrary(ctx, tx, library.ID, library.Name, now); err != nil {
+		return assetdto.ScanDirectoryResponse{}, err
+	}
+	if _, err := s.ensureDirectoryChain(ctx, tx, library.ID, currentDir.RelativePath, now); err != nil {
+		return assetdto.ScanDirectoryResponse{}, err
+	}
+
+	for _, target := range targets {
+		if err := s.syncDirectoryTarget(ctx, tx, target, now); err != nil {
+			return assetdto.ScanDirectoryResponse{}, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return assetdto.ScanDirectoryResponse{}, err
+	}
+
+	return assetdto.ScanDirectoryResponse{Message: "当前目录扫描已完成"}, nil
 }
 
 func (s *Service) SyncMount(ctx context.Context, mountID string) error {
@@ -139,6 +196,153 @@ func (s *Service) loadMountConfig(ctx context.Context, mountID string) (mountCon
 		return mountConfig{}, err
 	}
 	return row, nil
+}
+
+func (s *Service) loadDirectorySyncTargets(
+	ctx context.Context,
+	libraryID string,
+	directory directoryModel,
+) ([]directorySyncTarget, error) {
+	if directory.RelativePath == "/" {
+		rows, err := s.pool.Query(ctx, `
+			SELECT
+				m.id,
+				m.library_id,
+				m.library_name,
+				m.source_path
+			FROM mounts m
+			INNER JOIN storage_nodes sn ON sn.id = m.storage_node_id
+			WHERE m.library_id = $1
+			  AND m.deleted_at IS NULL
+			  AND m.enabled = TRUE
+			  AND sn.deleted_at IS NULL
+			  AND sn.node_type IN ('LOCAL', 'NAS')
+			ORDER BY m.id ASC
+		`, libraryID)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+
+		items := make([]directorySyncTarget, 0)
+		for rows.Next() {
+			var item directorySyncTarget
+			item.DirectoryID = directory.ID
+			item.RelativePath = directory.RelativePath
+			if err := rows.Scan(&item.MountID, &item.LibraryID, &item.LibraryName, &item.PhysicalPath); err != nil {
+				return nil, err
+			}
+			items = append(items, item)
+		}
+		return items, rows.Err()
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+			dp.mount_id,
+			m.library_id,
+			m.library_name,
+			dp.physical_path
+		FROM directory_presences dp
+		INNER JOIN mounts m ON m.id = dp.mount_id
+		INNER JOIN storage_nodes sn ON sn.id = m.storage_node_id
+		WHERE dp.directory_id = $1
+		  AND m.deleted_at IS NULL
+		  AND m.enabled = TRUE
+		  AND sn.deleted_at IS NULL
+		  AND sn.node_type IN ('LOCAL', 'NAS')
+		ORDER BY dp.mount_id ASC
+	`, directory.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]directorySyncTarget, 0)
+	for rows.Next() {
+		var item directorySyncTarget
+		item.DirectoryID = directory.ID
+		item.RelativePath = directory.RelativePath
+		if err := rows.Scan(&item.MountID, &item.LibraryID, &item.LibraryName, &item.PhysicalPath); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Service) syncDirectoryTarget(
+	ctx context.Context,
+	tx pgx.Tx,
+	target directorySyncTarget,
+	now time.Time,
+) error {
+	entries, err := os.ReadDir(target.PhysicalPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if err := s.markDirectoryPresenceMissing(ctx, tx, target.DirectoryID, target.MountID, now); err != nil {
+				return err
+			}
+			if err := s.markMissingDirectReplicas(ctx, tx, target.MountID, target.DirectoryID, map[string]struct{}{}, now); err != nil {
+				return err
+			}
+			return s.markMissingDirectDirectoryPresences(ctx, tx, target.MountID, target.LibraryID, target.RelativePath, map[string]struct{}{}, now)
+		}
+		return apperrors.BadRequest("当前目录无法读取，无法更新索引")
+	}
+
+	if err := s.upsertDirectoryPresence(ctx, tx, target.DirectoryID, target.MountID, target.PhysicalPath, now); err != nil {
+		return err
+	}
+
+	seenReplicas := map[string]struct{}{}
+	seenDirectories := map[string]struct{}{}
+
+	for _, entry := range entries {
+		physicalPath := filepath.Join(target.PhysicalPath, entry.Name())
+		logicalPath := joinLogicalPath(target.RelativePath, entry.Name())
+
+		if entry.IsDir() {
+			directoryID, err := s.ensureDirectoryChain(ctx, tx, target.LibraryID, logicalPath, now)
+			if err != nil {
+				return err
+			}
+			if err := s.upsertDirectoryPresence(ctx, tx, directoryID, target.MountID, physicalPath, now); err != nil {
+				return err
+			}
+			seenDirectories[physicalPath] = struct{}{}
+			continue
+		}
+		if !entry.Type().IsRegular() {
+			continue
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		assetID, err := s.upsertAsset(ctx, tx, target.LibraryID, target.DirectoryID, logicalPath, info, now)
+		if err != nil {
+			return err
+		}
+		if err := s.upsertReplica(ctx, tx, assetID, target.MountID, physicalPath, info, now); err != nil {
+			return err
+		}
+		seenReplicas[physicalPath] = struct{}{}
+	}
+
+	if err := s.markMissingDirectReplicas(ctx, tx, target.MountID, target.DirectoryID, seenReplicas, now); err != nil {
+		return err
+	}
+	return s.markMissingDirectDirectoryPresences(
+		ctx,
+		tx,
+		target.MountID,
+		target.LibraryID,
+		target.RelativePath,
+		seenDirectories,
+		now,
+	)
 }
 
 func (s *Service) upsertLibrary(ctx context.Context, tx pgx.Tx, libraryID string, libraryName string, now time.Time) error {
@@ -356,6 +560,114 @@ func (s *Service) markMissingDirectoryPresences(ctx context.Context, tx pgx.Tx, 
 		FROM directory_presences
 		WHERE mount_id = $1
 	`, mountID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id string
+		var physicalPath string
+		if err := rows.Scan(&id, &physicalPath); err != nil {
+			return err
+		}
+		if _, ok := seenPaths[physicalPath]; ok {
+			continue
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE directory_presences
+			SET presence_state = 'MISSING',
+			    missing_detected_at = $2,
+			    updated_at = $2
+			WHERE id = $1
+		`, id, now); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+func (s *Service) markDirectoryPresenceMissing(
+	ctx context.Context,
+	tx pgx.Tx,
+	directoryID string,
+	mountID string,
+	now time.Time,
+) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE directory_presences
+		SET presence_state = 'MISSING',
+		    missing_detected_at = $3,
+		    updated_at = $3
+		WHERE directory_id = $1
+		  AND mount_id = $2
+	`, directoryID, mountID, now)
+	return err
+}
+
+func (s *Service) markMissingDirectReplicas(
+	ctx context.Context,
+	tx pgx.Tx,
+	mountID string,
+	directoryID string,
+	seenPaths map[string]struct{},
+	now time.Time,
+) error {
+	rows, err := tx.Query(ctx, `
+		SELECT ar.id, ar.physical_path
+		FROM asset_replicas ar
+		INNER JOIN assets a ON a.id = ar.asset_id
+		WHERE ar.mount_id = $1
+		  AND a.directory_id = $2
+		  AND a.lifecycle_state <> 'DELETED'
+		  AND ar.replica_state <> 'DELETED'
+	`, mountID, directoryID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id string
+		var physicalPath string
+		if err := rows.Scan(&id, &physicalPath); err != nil {
+			return err
+		}
+		if _, ok := seenPaths[physicalPath]; ok {
+			continue
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE asset_replicas
+			SET replica_state = 'MISSING',
+			    sync_state = 'OUT_OF_SYNC',
+			    missing_detected_at = $2,
+			    updated_at = $2
+			WHERE id = $1
+		`, id, now); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+func (s *Service) markMissingDirectDirectoryPresences(
+	ctx context.Context,
+	tx pgx.Tx,
+	mountID string,
+	libraryID string,
+	parentPath string,
+	seenPaths map[string]struct{},
+	now time.Time,
+) error {
+	rows, err := tx.Query(ctx, `
+		SELECT dp.id, dp.physical_path
+		FROM directory_presences dp
+		INNER JOIN library_directories ld ON ld.id = dp.directory_id
+		WHERE dp.mount_id = $1
+		  AND ld.library_id = $2
+		  AND ld.parent_path IS NOT DISTINCT FROM $3
+		  AND ld.status <> 'DELETED'
+	`, mountID, libraryID, parentPath)
 	if err != nil {
 		return err
 	}

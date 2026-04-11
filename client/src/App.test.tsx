@@ -1,11 +1,11 @@
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import type { Library } from './data';
 import { TaskCenterPage } from './pages/TaskCenterPage';
 import { createInitialState } from './lib/clientState';
-import { resetFileCenterMock } from './lib/fileCenterApi';
+import { fileCenterApi, resetFileCenterMock } from './lib/fileCenterApi';
 
 const TEST_LIBRARIES: Library[] = [
   { id: 'photo', name: '商业摄影资产库', rootLabel: '/', itemCount: '0', health: '100%', storagePolicy: '本地 + NAS' },
@@ -20,6 +20,7 @@ describe('MARE 客户端', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     cleanup();
     await resetFileCenterMock();
   });
@@ -565,6 +566,31 @@ describe('MARE 客户端', () => {
     expect(screen.getByRole('button', { name: '传输任务' })).toBeInTheDocument();
   });
 
+  it('重新加载后仍保留上次选择的资产库', async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<App />);
+
+    await waitFor(() =>
+      expect(document.querySelector('.library-trigger strong')?.textContent).toBe('商业摄影资产库'),
+    );
+
+    const trigger = document.querySelector('.library-trigger') as HTMLButtonElement | null;
+    expect(trigger).not.toBeNull();
+    await user.click(trigger!);
+    await user.click(screen.getAllByRole('button', { name: /视频工作流资产库/ })[0]!);
+
+    await waitFor(() =>
+      expect(document.querySelector('.library-trigger strong')?.textContent).toBe('视频工作流资产库'),
+    );
+
+    unmount();
+    render(<App />);
+
+    await waitFor(() =>
+      expect(document.querySelector('.library-trigger strong')?.textContent).toBe('视频工作流资产库'),
+    );
+  });
+
   it.skip('支持从指定端点删除且保留资产', async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -790,5 +816,31 @@ describe('MARE 客户端', () => {
     const routeMeta = within(singleTaskRow!).getByText('本地NVMe → 115 云归档');
     expect(routeMeta).toHaveAttribute('title', '本地NVMe → 115 云归档');
     expect(routeMeta).toHaveClass('transfer-progress-meta');
+  });
+
+  it('进入目录时会后台扫描当前层且不阻塞已有目录内容', async () => {
+    const user = userEvent.setup();
+    const pendingScan = new Promise<{ message: string }>(() => undefined);
+    const scanSpy = vi
+      .spyOn(fileCenterApi, 'scanDirectory')
+      .mockResolvedValueOnce({ message: '当前目录扫描已完成' })
+      .mockImplementationOnce(() => pendingScan);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(scanSpy).toHaveBeenCalledWith({
+        libraryId: 'photo',
+        parentId: null,
+      });
+    });
+
+    await user.dblClick(await screen.findByText('拍摄原片'));
+
+    expect(await screen.findByText('2026-03-29_上海发布会_A-cam_001.RAW')).toBeInTheDocument();
+    expect(scanSpy).toHaveBeenLastCalledWith({
+      libraryId: 'photo',
+      parentId: 'photo-root-raw',
+    });
   });
 });

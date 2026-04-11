@@ -205,6 +205,23 @@ func mapColorLabel(value string) string {
 	}
 }
 
+func dbColorLabel(value string) string {
+	switch strings.TrimSpace(value) {
+	case "红标":
+		return "RED"
+	case "黄标":
+		return "YELLOW"
+	case "绿标":
+		return "GREEN"
+	case "蓝标":
+		return "BLUE"
+	case "紫标":
+		return "PURPLE"
+	default:
+		return "NONE"
+	}
+}
+
 func mapAssetLifecycle(value string) string {
 	if value == "DELETE_PENDING" {
 		return "PENDING_DELETE"

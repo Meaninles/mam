@@ -105,6 +105,7 @@ export type FileCenterDirectoryResult = {
 };
 
 export type FileCenterUploadItem = {
+  file: File;
   name: string;
   size: number;
   relativePath?: string;
@@ -271,6 +272,7 @@ export const fileCenterApi = {
       if (!Array.isArray(result.breadcrumbs) || !Array.isArray(result.items)) {
         throw new Error('file center payload shape invalid');
       }
+      result.items = result.items.map(normalizeDirectoryAnnotations);
       libraryEndpointNamesCache.set(params.libraryId, [...(result.endpointNames ?? [])]);
       return result;
     } catch (error) {
@@ -287,7 +289,7 @@ export const fileCenterApi = {
       if (!result || typeof result !== 'object' || !('id' in result)) {
         throw new Error('file entry payload shape invalid');
       }
-      return result;
+      return normalizeDirectoryAnnotations(result);
     } catch (error) {
       if (isTestRuntime()) {
         return loadEntryDetailFromLocalDatabase(id);
@@ -330,12 +332,64 @@ export const fileCenterApi = {
     }
   },
 
+  async scanDirectory(input: { libraryId: string; parentId: string | null }): Promise<{ message: string }> {
+    try {
+      return await fetchFileCenterData<{ message: string }>(`/api/libraries/${input.libraryId}/scan`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          parentId: input.parentId,
+        }),
+      });
+    } catch (error) {
+      if (isTestRuntime()) {
+        return scanDirectoryFromLocalDatabase(input);
+      }
+      throw error;
+    }
+  },
+
   async uploadSelection(input: {
     libraryId: string;
     parentId: string | null;
     mode: 'files' | 'folder';
     items: FileCenterUploadItem[];
   }): Promise<{ message: string; createdCount: number }> {
+    if (input.items.length === 0) {
+      return { message: '未选择任何上传内容', createdCount: 0 };
+    }
+
+    try {
+      const formData = new FormData();
+      formData.set('mode', input.mode);
+      if (input.parentId) {
+        formData.set('parentId', input.parentId);
+      }
+      const manifest = input.items.map((item, index) => {
+        const field = `file${index}`;
+        formData.append(field, item.file, item.name);
+        return {
+          field,
+          name: item.name,
+          relativePath: item.relativePath ?? item.name,
+        };
+      });
+      formData.set('manifest', JSON.stringify(manifest));
+      return fetchFileCenterData<{ message: string; createdCount: number }>(
+        `/api/libraries/${input.libraryId}/uploads`,
+        {
+          method: 'POST',
+          body: formData,
+        },
+      );
+    } catch (error) {
+      if (!isTestRuntime()) {
+        throw error;
+      }
+    }
+
     const db = await getDatabase();
     const library = querySingle<{ name: string }>(db, 'SELECT name FROM libraries WHERE id = $libraryId', {
       $libraryId: input.libraryId,
@@ -708,6 +762,23 @@ export const fileCenterApi = {
     id: string,
     input: { rating: number; colorLabel: FileCenterColorLabel; tags: string[] },
   ): Promise<{ message: string }> {
+    try {
+      return fetchFileCenterData<{ message: string }>(`/api/file-entries/${id}/annotations`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          rating: Math.max(0, Math.min(5, input.rating)),
+          colorLabel: input.colorLabel,
+        }),
+      });
+    } catch (error) {
+      if (!isTestRuntime()) {
+        throw error;
+      }
+    }
+
     const db = await getDatabase();
     db.run(
       `UPDATE entries
@@ -828,7 +899,7 @@ async function loadDirectoryFromLocalDatabase(params: FileCenterLoadParams): Pro
     filter.parameters,
   );
   const normalizedRows = applyDerivedFolderCounts(db, rows);
-  const sortedRows = sortEntryRows(normalizedRows, params.sortValue, params.sortDirection ?? 'desc');
+  const sortedRows = sortEntryRowsForDisplay(normalizedRows, params.sortValue, params.sortDirection ?? 'desc');
   const hydratedItems = hydrateEntries(db, sortedRows);
   const filteredItems = filterEntriesByStatus(
     hydratedItems,
@@ -841,7 +912,7 @@ async function loadDirectoryFromLocalDatabase(params: FileCenterLoadParams): Pro
 
   return {
     breadcrumbs,
-    items: pagedItems,
+    items: pagedItems.map(normalizeDirectoryAnnotations),
     total: filteredItems.length,
     currentPathChildren,
     endpointNames,
@@ -882,7 +953,8 @@ async function loadEntryDetailFromLocalDatabase(id: string): Promise<FileCenterE
     return null;
   }
 
-  return hydrateEntries(db, [row])[0] ?? null;
+  const entry = hydrateEntries(db, [row])[0] ?? null;
+  return entry ? normalizeDirectoryAnnotations(entry) : null;
 }
 
 async function createFolderFromLocalDatabase(input: {
@@ -942,6 +1014,24 @@ async function createFolderFromLocalDatabase(input: {
     throw new Error('目录创建成功，但读取结果失败');
   }
   return { message: '目录已创建', item };
+}
+
+async function scanDirectoryFromLocalDatabase(_input: {
+  libraryId: string;
+  parentId: string | null;
+}): Promise<{ message: string }> {
+  return { message: '当前目录扫描已完成' };
+}
+
+function normalizeDirectoryAnnotations<T extends FileCenterEntry>(entry: T): T {
+  if (entry.type !== 'folder') {
+    return entry;
+  }
+  return {
+    ...entry,
+    rating: 0,
+    colorLabel: '无',
+  };
 }
 
 async function deleteAssetsFromLocalDatabase(ids: string[]): Promise<{ message: string }> {
@@ -2393,6 +2483,32 @@ function sortEntryRows(
   });
 }
 
+function sortEntryRowsForDisplay(
+  rows: EntryRow[],
+  sortValue: FileCenterSortValue,
+  sortDirection: FileCenterSortDirection,
+) {
+  if (sortValue !== '星级') {
+    return sortEntryRows(rows, sortValue, sortDirection);
+  }
+
+  const direction = sortDirection === 'asc' ? 1 : -1;
+  return [...rows].sort((left, right) => {
+    if (left.type !== right.type) {
+      return left.type === 'folder' ? -1 : 1;
+    }
+    if (left.type === 'folder') {
+      return 0;
+    }
+
+    const compared = (left.rating - right.rating) * direction;
+    if (compared !== 0) {
+      return compared;
+    }
+    return right.modified_at_sort - left.modified_at_sort;
+  });
+}
+
 function filterEntriesByStatus(
   entries: FileCenterEntry[],
   statusFilter: FileCenterStatusFilter,
@@ -2442,9 +2558,14 @@ const FILE_CENTER_LEGACY_QUERY_REFERENCES = [
   hydrateEntries,
   applyDerivedFolderCounts,
   sortEntryRows,
+  sortEntryRowsForDisplay,
   filterEntriesByStatus,
 ];
 void FILE_CENTER_LEGACY_QUERY_REFERENCES;
+
+export const __FILE_CENTER_TESTING__ = {
+  sortEntryRowsForDisplay,
+};
 
 function ensureTagDomainSchema(db: SqlDatabase) {
   const existing = new Set(
