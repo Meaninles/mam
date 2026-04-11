@@ -1,9 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  ChevronRight,
   Eye,
+  File,
+  FileAudio2,
+  FileImage,
+  FileText,
+  FolderOpen,
   Info,
   RefreshCw,
-  ScanSearch,
   Search,
   ShieldCheck,
   TriangleAlert,
@@ -12,65 +17,83 @@ import type {
   ImportDeviceSessionRecord,
   ImportDraftRecord,
   ImportReportSnapshot,
-  ImportSourceNodeRecord,
   ImportTargetEndpointRecord,
   IssueRecord,
 } from '../data';
 import {
   filterImportDevices,
-  resolveImportFileFilterMatch,
-  resolveImportFileStatusTone,
   resolveImportSubmitState,
   sortImportDevices,
   sortImportReports,
   type ImportCenterFilterValue,
   type ImportCenterSortValue,
-  type ImportFileFilterValue,
 } from '../lib/importCenter';
 import { ActionButton, DenseRow, EmptyState, IconButton, SelectPill, Sheet, TonePill } from '../components/Shared';
 
-type SessionViewState = {
-  fileFilter: ImportFileFilterValue;
-  searchText: string;
+export type ImportBrowserNode = {
+  id: string;
+  deviceSessionId: string;
+  entryType: 'FILE' | 'DIRECTORY';
+  name: string;
+  relativePath: string;
+  fileKind: string;
+  size?: string;
+  modifiedAt: string;
+  isHidden: boolean;
+  hasChildren: boolean;
+  targetEndpointIds: string[];
+};
+
+type BrowserState = {
+  currentPath: string;
+  items: ImportBrowserNode[];
+  total: number;
+  hasMore: boolean;
 };
 
 export function ImportCenterPage(props: {
+  libraries: Array<{ id: string; name: string }>;
   devices: ImportDeviceSessionRecord[];
   drafts: ImportDraftRecord[];
   issues: IssueRecord[];
   reports: ImportReportSnapshot[];
-  sourceNodes: ImportSourceNodeRecord[];
   targetEndpoints: ImportTargetEndpointRecord[];
-  onApplyTargetToAll: (deviceSessionId: string, targetEndpointId: string) => void;
-  onRemoveTargetFromAll: (deviceSessionId: string, targetEndpointId: string) => void;
+  browserState: BrowserState | null;
+  browserLoading: boolean;
+  onBrowseSession: (deviceSessionId: string, path?: string) => void;
+  onOpenFolder: (deviceSessionId: string, path: string) => void;
+  onGoToParentFolder: (deviceSessionId: string, path: string) => void;
   onOpenFileCenter: (libraryId: string) => void;
   onOpenIssueCenter: (issueIds: string[]) => void;
   onOpenStorageNodes: (endpointIds: string[]) => void;
   onOpenTaskCenter: (taskId?: string) => void;
   onRefreshDevices: () => void;
+  onSelectLibrary: (draftId: string, libraryId: string) => void;
   onRefreshPrecheck: (draftId: string) => void;
-  onRescanDevice: (deviceSessionId: string) => void;
-  onSaveDraft: (draftId: string) => void;
-  onSetSourceTargets: (sourceNodeId: string, targetEndpointIds: string[]) => void;
-  onSubmitImport: (deviceSessionId: string) => string | null;
+  onSaveSelectionTargets: (
+    deviceSessionId: string,
+    payload: { entryType: string; name: string; relativePath: string; targetEndpointIds: string[] },
+  ) => void;
+  onSubmitImport: (deviceSessionId: string) => void;
 }) {
   const {
     devices,
     drafts,
     reports,
-    sourceNodes,
     targetEndpoints,
-    onApplyTargetToAll,
-    onRemoveTargetFromAll,
+    libraries,
+    browserState,
+    browserLoading,
+    onBrowseSession,
+    onOpenFolder,
+    onGoToParentFolder,
     onOpenFileCenter,
     onOpenIssueCenter,
-    onOpenStorageNodes,
     onOpenTaskCenter,
     onRefreshDevices,
+    onSelectLibrary,
     onRefreshPrecheck,
-    onRescanDevice,
-    onSaveDraft,
-    onSetSourceTargets,
+    onSaveSelectionTargets,
     onSubmitImport,
   } = props;
 
@@ -82,7 +105,8 @@ export function ImportCenterPage(props: {
   const [precheckDraftId, setPrecheckDraftId] = useState<string | null>(null);
   const [reportSheetId, setReportSheetId] = useState<string | null>(null);
   const [submitDeviceId, setSubmitDeviceId] = useState<string | null>(null);
-  const [sessionViewState, setSessionViewState] = useState<Record<string, SessionViewState>>({});
+  const [browserSearchText, setBrowserSearchText] = useState('');
+  const [selectedBrowserPaths, setSelectedBrowserPaths] = useState<string[]>([]);
 
   const draftById = useMemo(() => new Map(drafts.map((draft) => [draft.id, draft])), [drafts]);
   const deviceById = useMemo(() => new Map(devices.map((device) => [device.id, device])), [devices]);
@@ -95,21 +119,20 @@ export function ImportCenterPage(props: {
   );
 
   useEffect(() => {
-    if (selectedDeviceId && deviceById.has(selectedDeviceId)) {
-      return;
-    }
-
     const fallbackDevice = visibleDevices.find((device) => device.sessionStatus !== '已拔出') ?? visibleDevices[0] ?? null;
-    setSelectedDeviceId(fallbackDevice?.id ?? null);
-  }, [deviceById, selectedDeviceId, visibleDevices]);
+    const nextDeviceId = selectedDeviceId && deviceById.has(selectedDeviceId) ? selectedDeviceId : fallbackDevice?.id ?? null;
+    if (nextDeviceId && nextDeviceId !== selectedDeviceId) {
+      setSelectedDeviceId(nextDeviceId);
+      onBrowseSession(nextDeviceId);
+    }
+    if (!nextDeviceId) {
+      setSelectedDeviceId(null);
+    }
+  }, [deviceById, onBrowseSession, selectedDeviceId, visibleDevices]);
 
   const selectedDevice = selectedDeviceId ? deviceById.get(selectedDeviceId) ?? null : null;
   const selectedDraft = selectedDevice?.activeDraftId ? draftById.get(selectedDevice.activeDraftId) ?? null : null;
   const selectedReport = selectedDevice?.latestReportId ? reportById.get(selectedDevice.latestReportId) ?? null : null;
-  const selectedSourceNodes = useMemo(
-    () => (selectedDevice ? sourceNodes.filter((node) => node.deviceSessionId === selectedDevice.id) : []),
-    [selectedDevice, sourceNodes],
-  );
   const availableTargets = useMemo(() => {
     if (!selectedDevice) return [];
     return selectedDevice.availableTargetEndpointIds
@@ -117,40 +140,44 @@ export function ImportCenterPage(props: {
       .filter((target): target is ImportTargetEndpointRecord => Boolean(target));
   }, [selectedDevice, targetById]);
 
-  const currentSessionState = selectedDevice
-    ? sessionViewState[selectedDevice.id] ?? { fileFilter: '全部', searchText: '' }
-    : { fileFilter: '全部' as ImportFileFilterValue, searchText: '' };
+  const browserItems = useMemo(() => {
+    const items = browserState?.items ?? [];
+    const keyword = browserSearchText.trim().toLowerCase();
+    if (!keyword) {
+      return items;
+    }
+    return items.filter((item) => [item.name, item.relativePath, item.fileKind].join(' ').toLowerCase().includes(keyword));
+  }, [browserSearchText, browserState?.items]);
 
-  const filteredSessionFiles = useMemo(
-    () =>
-      selectedSourceNodes.filter((file) =>
-        resolveImportFileFilterMatch(file, currentSessionState.fileFilter, currentSessionState.searchText),
-      ),
-    [currentSessionState.fileFilter, currentSessionState.searchText, selectedSourceNodes],
+  useEffect(() => {
+    setSelectedBrowserPaths([]);
+  }, [selectedDeviceId, browserState?.currentPath]);
+
+  const selectedEntries = useMemo(
+    () => browserItems.filter((item) => item.targetEndpointIds.length > 0),
+    [browserItems],
   );
-
+  const selectedBrowserItems = useMemo(
+    () => browserItems.filter((item) => selectedBrowserPaths.includes(item.relativePath)),
+    [browserItems, selectedBrowserPaths],
+  );
+  const allVisibleSelected = browserItems.length > 0 && browserItems.every((item) => selectedBrowserPaths.includes(item.relativePath));
   const submitState =
-    selectedDevice && selectedDraft ? resolveImportSubmitState(selectedDevice, selectedDraft, selectedSourceNodes) : null;
+    selectedDevice && selectedDraft ? resolveImportSubmitState(selectedDevice, selectedDraft, selectedEntries as any) : null;
 
   const reportSheet = reportSheetId ? reportById.get(reportSheetId) ?? null : null;
   const deviceDetail = deviceDetailId ? deviceById.get(deviceDetailId) ?? null : null;
   const precheckDraft = precheckDraftId ? draftById.get(precheckDraftId) ?? null : null;
   const submitDevice = submitDeviceId ? deviceById.get(submitDeviceId) ?? null : null;
   const recentReports = useMemo(() => sortImportReports(reports), [reports]);
-  const actionableSourceNodes = useMemo(
-    () => selectedSourceNodes.filter((node) => node.status !== '已跳过'),
-    [selectedSourceNodes],
-  );
-
-  function updateSessionState(deviceSessionId: string, nextState: Partial<SessionViewState>) {
-    setSessionViewState((current) => ({
-      ...current,
-      [deviceSessionId]: {
-        ...(current[deviceSessionId] ?? { fileFilter: '全部', searchText: '' }),
-        ...nextState,
-      },
-    }));
-  }
+  const currentPath = browserState?.currentPath ?? '/';
+  const browserBreadcrumbs = useMemo(() => {
+    if (currentPath === '/' || currentPath.trim() === '') {
+      return [{ label: '/', path: '' }];
+    }
+    const segments = currentPath.replace(/^\/+/, '').split('/').filter(Boolean);
+    return [{ label: '/', path: '' }, ...segments.map((segment, index) => ({ label: segment, path: segments.slice(0, index + 1).join('/') }))];
+  }, [currentPath]);
 
   return (
     <section className="page-stack import-center-page">
@@ -158,12 +185,7 @@ export function ImportCenterPage(props: {
         <div className="toolbar-group wrap">
           <div className="import-inline-pills" role="group" aria-label="会话状态筛选">
             {(['全部', '待扫描', '可导入', '导入中', '异常'] as ImportCenterFilterValue[]).map((item) => (
-              <button
-                key={item}
-                className={filterValue === item ? 'active' : ''}
-                type="button"
-                onClick={() => setFilterValue(item)}
-              >
+              <button key={item} className={filterValue === item ? 'active' : ''} type="button" onClick={() => setFilterValue(item)}>
                 {item}
               </button>
             ))}
@@ -201,29 +223,22 @@ export function ImportCenterPage(props: {
                 <article
                   className={`import-device-row simple${selectedDeviceId === device.id ? ' active' : ''}`}
                   key={device.id}
-                  onClick={() => setSelectedDeviceId(device.id)}
+                  onClick={() => {
+                    setSelectedDeviceId(device.id);
+                    onBrowseSession(device.id);
+                  }}
                 >
                   <div className="import-device-text">
-                    <strong>{device.deviceLabel}</strong>
-                    <span
-                      className="import-device-meta"
-                      title={`${device.mountPath} · 可用空间 ${device.capacitySummary.available}`}
-                    >
+                    <strong title={device.deviceLabel}>{device.deviceLabel}</strong>
+                    <span className="import-device-meta" title={`${device.mountPath} · 可用空间 ${device.capacitySummary.available}`}>
                       {device.mountPath} · 可用空间 {device.capacitySummary.available}
                     </span>
                   </div>
                   <div className="import-device-actions">
-                    <IconButton ariaLabel={`打开会话 ${device.deviceLabel}`} tooltip="打开会话" onClick={() => setSelectedDeviceId(device.id)}>
+                    <IconButton ariaLabel={`打开会话 ${device.deviceLabel}`} tooltip="打开会话" onClick={() => onBrowseSession(device.id)}>
                       <Eye size={15} />
                     </IconButton>
-                    <IconButton ariaLabel={`重新扫描 ${device.deviceLabel}`} tooltip="重新扫描" onClick={() => onRescanDevice(device.id)}>
-                      <RefreshCw size={15} />
-                    </IconButton>
-                    <IconButton
-                      ariaLabel={`查看预检 ${device.deviceLabel}`}
-                      tooltip="查看预检"
-                      onClick={() => setPrecheckDraftId(device.activeDraftId ?? null)}
-                    >
+                    <IconButton ariaLabel={`查看预检 ${device.deviceLabel}`} tooltip="查看预检" onClick={() => setPrecheckDraftId(device.activeDraftId ?? null)}>
                       <ShieldCheck size={15} />
                     </IconButton>
                     <IconButton ariaLabel={`查看详情 ${device.deviceLabel}`} tooltip="查看详情" onClick={() => setDeviceDetailId(device.id)}>
@@ -247,18 +262,29 @@ export function ImportCenterPage(props: {
                   <TonePill tone={resolveDeviceTone(selectedDevice.sessionStatus)}>{selectedDevice.sessionStatus}</TonePill>
                 </header>
                 <div className="single-column import-summary-grid">
+                  <label className="form-field">
+                    <span>导入到资产库</span>
+                    <select
+                      aria-label="导入到资产库"
+                      value={selectedDraft?.libraryId ?? ''}
+                      onChange={(event) => selectedDraft && onSelectLibrary(selectedDraft.id, event.target.value)}
+                    >
+                      <option value="">请选择资产库</option>
+                      {libraries.map((library) => (
+                        <option key={library.id} value={library.id}>
+                          {library.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   <DenseRow label="来源路径" value={selectedDevice.mountPath} />
-                  <DenseRow
-                    label="容量 / 可用空间"
-                    value={`${selectedDevice.capacitySummary.total} / ${selectedDevice.capacitySummary.available}`}
-                  />
-                  <DenseRow label="文件数 / 文件夹数" value={`${selectedDevice.fileCount} / ${selectedDevice.folderCount}`} />
-                  <DenseRow label="最近扫描" value={selectedDraft?.precheckSummary.updatedAt ?? selectedDevice.lastSeenAt} />
+                  <DenseRow label="容量 / 可用空间" value={`${selectedDevice.capacitySummary.total} / ${selectedDevice.capacitySummary.available}`} />
+                  <DenseRow label="最近在线" value={selectedDevice.lastSeenAt} />
                 </div>
                 <div className="toolbar-group wrap import-primary-actions">
-                  <ActionButton onClick={() => onRescanDevice(selectedDevice.id)}>
-                    <ScanSearch size={14} />
-                    重新扫描
+                  <ActionButton onClick={() => onBrowseSession(selectedDevice.id, currentPath === '/' ? undefined : currentPath.slice(1))}>
+                    <RefreshCw size={14} />
+                    刷新当前层级
                   </ActionButton>
                   <ActionButton onClick={() => selectedDraft && onRefreshPrecheck(selectedDraft.id)}>
                     <ShieldCheck size={14} />
@@ -266,56 +292,6 @@ export function ImportCenterPage(props: {
                   </ActionButton>
                   {selectedReport ? <ActionButton onClick={() => onOpenTaskCenter(selectedReport.taskId)}>打开任务中心</ActionButton> : null}
                 </div>
-              </div>
-
-              <div className="workspace-card">
-                <header className="section-header">
-                  <strong>目标编排</strong>
-                </header>
-                {availableTargets.length === 0 ? (
-                  <EmptyState title="当前设备还没有可用目标端" description="请先检查存储节点状态，或等待扫描完成后再继续。" />
-                ) : (
-                  <>
-                    <div className="import-target-grid">
-                      {availableTargets.map((target) => {
-                        const appliedCount = actionableSourceNodes.filter((node) => node.targetEndpointIds.includes(target.id)).length;
-                        const totalCount = actionableSourceNodes.length;
-                        const coverageState =
-                          totalCount === 0 || appliedCount === 0
-                            ? 'none'
-                            : appliedCount === totalCount
-                              ? 'all'
-                              : 'partial';
-
-                        return (
-                          <article className={`import-target-card ${coverageState}`} key={target.id}>
-                            <div className="row-main">
-                              <div className="import-report-head">
-                                <strong>{target.label}</strong>
-                                <TonePill tone={target.tone}>{target.statusLabel}</TonePill>
-                              </div>
-                              <span>
-                                {target.type} · {target.availableSpace}
-                              </span>
-                              <span>
-                                {coverageState === 'all'
-                                  ? '当前设备全部导入到该节点'
-                                  : coverageState === 'partial'
-                                    ? `当前设备部分文件导入到该节点（${appliedCount}/${totalCount}）`
-                                    : '当前设备未导入到该节点'}
-                              </span>
-                            </div>
-                            <div className="toolbar-group wrap">
-                              <ActionButton onClick={() => onApplyTargetToAll(selectedDevice.id, target.id)}>应用到全部文件</ActionButton>
-                              <ActionButton onClick={() => onRemoveTargetFromAll(selectedDevice.id, target.id)}>全部取消</ActionButton>
-                              <ActionButton onClick={() => onOpenStorageNodes([target.endpointId])}>查看目标端</ActionButton>
-                            </div>
-                          </article>
-                        );
-                      })}
-                    </div>
-                  </>
-                )}
               </div>
 
               <div className="workspace-card">
@@ -330,7 +306,7 @@ export function ImportCenterPage(props: {
                 {selectedDraft ? (
                   <>
                     <div className="dense-result-list">
-                      {selectedDraft.precheckSummary.items.slice(0, 4).map((item) => (
+                      {(selectedDraft.precheckSummary.items ?? []).slice(0, 4).map((item) => (
                         <div className="dense-result-row" key={item.id}>
                           <div className="row-main">
                             <strong>{item.label}</strong>
@@ -353,92 +329,185 @@ export function ImportCenterPage(props: {
                     </div>
                   </>
                 ) : (
-                  <EmptyState title="当前设备还没有预检数据" description="可以重新扫描设备，或等待草稿恢复后继续。" />
+                  <EmptyState title="当前设备还没有预检数据" description="请先选择资产库和导入对象，然后再触发预检。" />
                 )}
               </div>
 
               <div className="workspace-card">
                 <header className="section-header">
-                  <strong>文件清单</strong>
+                  <div className="address-bar import-browser-breadcrumbs">
+                    {browserBreadcrumbs.map((item) => (
+                      <button
+                        key={`${item.label}-${item.path}`}
+                        type="button"
+                        onClick={() => onBrowseSession(selectedDevice.id, item.path || undefined)}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
                   <div className="toolbar-group wrap">
-                    <div className="import-inline-pills" role="group" aria-label="文件状态筛选">
-                      {(['全部', '可导入', '已导入', '冲突', '异常'] as ImportFileFilterValue[]).map((item) => (
-                        <button
-                          key={item}
-                          className={currentSessionState.fileFilter === item ? 'active' : ''}
-                          type="button"
-                          onClick={() => updateSessionState(selectedDevice.id, { fileFilter: item })}
-                        >
-                          {item}
-                        </button>
-                      ))}
-                    </div>
-                    <label className="search-field import-inline-search" htmlFor={`import-file-search-${selectedDevice.id}`}>
+                    <label className="search-field import-inline-search" htmlFor={`import-browser-search-${selectedDevice.id}`}>
                       <Search size={14} />
                       <input
-                        id={`import-file-search-${selectedDevice.id}`}
-                        placeholder="搜索文件名或路径"
+                        id={`import-browser-search-${selectedDevice.id}`}
+                        placeholder="筛选当前层级名称"
                         type="search"
-                        value={currentSessionState.searchText}
-                        onChange={(event) => updateSessionState(selectedDevice.id, { searchText: event.target.value })}
+                        value={browserSearchText}
+                        onChange={(event) => setBrowserSearchText(event.target.value)}
                       />
                     </label>
                   </div>
                 </header>
-                {filteredSessionFiles.length === 0 ? (
-                  <EmptyState title="当前筛选下没有匹配文件" description="可以调整状态筛选、搜索词，或重新扫描设备。" />
+
+                <div className="toolbar-group wrap">
+                  <ActionButton
+                    disabled={currentPath === '/'}
+                    onClick={() => onGoToParentFolder(selectedDevice.id, currentPath)}
+                  >
+                    返回上一级
+                  </ActionButton>
+                </div>
+
+                {selectedBrowserItems.length > 0 && selectedDraft?.libraryId ? (
+                  <div className="toolbar-card action-toolbar import-selection-toolbar">
+                    <div className="toolbar-group wrap">
+                      <span className="selection-caption">已选 {selectedBrowserItems.length} 项</span>
+                    </div>
+                    <div className="toolbar-group wrap">
+                      {availableTargets.map((target) => (
+                        <ActionButton
+                          key={`batch-target-${target.id}`}
+                          onClick={() => {
+                            selectedBrowserItems.forEach((item) => {
+                              const nextTargets = Array.from(new Set([...item.targetEndpointIds, target.id]));
+                              onSaveSelectionTargets(selectedDevice.id, {
+                                entryType: item.entryType,
+                                name: item.name,
+                                relativePath: item.relativePath,
+                                targetEndpointIds: nextTargets,
+                              });
+                            });
+                          }}
+                        >
+                          批量同步到 {target.label}
+                        </ActionButton>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {browserLoading ? (
+                  <EmptyState title="正在加载当前层级" description="仅加载当前路径下的直接文件夹和文件，请稍候。" />
+                ) : browserItems.length === 0 ? (
+                  <EmptyState title="当前层级没有可显示内容" description="可以切换目录、刷新当前层级，或返回上一级继续选择。" />
                 ) : (
                   <div className="storage-table-wrap">
-                    <table className="file-table storage-table import-file-table">
+                    <table className="file-table storage-table import-file-table file-center-table">
+                      <colgroup>
+                        <col className="import-col-checkbox" />
+                        <col className="import-col-name" />
+                        <col className="import-col-modified" />
+                        <col className="import-col-targets" />
+                      </colgroup>
                       <thead>
                         <tr>
-                          <th scope="col">文件</th>
-                          <th scope="col">类型</th>
-                          <th scope="col">大小</th>
+                          <th className="checkbox-cell">
+                            <input
+                              aria-label="选择当前层级全部对象"
+                              checked={allVisibleSelected}
+                              type="checkbox"
+                              onChange={() =>
+                                setSelectedBrowserPaths((current) =>
+                                  allVisibleSelected
+                                    ? current.filter((path) => !browserItems.some((item) => item.relativePath === path))
+                                    : Array.from(new Set([...current, ...browserItems.map((item) => item.relativePath)])),
+                                )
+                              }
+                            />
+                          </th>
+                          <th scope="col">名称</th>
+                          <th scope="col">修改时间</th>
                           <th scope="col">目标端</th>
-                          <th scope="col">状态</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {filteredSessionFiles.map((file) => (
-                          <tr key={file.id}>
-                            <td>
-                              <div className="inline-file">
-                                <strong>{file.name}</strong>
-                                <span>{file.relativePath}</span>
-                              </div>
+                        {browserItems.map((item) => (
+                          <tr
+                            key={item.id}
+                            aria-selected={selectedBrowserPaths.includes(item.relativePath)}
+                            onDoubleClick={() => item.entryType === 'DIRECTORY' && onOpenFolder(selectedDevice.id, item.relativePath)}
+                          >
+                            <td className="checkbox-cell">
+                              <input
+                                aria-label={`选择 ${item.name}`}
+                                checked={selectedBrowserPaths.includes(item.relativePath)}
+                                type="checkbox"
+                                onChange={() =>
+                                  setSelectedBrowserPaths((current) =>
+                                    current.includes(item.relativePath)
+                                      ? current.filter((path) => path !== item.relativePath)
+                                      : [...current, item.relativePath],
+                                  )
+                                }
+                              />
                             </td>
-                            <td>{file.fileKind}</td>
-                            <td>{file.size}</td>
                             <td>
-                              <div className="checkbox-row">
-                                {availableTargets.map((target) => {
-                                  const checked = file.targetEndpointIds.includes(target.id);
-                                  const disabled = file.status === '已跳过';
-                                  return (
-                                    <label
-                                      key={`${file.id}-${target.id}`}
-                                      className={`target-check${checked ? ' checked' : ''}${disabled ? ' disabled' : ''}`}
+                              <div className="file-center-name-cell">
+                                <div className={`file-center-icon ${item.entryType === 'DIRECTORY' ? 'folder' : 'file'}`}>
+                                  <ImportNodeIcon item={item} />
+                                </div>
+                                <div className="storage-node-cell">
+                                  <div className="storage-node-title">
+                                    <button
+                                      className="link-button import-node-link"
+                                      title={item.name}
+                                      type="button"
+                                      onClick={() => item.entryType === 'DIRECTORY' && onOpenFolder(selectedDevice.id, item.relativePath)}
                                     >
-                                      <input
-                                        checked={checked}
-                                        disabled={disabled}
-                                        type="checkbox"
-                                        onChange={() => {
-                                          const nextTargets = checked
-                                            ? file.targetEndpointIds.filter((targetId) => targetId !== target.id)
-                                            : [...file.targetEndpointIds, target.id];
-                                          onSetSourceTargets(file.id, nextTargets);
-                                        }}
-                                      />
-                                      <span>{target.label}</span>
-                                    </label>
-                                  );
-                                })}
+                                      <strong title={item.name}>{item.name}</strong>
+                                      {item.entryType === 'DIRECTORY' && item.hasChildren ? <ChevronRight size={14} /> : null}
+                                    </button>
+                                  </div>
+                                  <div className="endpoint-row file-center-tag-row">
+                                    {item.isHidden ? <TonePill tone="warning">隐藏</TonePill> : null}
+                                    {item.size ? <span className="selection-caption">{item.size}</span> : null}
+                                  </div>
+                                  <span title={item.relativePath}>{item.relativePath}</span>
+                                </div>
                               </div>
                             </td>
+                            <td>{formatImportDateTime(item.modifiedAt)}</td>
                             <td>
-                              <TonePill tone={resolveImportFileStatusTone(file.status)}>{file.status}</TonePill>
+                              {selectedDraft?.libraryId ? (
+                                <div className="checkbox-row">
+                                  {availableTargets.map((target) => {
+                                    const checked = item.targetEndpointIds.includes(target.id);
+                                    return (
+                                      <label key={`${item.id}-${target.id}`} className={`target-check${checked ? ' checked' : ''}`}>
+                                        <input
+                                          checked={checked}
+                                          type="checkbox"
+                                          onChange={() => {
+                                            const nextTargets = checked
+                                              ? item.targetEndpointIds.filter((targetId) => targetId !== target.id)
+                                              : [...item.targetEndpointIds, target.id];
+                                            onSaveSelectionTargets(selectedDevice.id, {
+                                              entryType: item.entryType,
+                                              name: item.name,
+                                              relativePath: item.relativePath,
+                                              targetEndpointIds: nextTargets,
+                                            });
+                                          }}
+                                        />
+                                        <span>{target.label}</span>
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              ) : (
+                                <span className="selection-caption">请先选择资产库</span>
+                              )}
                             </td>
                           </tr>
                         ))}
@@ -456,11 +525,11 @@ export function ImportCenterPage(props: {
                   </header>
                   <div className="import-result-grid">
                     <div className="import-overview-metric">
-                      <span>成功文件</span>
+                      <span>成功对象</span>
                       <strong>{selectedReport.successCount}</strong>
                     </div>
                     <div className="import-overview-metric">
-                      <span>失败文件</span>
+                      <span>失败对象</span>
                       <strong>{selectedReport.failedCount}</strong>
                     </div>
                     <div className="import-overview-metric">
@@ -476,7 +545,7 @@ export function ImportCenterPage(props: {
                   <div className="toolbar-group wrap">
                     <ActionButton onClick={() => onOpenTaskCenter(selectedReport.taskId)}>打开任务中心</ActionButton>
                     <ActionButton onClick={() => setReportSheetId(selectedReport.id)}>查看导入报告</ActionButton>
-                    <ActionButton onClick={() => onOpenFileCenter(selectedDevice.libraryId)}>去文件中心</ActionButton>
+                    {selectedDraft?.libraryId ? <ActionButton onClick={() => onOpenFileCenter(selectedDraft.libraryId)}>去文件中心</ActionButton> : null}
                     {selectedReport.issueIds.length > 0 ? (
                       <ActionButton onClick={() => onOpenIssueCenter(selectedReport.issueIds)}>打开异常中心</ActionButton>
                     ) : null}
@@ -492,11 +561,10 @@ export function ImportCenterPage(props: {
                       ? submitState.reason
                       : submitState?.actionLabel === '查看任务'
                         ? '当前会话已经进入运行期管理，后续请去任务中心继续跟踪。'
-                        : '预检通过后即可提交当前设备会话。'}
+                        : '当前层级只做轻量浏览；提交导入后会在后台递归展开所选目录与文件。'}
                   </span>
                 </div>
                 <div className="toolbar-group wrap">
-                  <ActionButton onClick={() => selectedDraft && onSaveDraft(selectedDraft.id)}>保存草稿</ActionButton>
                   <ActionButton onClick={() => selectedDraft && onRefreshPrecheck(selectedDraft.id)}>重新预检</ActionButton>
                   {submitState?.actionLabel === '查看任务' ? (
                     <ActionButton tone="primary" onClick={() => onOpenTaskCenter(selectedReport?.taskId)}>
@@ -531,7 +599,7 @@ export function ImportCenterPage(props: {
       {precheckDraft ? (
         <Sheet onClose={() => setPrecheckDraftId(null)} title="预检详情">
           <div className="dense-result-list">
-            {precheckDraft.precheckSummary.items.map((item) => (
+            {(precheckDraft.precheckSummary.items ?? []).map((item) => (
               <div className="dense-result-row" key={item.id}>
                 <div className="row-main">
                   <strong>{item.label}</strong>
@@ -592,7 +660,7 @@ function ConfirmDialog(props: { notes: string[]; onCancel: () => void; onConfirm
           <strong>{title}</strong>
         </div>
         <div className="dialog-card">
-          <p className="muted-paragraph">提交后会正式创建导入作业，并把运行期管理交给任务中心继续承接。</p>
+          <p className="muted-paragraph">提交后会在后台递归扫描所选文件夹和文件，并创建真实导入作业。</p>
           {notes.map((note) => (
             <p className="confirm-warning" key={note}>
               {note}
@@ -627,4 +695,37 @@ function resolveReportTone(status: string) {
   if (status === '失败') return 'critical';
   if (status === '部分成功' || status === '运行中' || status === '已排队') return 'warning';
   return 'success';
+}
+
+function ImportNodeIcon({ item }: { item: ImportBrowserNode }) {
+  if (item.entryType === 'DIRECTORY') {
+    return <FolderOpen size={16} />;
+  }
+  if (item.fileKind === '图片') {
+    return <FileImage size={16} />;
+  }
+  if (item.fileKind === '音频') {
+    return <FileAudio2 size={16} />;
+  }
+  if (item.fileKind === '文档') {
+    return <FileText size={16} />;
+  }
+  return <File size={16} />;
+}
+
+function formatImportDateTime(value?: string) {
+  if (!value) {
+    return '—';
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString('zh-CN', {
+    hour12: false,
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }

@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS agents (
   platform TEXT NOT NULL,
   mode TEXT NOT NULL,
   process_id BIGINT NOT NULL,
+  callback_base_url TEXT NOT NULL DEFAULT '',
   registered_at TIMESTAMPTZ NOT NULL,
   last_heartbeat_at TIMESTAMPTZ NOT NULL
 );

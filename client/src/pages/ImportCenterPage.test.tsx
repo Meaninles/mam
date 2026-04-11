@@ -1,32 +1,39 @@
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import { createInitialState } from '../lib/clientState';
 import { ImportCenterPage } from './ImportCenterPage';
+import {
+  importFixtureBrowserState,
+  importFixtureDevices,
+  importFixtureDrafts,
+  importFixtureLibraries,
+  importFixtureReports,
+  importFixtureTargets,
+} from '../test/importFixtures';
 
 function renderImportCenter() {
-  const state = createInitialState();
-
   return render(
     <ImportCenterPage
-      devices={state.importDeviceSessions}
-      drafts={state.importDrafts}
-      issues={state.issueRecords}
-      reports={state.importReports}
-      sourceNodes={state.importSourceNodes}
-      targetEndpoints={state.importTargetEndpoints}
-      onApplyTargetToAll={vi.fn()}
-      onRemoveTargetFromAll={vi.fn()}
+      libraries={importFixtureLibraries}
+      devices={importFixtureDevices}
+      drafts={importFixtureDrafts}
+      issues={[]}
+      reports={importFixtureReports}
+      targetEndpoints={importFixtureTargets}
+      browserState={importFixtureBrowserState}
+      browserLoading={false}
+      onBrowseSession={vi.fn()}
+      onOpenFolder={vi.fn()}
+      onGoToParentFolder={vi.fn()}
       onOpenFileCenter={vi.fn()}
       onOpenIssueCenter={vi.fn()}
       onOpenStorageNodes={vi.fn()}
       onOpenTaskCenter={vi.fn()}
       onRefreshDevices={vi.fn()}
+      onSelectLibrary={vi.fn()}
       onRefreshPrecheck={vi.fn()}
-      onRescanDevice={vi.fn()}
-      onSaveDraft={vi.fn()}
-      onSetSourceTargets={vi.fn()}
-      onSubmitImport={vi.fn(() => 'new-report-id')}
+      onSaveSelectionTargets={vi.fn()}
+      onSubmitImport={vi.fn()}
     />,
   );
 }
@@ -35,75 +42,69 @@ describe('ImportCenterPage', () => {
   it('支持从待导入端列表打开设备会话并显示来源摘要', async () => {
     renderImportCenter();
 
-    const deviceRow = (await screen.findByText('CFexpress A 卡（A 机位）')).closest('article');
+    const deviceRow = (await screen.findAllByText('CFexpress A 卡（A 机位）'))[0]?.closest('article');
     expect(deviceRow).not.toBeNull();
     expect(within(deviceRow!).getByRole('button', { name: '打开会话 CFexpress A 卡（A 机位）' })).toBeInTheDocument();
-    expect(within(deviceRow!).getByRole('button', { name: '重新扫描 CFexpress A 卡（A 机位）' })).toBeInTheDocument();
     expect(within(deviceRow!).getByRole('button', { name: '查看预检 CFexpress A 卡（A 机位）' })).toBeInTheDocument();
     expect(within(deviceRow!).getByRole('button', { name: '查看详情 CFexpress A 卡（A 机位）' })).toBeInTheDocument();
 
     await userEvent.setup().click(deviceRow!);
 
     expect(await screen.findByText('来源路径')).toBeInTheDocument();
-    expect(screen.getByText('目标编排')).toBeInTheDocument();
-    expect(screen.getByText('文件清单')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '/' })).toBeInTheDocument();
+    expect((await screen.findAllByText('A001')).length).toBeGreaterThan(0);
   });
 
   it('为可导入会话点击提交导入时会先弹出确认弹窗', async () => {
     const user = userEvent.setup();
     renderImportCenter();
 
-    const deviceRow = (await screen.findByText('CFexpress A 卡（A 机位）')).closest('article');
+    const deviceRow = (await screen.findAllByText('CFexpress A 卡（A 机位）'))[0]?.closest('article');
     expect(deviceRow).not.toBeNull();
     await user.click(deviceRow!);
 
     await user.click(screen.getByRole('button', { name: '提交导入' }));
 
     expect(await screen.findByRole('dialog', { name: '确认提交导入' })).toBeInTheDocument();
-    expect(screen.getByText(/提交后会正式创建导入作业/)).toBeInTheDocument();
+    expect(screen.getByText(/提交后会在后台递归扫描所选文件夹和文件/)).toBeInTheDocument();
   });
 
-  it('目标编排支持全部应用和全部取消，并展示导入覆盖状态', async () => {
+  it('当前层级浏览支持为目录和文件分配目标端', async () => {
     const user = userEvent.setup();
-    const state = createInitialState();
-    const onApplyTargetToAll = vi.fn();
-    const onRemoveTargetFromAll = vi.fn();
+    const onSaveSelectionTargets = vi.fn();
 
     render(
       <ImportCenterPage
-        devices={state.importDeviceSessions}
-        drafts={state.importDrafts}
-        issues={state.issueRecords}
-        reports={state.importReports}
-        sourceNodes={state.importSourceNodes}
-        targetEndpoints={state.importTargetEndpoints}
-        onApplyTargetToAll={onApplyTargetToAll}
-        onRemoveTargetFromAll={onRemoveTargetFromAll}
+        libraries={importFixtureLibraries}
+        devices={importFixtureDevices}
+        drafts={importFixtureDrafts}
+        issues={[]}
+        reports={importFixtureReports}
+        targetEndpoints={importFixtureTargets}
+        browserState={importFixtureBrowserState}
+        browserLoading={false}
+        onBrowseSession={vi.fn()}
+        onOpenFolder={vi.fn()}
+        onGoToParentFolder={vi.fn()}
         onOpenFileCenter={vi.fn()}
         onOpenIssueCenter={vi.fn()}
         onOpenStorageNodes={vi.fn()}
         onOpenTaskCenter={vi.fn()}
         onRefreshDevices={vi.fn()}
+        onSelectLibrary={vi.fn()}
         onRefreshPrecheck={vi.fn()}
-        onRescanDevice={vi.fn()}
-        onSaveDraft={vi.fn()}
-        onSetSourceTargets={vi.fn()}
-        onSubmitImport={vi.fn(() => 'new-report-id')}
+        onSaveSelectionTargets={onSaveSelectionTargets}
+        onSubmitImport={vi.fn()}
       />,
     );
 
-    const deviceRow = (await screen.findByText('CFexpress A 卡（A 机位）')).closest('article');
+    const deviceRow = (await screen.findAllByText('CFexpress A 卡（A 机位）'))[0]?.closest('article');
     expect(deviceRow).not.toBeNull();
     await user.click(deviceRow!);
 
-    const targetCard = screen.getAllByText('影像 NAS 01')[0]?.closest('.import-target-card');
-    expect(targetCard).not.toBeNull();
-    expect(targetCard).toHaveClass('partial');
-
-    await user.click(within(targetCard as HTMLElement).getByRole('button', { name: '应用到全部文件' }));
-    expect(onApplyTargetToAll).toHaveBeenCalled();
-
-    await user.click(within(targetCard as HTMLElement).getByRole('button', { name: '全部取消' }));
-    expect(onRemoveTargetFromAll).toHaveBeenCalled();
+    const row = (await screen.findAllByText('cover.jpg'))[0]?.closest('tr');
+    expect(row).not.toBeNull();
+    await user.click(within(row as HTMLElement).getByLabelText('影像 NAS 01'));
+    expect(onSaveSelectionTargets).toHaveBeenCalled();
   });
 });

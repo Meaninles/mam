@@ -12,6 +12,7 @@ import (
 	"mare/services/center/internal/config"
 	"mare/services/center/internal/db"
 	httpapi "mare/services/center/internal/http"
+	"mare/services/center/internal/importing"
 	"mare/services/center/internal/issues"
 	"mare/services/center/internal/jobs"
 	"mare/services/center/internal/logging"
@@ -61,6 +62,7 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 	nasNodeService := storage.NewNASNodeService(pool)
 	cloudNodeService := storage.NewCloudNodeService(pool)
 	jobService := jobs.NewService(pool)
+	importService := importing.NewService(pool, importing.NewHTTPAgentBridge(30*time.Second), jobService, assetService)
 	issueService := issues.NewService(pool, jobService)
 	notificationService := notifications.NewService(pool)
 	jobService.SetIssueSynchronizer(issueService)
@@ -107,6 +109,7 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 		}
 		return errors.New("资产删除作业缺少资产或目录关联")
 	})
+	jobService.RegisterExecutor(jobs.JobIntentImport, importService.ExecuteImportJobItem)
 	runtimeService := runtime.NewService(
 		cfg.ServiceName,
 		cfg.ServiceVersion,
@@ -124,6 +127,7 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 		Jobs:          jobService,
 		Issues:        issueService,
 		Notifications: notificationService,
+		Imports:       importService,
 		LocalNodes:    localFolderService,
 		NasNodes:      nasNodeService,
 		CloudNodes:    cloudNodeService,

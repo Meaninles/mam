@@ -22,6 +22,7 @@ import (
 	"mare/services/center/internal/storage"
 	assetdto "mare/shared/contracts/dto/asset"
 	issuedto "mare/shared/contracts/dto/issue"
+	importdto "mare/shared/contracts/dto/importing"
 	jobdto "mare/shared/contracts/dto/job"
 	notificationdto "mare/shared/contracts/dto/notification"
 	storagedto "mare/shared/contracts/dto/storage"
@@ -135,6 +136,18 @@ type NotificationService interface {
 	Subscribe() (<-chan notificationdto.StreamEvent, func())
 }
 
+type ImportService interface {
+	RefreshDashboard(ctx context.Context) (importdto.DashboardResponse, error)
+	LoadDashboard(ctx context.Context) (importdto.DashboardResponse, error)
+	BrowseSession(ctx context.Context, sessionID string, path string, limit int, offset int) (importdto.BrowseSessionResponse, error)
+	SetDraftLibrary(ctx context.Context, draftID string, libraryID string) (importdto.MutationResponse, error)
+	ApplyTargetToAll(ctx context.Context, sessionID string, targetID string) (importdto.MutationResponse, error)
+	RemoveTargetFromAll(ctx context.Context, sessionID string, targetID string) (importdto.MutationResponse, error)
+	SaveSelectionTargets(ctx context.Context, sessionID string, entryType string, name string, relativePath string, targetIDs []string) (importdto.MutationResponse, error)
+	RefreshPrecheck(ctx context.Context, draftID string) (importdto.MutationResponse, error)
+	Submit(ctx context.Context, sessionID string) (importdto.SubmitResponse, error)
+}
+
 type Dependencies struct {
 	Logger        *slog.Logger
 	Runtime       RuntimeService
@@ -142,6 +155,7 @@ type Dependencies struct {
 	Jobs          JobService
 	Issues        IssueService
 	Notifications NotificationService
+	Imports       ImportService
 	LocalNodes    LocalNodeService
 	NasNodes      NASNodeService
 	CloudNodes    CloudNodeService
@@ -537,6 +551,114 @@ func NewRouter(deps Dependencies) http.Handler {
 			return
 		}
 		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("GET /api/import-center", func(w http.ResponseWriter, r *http.Request) {
+		if deps.Imports == nil {
+			writeError(deps.Logger, w, apperrors.NotFound("导入中心服务尚未启用"))
+			return
+		}
+		payload, err := deps.Imports.LoadDashboard(r.Context())
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("POST /api/import-center/refresh", func(w http.ResponseWriter, r *http.Request) {
+		if deps.Imports == nil {
+			writeError(deps.Logger, w, apperrors.NotFound("导入中心服务尚未启用"))
+			return
+		}
+		payload, err := deps.Imports.RefreshDashboard(r.Context())
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("GET /api/import-sessions/{id}/browse", func(w http.ResponseWriter, r *http.Request) {
+		limit, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
+		offset, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("offset")))
+		payload, err := deps.Imports.BrowseSession(r.Context(), r.PathValue("id"), r.URL.Query().Get("path"), limit, offset)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("PATCH /api/import-drafts/{id}/library", func(w http.ResponseWriter, r *http.Request) {
+		var payload importdto.SetDraftLibraryRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("导入资产库请求格式无效"))
+			return
+		}
+		result, err := deps.Imports.SetDraftLibrary(r.Context(), r.PathValue("id"), payload.LibraryID)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("POST /api/import-sessions/{id}/targets/{targetId}/apply-all", func(w http.ResponseWriter, r *http.Request) {
+		result, err := deps.Imports.ApplyTargetToAll(r.Context(), r.PathValue("id"), r.PathValue("targetId"))
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("POST /api/import-sessions/{id}/targets/{targetId}/remove-all", func(w http.ResponseWriter, r *http.Request) {
+		result, err := deps.Imports.RemoveTargetFromAll(r.Context(), r.PathValue("id"), r.PathValue("targetId"))
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("PATCH /api/import-sessions/{id}/selections", func(w http.ResponseWriter, r *http.Request) {
+		var payload importdto.SetSourceTargetsRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("导入文件目标端请求格式无效"))
+			return
+		}
+		result, err := deps.Imports.SaveSelectionTargets(
+			r.Context(),
+			r.PathValue("id"),
+			payload.EntryType,
+			payload.Name,
+			payload.RelativePath,
+			payload.TargetEndpointIDs,
+		)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("POST /api/import-drafts/{id}/precheck", func(w http.ResponseWriter, r *http.Request) {
+		result, err := deps.Imports.RefreshPrecheck(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("POST /api/import-sessions/{id}/submit", func(w http.ResponseWriter, r *http.Request) {
+		result, err := deps.Imports.Submit(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
 	})
 
 	mux.HandleFunc("POST /api/file-entries/replicate", func(w http.ResponseWriter, r *http.Request) {

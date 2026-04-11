@@ -44,6 +44,7 @@ func TestRunnerRegistersAndHeartbeats(t *testing.T) {
 		Platform:          "windows/amd64",
 		Mode:              "attached",
 		ProcessID:         1024,
+		CallbackBaseURL:   "http://127.0.0.1:61337",
 		Capabilities:      []string{"localfs"},
 		HeartbeatInterval: 20 * time.Millisecond,
 		RetryDelay:        10 * time.Millisecond,
@@ -65,8 +66,14 @@ func TestRunnerRegistersAndHeartbeats(t *testing.T) {
 	if len(client.lastRegister.Capabilities) != 1 || client.lastRegister.Capabilities[0] != "localfs" {
 		t.Fatalf("expected localfs capability on register payload, got %+v", client.lastRegister.Capabilities)
 	}
+	if client.lastRegister.CallbackBaseURL != "http://127.0.0.1:61337" {
+		t.Fatalf("expected callback base url on register payload, got %q", client.lastRegister.CallbackBaseURL)
+	}
 	if len(client.lastHeartbeat.Capabilities) != 1 || client.lastHeartbeat.Capabilities[0] != "localfs" {
 		t.Fatalf("expected localfs capability on heartbeat payload, got %+v", client.lastHeartbeat.Capabilities)
+	}
+	if client.lastHeartbeat.CallbackBaseURL != "http://127.0.0.1:61337" {
+		t.Fatalf("expected callback base url on heartbeat payload, got %q", client.lastHeartbeat.CallbackBaseURL)
 	}
 }
 
@@ -79,6 +86,7 @@ func TestRunnerRetriesRegisterWithoutCrashing(t *testing.T) {
 		Platform:          "windows/amd64",
 		Mode:              "attached",
 		ProcessID:         1024,
+		CallbackBaseURL:   "http://127.0.0.1:61337",
 		Capabilities:      []string{"localfs"},
 		HeartbeatInterval: 50 * time.Millisecond,
 		RetryDelay:        10 * time.Millisecond,

@@ -13,6 +13,10 @@ import {
 } from 'lucide-react';
 import type {
   FileTypeFilter,
+  ImportDeviceSessionRecord,
+  ImportDraftRecord,
+  ImportReportSnapshot,
+  ImportTargetEndpointRecord,
   IssueRecord,
   Library,
   MainView,
@@ -30,7 +34,6 @@ import {
   cloneSettingsRecord,
   resolveDefaultLibraryId,
   resolveStartupWorkspace,
-  createId,
   getDefaultPageSize,
   loadPersistedState,
   resolveThemeMode,
@@ -39,6 +42,7 @@ import {
 } from './lib/clientState';
 import { resolveImportEntrySignal } from './lib/importCenter';
 import { createLibrary, loadLibraries } from './lib/librariesApi';
+import { importsApi } from './lib/importsApi';
 import { getRuntimeConfig } from './lib/runtimeConfig';
 import { fetchSystemRuntimeStatus, type SystemRuntimeSummary } from './lib/systemRuntimeApi';
 import {
@@ -83,7 +87,7 @@ import { ActionButton, IconButton, LibraryManagerSheet, Sheet } from './componen
 import { WorkspaceTabBar } from './components/WorkspaceTabBar';
 import { FileCenterPage } from './pages/FileCenterPage';
 import { FileDetailSheet } from './pages/FileDetailSheet';
-import { ImportCenterPage } from './pages/ImportCenterPage';
+import { ImportCenterPage, type ImportBrowserNode } from './pages/ImportCenterPage';
 import { IssuesPage, type IssueFocusRequest } from './pages/IssuesPage';
 import { NotificationCenterSheet } from './pages/NotificationCenterSheet';
 import { SettingsPage } from './pages/SettingsPage';
@@ -153,6 +157,29 @@ type RuntimeLightState = {
   tooltip: string;
   tone: 'success' | 'warning' | 'critical';
 } | null;
+type ImportDashboardState = {
+  libraries: Array<{ id: string; name: string }>;
+  devices: ImportDeviceSessionRecord[];
+  drafts: ImportDraftRecord[];
+  reports: ImportReportSnapshot[];
+  targetEndpoints: ImportTargetEndpointRecord[];
+};
+
+type ImportBrowserState = {
+  sessionId: string;
+  currentPath: string;
+  items: ImportBrowserNode[];
+  total: number;
+  hasMore: boolean;
+} | null;
+
+const EMPTY_IMPORT_DASHBOARD: ImportDashboardState = {
+  libraries: [],
+  devices: [],
+  drafts: [],
+  reports: [],
+  targetEndpoints: [],
+};
 
 function createEmptyLibraryMountDraft(): LibraryMountDraft {
   return {
@@ -527,6 +554,9 @@ export default function App() {
   const [issuesHydrated, setIssuesHydrated] = useState(false);
   const [remoteNoticeRecords, setRemoteNoticeRecords] = useState<NoticeRecord[]>([]);
   const [libraries, setLibraries] = useState<Library[]>([]);
+  const [importDashboard, setImportDashboard] = useState<ImportDashboardState>(EMPTY_IMPORT_DASHBOARD);
+  const [importBrowserState, setImportBrowserState] = useState<ImportBrowserState>(null);
+  const [importBrowserLoading, setImportBrowserLoading] = useState(false);
   const startupWorkspaceViewRef = useRef<WorkspaceView>(resolveStartupWorkspace(persisted.settings));
   const [openWorkspaceViews, setOpenWorkspaceViews] = useState<WorkspaceView[]>([startupWorkspaceViewRef.current]);
   const [mountedWorkspaceViews, setMountedWorkspaceViews] = useState<WorkspaceView[]>([startupWorkspaceViewRef.current]);
@@ -633,6 +663,90 @@ export default function App() {
       if (taskBadgeRefreshTimeoutRef.current !== null) {
         window.clearTimeout(taskBadgeRefreshTimeoutRef.current);
       }
+    };
+  }, []);
+
+  const loadImportDashboard = async (mode: 'load' | 'refresh' = 'load') => {
+    if (import.meta.env.MODE === 'test') {
+      return null;
+    }
+    try {
+      const next = mode === 'refresh' ? await importsApi.refreshDashboard() : await importsApi.loadDashboard();
+      setImportDashboard({
+        libraries: next.libraries ?? [],
+        devices: next.devices ?? [],
+        drafts: next.drafts ?? [],
+        reports: next.reports ?? [],
+        targetEndpoints: next.targetEndpoints ?? [],
+      });
+      return next;
+    } catch (error) {
+      console.error(`load import dashboard failed`, error);
+      setImportDashboard(EMPTY_IMPORT_DASHBOARD);
+      return null;
+    }
+  };
+
+  const loadImportBrowser = async (sessionId: string, path?: string) => {
+    if (import.meta.env.MODE === 'test') {
+      return null;
+    }
+    try {
+      setImportBrowserLoading(true);
+      const next = await importsApi.browseSession(sessionId, { path, limit: 200, offset: 0 });
+      setImportBrowserState({
+        sessionId: next.sessionId,
+        currentPath: next.currentPath,
+        items: next.items ?? [],
+        total: next.total,
+        hasMore: next.hasMore,
+      });
+      return next;
+    } catch (error) {
+      console.error(`load import browser failed`, error);
+      setImportBrowserState(null);
+      return null;
+    } finally {
+      setImportBrowserLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (import.meta.env.MODE === 'test') {
+      return undefined;
+    }
+
+    let disposed = false;
+
+    const syncImportDashboard = async (mode: 'load' | 'refresh' = 'load') => {
+      try {
+        const next = mode === 'refresh' ? await importsApi.refreshDashboard() : await importsApi.loadDashboard();
+        if (disposed) {
+          return;
+        }
+        setImportDashboard({
+          libraries: next.libraries ?? [],
+          devices: next.devices ?? [],
+          drafts: next.drafts ?? [],
+          reports: next.reports ?? [],
+          targetEndpoints: next.targetEndpoints ?? [],
+        });
+      } catch (error) {
+        if (!disposed) {
+          console.error(`refresh import dashboard failed`, error);
+          setImportDashboard(EMPTY_IMPORT_DASHBOARD);
+        }
+      }
+    };
+
+    void syncImportDashboard();
+    const timerId = window.setInterval(() => {
+      void syncImportDashboard('refresh');
+    }, 15000);
+
+    return () => {
+      disposed = true;
+      window.clearInterval(timerId);
     };
   }, []);
 
@@ -787,7 +901,7 @@ export default function App() {
       return { ...item, badge: undefined };
     });
   }, [activeTaskBadgeCount, issueRecords]);
-  const importEntrySignal = useMemo(() => resolveImportEntrySignal(persisted.importDeviceSessions), [persisted.importDeviceSessions]);
+  const importEntrySignal = useMemo(() => resolveImportEntrySignal(importDashboard.devices), [importDashboard.devices]);
   const workspaceLabels = useMemo(
     () => ({
       'file-center': { title: '文件中心', icon: navIcons['file-center'] },
@@ -853,8 +967,8 @@ export default function App() {
     if (settingsTab === 'import-archive') {
       return (
         <ImportArchiveSettingsPanel
-          deviceSessions={persisted.importDeviceSessions}
-          reports={persisted.importReports}
+          deviceSessions={importDashboard.devices}
+          reports={importDashboard.reports}
           sections={settingsDraft['import-archive']}
           onChangeSetting={(sectionId, rowId, value) =>
             setSettingsDraft((current) => ({
@@ -931,8 +1045,8 @@ export default function App() {
   }, [
     activeWorkspaceView,
     openWorkspaceViews,
-    persisted.importDeviceSessions,
-    persisted.importReports,
+    importDashboard.devices,
+    importDashboard.reports,
     issueRecords,
     libraries,
     noticeRecords,
@@ -2443,62 +2557,22 @@ export default function App() {
           ? createPortal(
               <ImportCenterPage
                 key={`import-center-${workspaceRefreshTokens['import-center']}`}
-                devices={persisted.importDeviceSessions}
-                drafts={persisted.importDrafts}
+                libraries={importDashboard.libraries}
+                devices={importDashboard.devices}
+                drafts={importDashboard.drafts}
                 issues={issueRecords}
-                reports={persisted.importReports}
-                sourceNodes={persisted.importSourceNodes}
-                targetEndpoints={persisted.importTargetEndpoints}
-                onApplyTargetToAll={(deviceSessionId, targetEndpointId) =>
-                  commitState(
-                    (current) => ({
-                      ...current,
-                      importSourceNodes: current.importSourceNodes.map((node) =>
-                        node.deviceSessionId === deviceSessionId && node.status !== '已跳过'
-                          ? {
-                              ...node,
-                              targetEndpointIds: Array.from(new Set([...node.targetEndpointIds, targetEndpointId])),
-                            }
-                          : node,
-                      ),
-                      importDrafts: current.importDrafts.map((draft) =>
-                        draft.deviceSessionId === deviceSessionId
-                          ? {
-                              ...draft,
-                              targetEndpointIds: Array.from(new Set([...draft.targetEndpointIds, targetEndpointId])),
-                              lastEditedAt: '刚刚',
-                            }
-                          : draft,
-                      ),
-                    }),
-                    { message: '已将目标端应用到当前设备全部可导入文件', tone: 'success' },
-                  )
-                }
-                onRemoveTargetFromAll={(deviceSessionId, targetEndpointId) =>
-                  commitState(
-                    (current) => ({
-                      ...current,
-                      importSourceNodes: current.importSourceNodes.map((node) =>
-                        node.deviceSessionId === deviceSessionId
-                          ? {
-                              ...node,
-                              targetEndpointIds: node.targetEndpointIds.filter((item) => item !== targetEndpointId),
-                            }
-                          : node,
-                      ),
-                      importDrafts: current.importDrafts.map((draft) =>
-                        draft.deviceSessionId === deviceSessionId
-                          ? {
-                              ...draft,
-                              targetEndpointIds: draft.targetEndpointIds.filter((item) => item !== targetEndpointId),
-                              lastEditedAt: '刚刚',
-                            }
-                          : draft,
-                      ),
-                    }),
-                    { message: '已取消当前设备全部文件在该目标端的导入配置', tone: 'info' },
-                  )
-                }
+                reports={importDashboard.reports}
+                targetEndpoints={importDashboard.targetEndpoints}
+                browserState={importBrowserState}
+                browserLoading={importBrowserLoading}
+                onBrowseSession={(deviceSessionId, path) => void loadImportBrowser(deviceSessionId, path)}
+                onOpenFolder={(deviceSessionId, path) => void loadImportBrowser(deviceSessionId, path)}
+                onGoToParentFolder={(deviceSessionId, currentPath) => {
+                  const normalized = currentPath === '/' ? '' : currentPath.replace(/^\/+/, '');
+                  const segments = normalized.split('/').filter(Boolean);
+                  segments.pop();
+                  void loadImportBrowser(deviceSessionId, segments.join('/'));
+                }}
                 onOpenFileCenter={(libraryId) => {
                   setActiveLibraryId(libraryId);
                   setCurrentFolderId(null);
@@ -2510,218 +2584,55 @@ export default function App() {
                 onOpenIssueCenter={openIssueCenterForIds}
                 onOpenStorageNodes={() => activateWorkspace('storage-nodes')}
                 onOpenTaskCenter={openTaskCenterById}
-                onRefreshDevices={() => setFeedback({ message: '设备池已刷新', tone: 'info' })}
+                onRefreshDevices={() =>
+                  void loadImportDashboard('refresh').then(() => setFeedback({ message: '设备池已刷新', tone: 'info' }))
+                }
+                onSelectLibrary={(draftId, libraryId) =>
+                  void importsApi
+                    .setDraftLibrary(draftId, libraryId)
+                    .then(async (result) => {
+                      await loadImportDashboard();
+                      const draft = importDashboard.drafts.find((item) => item.id === draftId);
+                      if (draft) {
+                        await loadImportBrowser(draft.deviceSessionId);
+                      }
+                      setFeedback({ message: result.message, tone: 'success' });
+                    })
+                    .catch((error) => setFeedback({ message: error instanceof Error ? error.message : '切换资产库失败', tone: 'warning' }))
+                }
                 onRefreshPrecheck={(draftId) =>
-                  commitState(
-                    (current) => ({
-                      ...current,
-                      importDrafts: current.importDrafts.map((draft) =>
-                        draft.id === draftId
-                          ? {
-                              ...draft,
-                              lastEditedAt: '刚刚',
-                              precheckSummary: {
-                                ...draft.precheckSummary,
-                                updatedAt: '刚刚',
-                              },
-                            }
-                          : draft,
-                      ),
-                    }),
-                    { message: '预检结果已刷新', tone: 'info' },
-                  )
+                  void importsApi
+                    .refreshPrecheck(draftId)
+                    .then(async (result) => {
+                      await loadImportDashboard();
+                      setFeedback({ message: result.message, tone: 'info' });
+                    })
+                    .catch((error) => setFeedback({ message: error instanceof Error ? error.message : '预检刷新失败', tone: 'warning' }))
                 }
-                onRescanDevice={(deviceSessionId) =>
-                  commitState(
-                    (current) => ({
-                      ...current,
-                      importDeviceSessions: current.importDeviceSessions.map((device) =>
-                        device.id === deviceSessionId
-                          ? {
-                              ...device,
-                              scanStatus: '已完成',
-                              sessionStatus: device.sessionStatus === '待识别' ? '可导入' : device.sessionStatus,
-                              lastSeenAt: '刚刚',
-                            }
-                          : device,
-                      ),
-                    }),
-                    { message: '已重新扫描当前设备', tone: 'success' },
-                  )
+                onSaveSelectionTargets={(deviceSessionId, payload) =>
+                  void importsApi
+                    .saveSelectionTargets(deviceSessionId, payload)
+                    .then(async () => {
+                      await loadImportDashboard();
+                      const currentPath =
+                        importBrowserState?.sessionId === deviceSessionId && importBrowserState.currentPath !== '/'
+                          ? importBrowserState.currentPath.replace(/^\/+/, '')
+                          : undefined;
+                      await loadImportBrowser(deviceSessionId, currentPath);
+                    })
+                    .catch((error) => setFeedback({ message: error instanceof Error ? error.message : '更新导入对象目标端失败', tone: 'warning' }))
                 }
-                onSaveDraft={(draftId) =>
-                  commitState(
-                    (current) => ({
-                      ...current,
-                      importDrafts: current.importDrafts.map((draft) =>
-                        draft.id === draftId ? { ...draft, lastEditedAt: '刚刚' } : draft,
-                      ),
-                    }),
-                    { message: '导入草稿已保存', tone: 'success' },
-                  )
+                onSubmitImport={(deviceSessionId) =>
+                  void importsApi
+                    .submit(deviceSessionId)
+                    .then(async (result) => {
+                      await loadImportDashboard();
+                      await loadImportBrowser(deviceSessionId);
+                      setFeedback({ message: result.message, tone: 'success' });
+                      openTaskCenterById(result.report.taskId);
+                    })
+                    .catch((error) => setFeedback({ message: error instanceof Error ? error.message : '提交导入失败', tone: 'warning' }))
                 }
-                onSetSourceTargets={(sourceNodeId, targetEndpointIds) =>
-                  commitState((current) => {
-                    const nextSourceNodes = current.importSourceNodes.map((node) =>
-                      node.id === sourceNodeId ? { ...node, targetEndpointIds } : node,
-                    );
-                    const changedNode = nextSourceNodes.find((node) => node.id === sourceNodeId) ?? null;
-
-                    return {
-                      ...current,
-                      importSourceNodes: nextSourceNodes,
-                      importDrafts: current.importDrafts.map((draft) =>
-                        draft.deviceSessionId === changedNode?.deviceSessionId
-                          ? {
-                              ...draft,
-                              targetEndpointIds: Array.from(
-                                new Set(
-                                  nextSourceNodes
-                                    .filter((node) => node.deviceSessionId === changedNode.deviceSessionId)
-                                    .flatMap((node) => node.targetEndpointIds),
-                                ),
-                              ),
-                              lastEditedAt: '刚刚',
-                            }
-                          : draft,
-                      ),
-                    };
-                  })
-                }
-                onSubmitImport={(deviceSessionId) => {
-                  const device = persisted.importDeviceSessions.find((item) => item.id === deviceSessionId);
-                  if (!device) {
-                    setFeedback({ message: '当前设备不存在或已失效', tone: 'warning' });
-                    return null;
-                  }
-
-                  const sourceFiles = persisted.importSourceNodes.filter((node) => node.deviceSessionId === deviceSessionId);
-                  const invalidFile = sourceFiles.find((node) => node.targetEndpointIds.length === 0 && node.status !== '已跳过');
-                  if (invalidFile) {
-                    setFeedback({ message: `请先为 ${invalidFile.name} 选择目标端`, tone: 'warning' });
-                    return null;
-                  }
-
-                  const reportId = createId('import-report');
-                  const taskId = '';
-                  const uniqueTargetIds = Array.from(new Set(sourceFiles.flatMap((node) => node.targetEndpointIds)));
-                  const targetLabels = uniqueTargetIds.map(
-                    (targetId) => persisted.importTargetEndpoints.find((target) => target.id === targetId)?.label ?? targetId,
-                  );
-
-                  commitState(
-                    (current) => ({
-                      ...current,
-                      importDeviceSessions: current.importDeviceSessions.map((item) =>
-                        item.id === deviceSessionId
-                          ? {
-                              ...item,
-                              sessionStatus: '导入中',
-                              latestReportId: reportId,
-                              lastSeenAt: '刚刚',
-                            }
-                          : item,
-                      ),
-                      importDrafts: current.importDrafts.map((draft) =>
-                        draft.deviceSessionId === deviceSessionId
-                          ? {
-                              ...draft,
-                              status: '导入中',
-                              lastEditedAt: '刚刚',
-                            }
-                          : draft,
-                      ),
-                      importSourceNodes: current.importSourceNodes.map((node) =>
-                        node.deviceSessionId === deviceSessionId && node.status === '待导入'
-                          ? { ...node, status: '已排队' }
-                          : node,
-                      ),
-                      importReports: [
-                        {
-                          id: reportId,
-                          deviceSessionId,
-                          taskId,
-                          title: `${device.deviceLabel} / 刚提交的导入作业`,
-                          status: '已排队',
-                          submittedAt: '刚刚',
-                          successCount: 0,
-                          failedCount: 0,
-                          partialCount: 0,
-                          verifySummary: '导入作业已创建，等待统一任务系统分配执行器。',
-                          targetSummaries: uniqueTargetIds.map((targetId, index) => ({
-                            endpointId: targetId,
-                            label: targetLabels[index] ?? targetId,
-                            status: '等待执行',
-                            successCount: 0,
-                            failedCount: 0,
-                            transferredSize: '0 B',
-                          })),
-                          issueIds: [],
-                          latestUpdatedAt: '刚刚',
-                          fileCount: sourceFiles.length,
-                        },
-                        ...current.importReports,
-                      ],
-                      taskRecords: [
-                        {
-                          id: taskId,
-                          kind: 'transfer',
-                          title: `${device.deviceLabel} 导入`,
-                          type: 'IMPORT',
-                          businessType: 'IMPORT',
-                          status: '等待确认',
-                          statusTone: resolveTaskStatusTone('等待确认'),
-                          libraryId: device.libraryId,
-                          source: device.mountPath,
-                          target: targetLabels.join('、'),
-                          sourcePath: device.mountPath,
-                          targetPath: targetLabels.join('、'),
-                          progress: 0,
-                          speed: '—',
-                          eta: '等待分配执行器',
-                          fileCount: sourceFiles.length,
-                          folderCount: 0,
-                          totalSize: sourceFiles[0]?.size ?? '0 B',
-                          totalSizeBytes: parseTaskSizeLabel(sourceFiles[0]?.size ?? '0 B'),
-                          multiFile: sourceFiles.length > 1,
-                          priority: '普通优先级',
-                          issueIds: [],
-                          creator: '导入中心',
-                          createdAt: '刚刚',
-                          updatedAt: '刚刚',
-                        },
-                        ...current.taskRecords,
-                      ],
-                      taskItemRecords: [
-                        ...sourceFiles.map((file) => ({
-                          id: createId('task-item'),
-                          taskId,
-                          name: file.name,
-                          kind: 'file' as const,
-                          depth: 1,
-                          phase: '待执行',
-                          status: '已排队',
-                          statusTone: 'info' as Severity,
-                          priority: '高优先级' as const,
-                          progress: 0,
-                          size: file.size,
-                          speed: '—',
-                          sourcePath: file.relativePath,
-                        })),
-                        ...current.taskItemRecords,
-                      ],
-                    }),
-                    { message: '已提交导入作业，任务已加入队列', tone: 'success' },
-                  );
-
-                  setPersisted((current) => ({
-                    ...current,
-                    taskRecords: current.taskRecords.filter((task) => task.id !== ''),
-                    taskItemRecords: current.taskItemRecords.filter((taskItem) => taskItem.taskId !== ''),
-                  }));
-
-                  return reportId;
-                }}
               />,
               getWorkspaceContainer('import-center'),
             )

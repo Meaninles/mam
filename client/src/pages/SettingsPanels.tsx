@@ -76,7 +76,7 @@ export function ImportArchiveSettingsPanel({
           <header className="section-header">
             <div>
               <strong>导入会话示例</strong>
-              <p className="muted-paragraph">复用导入中心现有 mock 数据，帮助确认默认策略对预检、目标编排和结果摘要的影响。</p>
+              <p className="muted-paragraph">展示当前真实导入会话与导入报告，帮助确认默认策略对预检、目标编排和结果摘要的影响。</p>
             </div>
           </header>
           <div className="settings-preview-list">

@@ -1030,7 +1030,7 @@ button {
 
 .import-center-layout {
   display: grid;
-  grid-template-columns: minmax(240px, 0.48fr) minmax(0, 1fr);
+  grid-template-columns: 280px minmax(0, 1fr);
   gap: 16px;
   min-height: 0;
 }
@@ -1048,20 +1048,20 @@ button {
 
 .import-device-row,
 .import-report-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
-  padding: 14px;
+  padding: 12px;
   border-radius: 16px;
   border: 1px solid var(--border-soft);
   background: var(--bg-control);
 }
 
 .import-device-row.simple {
-  align-items: center;
-  min-height: 64px;
+  align-items: stretch;
+  min-height: 0;
   cursor: pointer;
-  gap: 10px;
+  gap: 8px;
 }
 
 .import-device-row.simple.active {
@@ -1073,7 +1073,13 @@ button {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
+}
+
+.import-device-text strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .import-device-meta {
@@ -1087,6 +1093,7 @@ button {
 .import-device-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 8px;
 }
 
@@ -1188,7 +1195,86 @@ button {
 }
 
 .import-file-table {
-  min-width: 1080px;
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+}
+
+.import-file-table th,
+.import-file-table td {
+  padding: 8px 8px;
+}
+
+.import-col-checkbox {
+  width: 44px;
+}
+
+.import-col-name {
+  width: 42%;
+}
+
+.import-col-modified {
+  width: 112px;
+}
+
+.import-col-targets {
+  width: 34%;
+}
+
+.import-file-table .file-center-name-cell {
+  gap: 8px;
+  max-width: 100%;
+}
+
+.import-file-table .file-center-icon {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  border-radius: 10px;
+}
+
+.import-file-table .storage-node-cell {
+  gap: 2px;
+  min-width: 0;
+}
+
+.import-file-table .storage-node-title {
+  min-width: 0;
+}
+
+.import-file-table .storage-node-title .import-node-link,
+.import-file-table .storage-node-title strong {
+  display: inline-flex;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.import-file-table .storage-node-cell > span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.import-file-table .storage-node-title {
+  gap: 6px;
+}
+
+.import-file-table .checkbox-row {
+  gap: 6px;
+}
+
+.import-file-table .target-check {
+  max-width: 100%;
+}
+
+.import-file-table .target-check span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 10rem;
 }
 
 .target-check.disabled {
@@ -1216,6 +1302,31 @@ button {
 .target-check.checked {
   background: var(--accent-soft);
   color: var(--text-main);
+}
+
+.link-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.import-node-link {
+  width: fit-content;
+}
+
+.import-selection-toolbar {
+  padding: 12px 14px;
+}
+
+.import-browser-breadcrumbs {
+  flex: 1;
+  min-width: 0;
 }
 
 .settings-tabs {

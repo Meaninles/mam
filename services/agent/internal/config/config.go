@@ -24,6 +24,9 @@ type Config struct {
 	AgentMode         string
 	AgentStateDir     string
 	AgentIDFile       string
+	AgentAPIAddr      string
+	CallbackBaseURL   string
+	ImportSourcePaths []string
 }
 
 func LoadFromEnv() (Config, error) {
@@ -35,6 +38,8 @@ func LoadFromEnv() (Config, error) {
 		AgentMode:         strings.TrimSpace(os.Getenv("AGENT_MODE")),
 		AgentStateDir:     strings.TrimSpace(os.Getenv("AGENT_STATE_DIR")),
 		AgentIDFile:       strings.TrimSpace(os.Getenv("AGENT_ID_FILE")),
+		AgentAPIAddr:      defaultIfEmpty(os.Getenv("AGENT_API_ADDR"), "127.0.0.1:61337"),
+		CallbackBaseURL:   normalizeBaseURL(defaultIfEmpty(os.Getenv("AGENT_CALLBACK_BASE_URL"), "http://127.0.0.1:61337")),
 	}
 
 	if value := strings.TrimSpace(os.Getenv("HEARTBEAT_INTERVAL")); value != "" {
@@ -55,6 +60,9 @@ func LoadFromEnv() (Config, error) {
 
 	if cfg.AgentIDFile == "" {
 		cfg.AgentIDFile = filepath.Join(cfg.AgentStateDir, defaultAgentIDFileName)
+	}
+	if value := strings.TrimSpace(os.Getenv("AGENT_IMPORT_SOURCE_PATHS")); value != "" {
+		cfg.ImportSourcePaths = splitPathList(value)
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -80,6 +88,12 @@ func (c Config) Validate() error {
 	if c.AgentIDFile == "" {
 		return fmt.Errorf("AGENT_ID_FILE is required")
 	}
+	if strings.TrimSpace(c.AgentAPIAddr) == "" {
+		return fmt.Errorf("AGENT_API_ADDR is required")
+	}
+	if c.CallbackBaseURL == "" {
+		return fmt.Errorf("AGENT_CALLBACK_BASE_URL is required")
+	}
 	return nil
 }
 
@@ -93,4 +107,19 @@ func defaultIfEmpty(value string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func splitPathList(value string) []string {
+	fields := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ';' || r == '\n'
+	})
+	items := make([]string, 0, len(fields))
+	for _, field := range fields {
+		trimmed := strings.TrimSpace(field)
+		if trimmed == "" {
+			continue
+		}
+		items = append(items, trimmed)
+	}
+	return items
 }

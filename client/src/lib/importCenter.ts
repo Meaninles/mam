@@ -193,6 +193,13 @@ export function resolveImportSubmitState(
     };
   }
 
+  if (!draft.libraryId) {
+    return {
+      disabled: true,
+      reason: '请先选择导入目标资产库。',
+    };
+  }
+
   const missingTargetFile = sourceNodes.find((file) => file.targetEndpointIds.length === 0 && file.status !== '已跳过');
   if (missingTargetFile) {
     return {
