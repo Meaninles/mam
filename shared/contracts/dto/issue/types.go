@@ -44,32 +44,33 @@ type HistoryRecord struct {
 }
 
 type Record struct {
-	ID                   string        `json:"id"`
-	Code                 string        `json:"code"`
-	LibraryID            *string       `json:"libraryId,omitempty"`
-	TaskID               *string       `json:"taskId,omitempty"`
-	TaskItemID           *string       `json:"taskItemId,omitempty"`
-	IssueCategory        string        `json:"issueCategory"`
-	IssueType            string        `json:"issueType"`
-	Nature               string        `json:"nature"`
-	SourceDomain         string        `json:"sourceDomain"`
-	Severity             string        `json:"severity"`
-	Status               string        `json:"status"`
-	Title                string        `json:"title"`
-	Summary              string        `json:"summary"`
-	AssetLabel           *string       `json:"assetLabel,omitempty"`
-	ObjectLabel          string        `json:"objectLabel"`
-	SuggestedAction      *string       `json:"suggestedAction,omitempty"`
-	SuggestedActionLabel *string       `json:"suggestedActionLabel,omitempty"`
-	Suggestion           *string       `json:"suggestion,omitempty"`
-	Detail               *string       `json:"detail,omitempty"`
-	CreatedAt            string        `json:"createdAt"`
-	UpdatedAt            string        `json:"updatedAt"`
-	ResolvedAt           *string       `json:"resolvedAt,omitempty"`
-	ArchivedAt           *string       `json:"archivedAt,omitempty"`
-	Source               SourceContext `json:"source"`
-	Impact               ImpactSummary `json:"impact"`
-	Capabilities         Capabilities  `json:"capabilities"`
+	ID                   string          `json:"id"`
+	Code                 string          `json:"code"`
+	LibraryID            *string         `json:"libraryId,omitempty"`
+	TaskID               *string         `json:"taskId,omitempty"`
+	TaskItemID           *string         `json:"taskItemId,omitempty"`
+	IssueCategory        string          `json:"issueCategory"`
+	IssueType            string          `json:"issueType"`
+	Nature               string          `json:"nature"`
+	SourceDomain         string          `json:"sourceDomain"`
+	Severity             string          `json:"severity"`
+	Status               string          `json:"status"`
+	Title                string          `json:"title"`
+	Summary              string          `json:"summary"`
+	AssetLabel           *string         `json:"assetLabel,omitempty"`
+	ObjectLabel          string          `json:"objectLabel"`
+	SuggestedAction      *string         `json:"suggestedAction,omitempty"`
+	SuggestedActionLabel *string         `json:"suggestedActionLabel,omitempty"`
+	Suggestion           *string         `json:"suggestion,omitempty"`
+	Detail               *string         `json:"detail,omitempty"`
+	OccurrenceCount      int             `json:"occurrenceCount"`
+	CreatedAt            string          `json:"createdAt"`
+	UpdatedAt            string          `json:"updatedAt"`
+	ResolvedAt           *string         `json:"resolvedAt,omitempty"`
+	ArchivedAt           *string         `json:"archivedAt,omitempty"`
+	Source               SourceContext   `json:"source"`
+	Impact               ImpactSummary   `json:"impact"`
+	Capabilities         Capabilities    `json:"capabilities"`
 	Histories            []HistoryRecord `json:"histories"`
 }
 

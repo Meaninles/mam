@@ -42,12 +42,12 @@ import { createLibrary, loadLibraries } from './lib/librariesApi';
 import { getRuntimeConfig } from './lib/runtimeConfig';
 import { fetchSystemRuntimeStatus, type SystemRuntimeSummary } from './lib/systemRuntimeApi';
 import {
-  consumeReminderNotices,
+  applyNoticeConsumptions,
+  consumeReminderNoticeIds,
   getUnconsumedNoticeCount,
-  markIssueLinkedNoticesStale,
   markNoticeAfterJump,
   markNoticeAsRead,
-  removeIssueLinkedNotices,
+  pruneNoticeConsumptions,
 } from './lib/noticeCenter';
 import {
   closeWorkspaceTab,
@@ -72,6 +72,7 @@ import {
 } from './lib/fileCenterApi';
 import { issuesApi } from './lib/issuesApi';
 import { jobsApi, type JobStreamEvent } from './lib/jobsApi';
+import { notificationsApi } from './lib/notificationsApi';
 import {
   storageNodesApi,
   type StorageHeartbeatPolicy,
@@ -499,6 +500,8 @@ export default function App() {
   const runtimeConfig = useMemo(() => getRuntimeConfig(), []);
   const [persisted, setPersisted] = useState<PersistedState>(loadPersistedState);
   const [issueRecords, setIssueRecords] = useState<IssueRecord[]>([]);
+  const [issuesHydrated, setIssuesHydrated] = useState(false);
+  const [remoteNoticeRecords, setRemoteNoticeRecords] = useState<NoticeRecord[]>([]);
   const [libraries, setLibraries] = useState<Library[]>([]);
   const startupWorkspaceViewRef = useRef<WorkspaceView>(resolveStartupWorkspace(persisted.settings));
   const [openWorkspaceViews, setOpenWorkspaceViews] = useState<WorkspaceView[]>([startupWorkspaceViewRef.current]);
@@ -566,14 +569,23 @@ export default function App() {
     settings: 0,
   });
 
-  const shouldKeepIssuesFresh =
-    openWorkspaceViews.includes('issues') ||
-    openWorkspaceViews.includes('task-center') ||
-    openWorkspaceViews.includes('import-center') ||
-    (openWorkspaceViews.includes('settings') && settingsTab === 'issue-governance');
+  const shouldKeepIssuesFresh = true;
 
   const computeIssueSignature = (items: IssueRecord[]) =>
     items.map((item) => `${item.id}:${item.status}:${item.updatedAt}:${item.histories.length}`).join('|');
+  const activeIssueIds = useMemo(
+    () =>
+      issuesHydrated
+        ? issueRecords
+            .filter((item) => item.status === '待处理' || item.status === '待确认' || item.status === '处理中')
+            .map((item) => item.id)
+        : undefined,
+    [issueRecords, issuesHydrated],
+  );
+  const noticeRecords = useMemo(
+    () => applyNoticeConsumptions(remoteNoticeRecords, persisted.noticeConsumptions, { activeIssueIds }),
+    [activeIssueIds, persisted.noticeConsumptions, remoteNoticeRecords],
+  );
 
   const isIssueRelevantJobEvent = (event: JobStreamEvent) =>
     [
@@ -602,6 +614,7 @@ export default function App() {
         lastIssueSignatureRef.current = nextSignature;
         startTransition(() => {
           setIssueRecords(items);
+          setIssuesHydrated(true);
         });
       }
     } catch (error) {
@@ -619,6 +632,22 @@ export default function App() {
           issueRefreshTimeoutRef.current = null;
           void refreshIssues();
         }, 240);
+      }
+    }
+  };
+  const refreshNotifications = async () => {
+    try {
+      const items = await notificationsApi.listAll();
+      startTransition(() => {
+        setRemoteNoticeRecords(items);
+      });
+      setPersisted((current) => ({
+        ...current,
+        noticeConsumptions: pruneNoticeConsumptions(current.noticeConsumptions, items.map((item) => item.id)),
+      }));
+    } catch (error) {
+      if (import.meta.env.MODE !== 'test') {
+        console.error('load notifications failed', error);
       }
     }
   };
@@ -645,6 +674,20 @@ export default function App() {
       disposed = true;
     };
   }, []);
+  useEffect(() => {
+    let disposed = false;
+    void refreshNotifications();
+    const unsubscribe = notificationsApi.subscribe(() => {
+      if (!disposed) {
+        void refreshNotifications();
+      }
+    });
+
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     if (libraries.length === 0) {
@@ -662,7 +705,7 @@ export default function App() {
   const fileCenterScanSequenceRef = useRef(0);
   const workspaceContainersRef = useRef<Partial<Record<WorkspaceView, HTMLDivElement>>>({});
   const activeView: MainView = activeWorkspaceView;
-  const unreadNotificationCount = useMemo(() => getUnconsumedNoticeCount(persisted.noticeRecords), [persisted.noticeRecords]);
+  const unreadNotificationCount = useMemo(() => getUnconsumedNoticeCount(noticeRecords), [noticeRecords]);
   const importEntrySignal = useMemo(() => resolveImportEntrySignal(persisted.importDeviceSessions), [persisted.importDeviceSessions]);
   const workspaceLabels = useMemo(
     () => ({
@@ -749,7 +792,7 @@ export default function App() {
     if (settingsTab === 'notifications') {
       return (
         <NotificationSettingsPanel
-          notices={persisted.noticeRecords}
+          notices={noticeRecords}
           sections={settingsDraft.notifications}
           onChangeSetting={(sectionId, rowId, value) =>
             setSettingsDraft((current) => ({
@@ -811,7 +854,7 @@ export default function App() {
     persisted.importReports,
     issueRecords,
     libraries,
-    persisted.noticeRecords,
+    noticeRecords,
     persisted.taskRecords,
     settingsDraft,
     settingsTab,
@@ -848,10 +891,6 @@ export default function App() {
       }
 
       issueRefreshDirtyRef.current = true;
-      if (!shouldKeepIssuesFresh) {
-        return;
-      }
-
       if (issueRefreshTimeoutRef.current !== null) {
         window.clearTimeout(issueRefreshTimeoutRef.current);
       }
@@ -1337,9 +1376,10 @@ export default function App() {
   };
 
   const openNotificationCenter = () => {
+    const consumedAt = new Date().toISOString();
     setPersisted((current) => ({
       ...current,
-      noticeRecords: consumeReminderNotices(current.noticeRecords),
+      noticeConsumptions: consumeReminderNoticeIds(current.noticeConsumptions, noticeRecords, consumedAt),
     }));
     setNotificationsOpen(true);
   };
@@ -1352,19 +1392,21 @@ export default function App() {
     notice.issueId ? issueRecords.find((issue) => issue.id === notice.issueId) ?? null : null;
 
   const handleNoticeMarkRead = (noticeId: string) => {
+    const consumedAt = new Date().toISOString();
     setPersisted((current) => ({
       ...current,
-      noticeRecords: markNoticeAsRead(current.noticeRecords, noticeId),
+      noticeConsumptions: markNoticeAsRead(current.noticeConsumptions, noticeId, consumedAt),
     }));
   };
 
-  const handleNoticeOpenTarget = (notice: NoticeRecord, targetKind?: NoticeJumpTargetKind) => {
+  const handleNoticeOpenTarget = async (notice: NoticeRecord, targetKind?: NoticeJumpTargetKind) => {
     const issue = findNoticeIssue(notice);
     const nextTargetKind = targetKind ?? notice.jumpParams.kind;
+    const consumedAt = new Date().toISOString();
 
     setPersisted((current) => ({
       ...current,
-      noticeRecords: markNoticeAfterJump(current.noticeRecords, notice.id),
+      noticeConsumptions: markNoticeAfterJump(current.noticeConsumptions, notice, consumedAt),
     }));
     setNotificationsOpen(false);
 
@@ -1427,15 +1469,47 @@ export default function App() {
 
     if (nextTargetKind === 'file-center') {
       if (issue) {
-        openFileCenterForIssue(issue);
+        await openFileCenterForIssue(issue);
       } else {
+        let folderId: string | null = null;
+        let selectedIds: string[] = [];
+        if (notice.jumpParams.fileNodeId) {
+          const detail = await fileCenterApi.loadEntryDetail(notice.jumpParams.fileNodeId);
+          if (detail) {
+            folderId = detail.type === 'folder' ? detail.id : detail.parentId;
+            selectedIds = [detail.id];
+          } else {
+            selectedIds = [notice.jumpParams.fileNodeId];
+          }
+        }
+        if (notice.jumpParams.libraryId) {
+          setActiveLibraryId(notice.jumpParams.libraryId);
+        }
+        setCurrentFolderId(folderId);
+        setFolderHistory([folderId]);
+        setHistoryIndex(0);
+        setSelectedFileIds(selectedIds);
+        setPendingFileCenterJump({
+          libraryId: notice.jumpParams.libraryId ?? activeLibraryId,
+          folderId,
+          selectedIds,
+        });
         activateWorkspace('file-center');
       }
       return;
     }
 
     if (nextTargetKind === 'storage-nodes') {
-      openStorageNodesForIssue();
+      if (issue) {
+        openStorageNodesForIssue(issue);
+      } else {
+        setStorageFocus({
+          id: notice.jumpParams.endpointId,
+          label: notice.jumpParams.label ?? notice.title,
+          path: notice.jumpParams.path,
+        });
+        activateWorkspace('storage-nodes');
+      }
       return;
     }
 
@@ -2622,11 +2696,8 @@ export default function App() {
                 void issuesApi
                   .applyAction(ids, action)
                   .then(() => {
-                    setPersisted((current) => ({
-                      ...current,
-                      noticeRecords: markIssueLinkedNoticesStale(current.noticeRecords, ids),
-                    }));
                     void refreshIssues();
+                    void refreshNotifications();
                     setFeedback(resolveIssueActionFeedback(action, ids.length));
                   })
                   .catch((error) =>
@@ -2640,11 +2711,8 @@ export default function App() {
                 void issuesApi
                   .clearHistory(ids)
                   .then(() => {
-                    setPersisted((current) => ({
-                      ...current,
-                      noticeRecords: removeIssueLinkedNotices(current.noticeRecords, ids),
-                    }));
                     void refreshIssues();
+                    void refreshNotifications();
                     setFeedback({ message: `已清理 ${ids.length} 条历史异常`, tone: 'success' });
                   })
                   .catch((error) =>
@@ -2968,7 +3036,7 @@ export default function App() {
       {notificationsOpen ? (
         <Sheet onClose={() => setNotificationsOpen(false)} title="通知中心">
           <NotificationCenterSheet
-            noticeRecords={persisted.noticeRecords}
+            noticeRecords={noticeRecords}
             onMarkRead={handleNoticeMarkRead}
             onOpenTarget={handleNoticeOpenTarget}
           />

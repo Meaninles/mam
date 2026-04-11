@@ -3,6 +3,7 @@ import {
   ArrowRightLeft,
   FolderOpen,
   HardDrive,
+  Repeat2,
   Search,
 } from 'lucide-react';
 import type {
@@ -351,7 +352,15 @@ export function IssuesPage({
 
                   <div className="row-main issue-main">
                     <div className="issue-title-row">
-                      <strong>{issue.title}</strong>
+                      <div className="issue-title-with-count">
+                        <strong>{issue.title}</strong>
+                        {(issue.occurrenceCount ?? 1) > 1 ? (
+                          <span className="issue-occurrence-badge" title={`已累计发生 ${issue.occurrenceCount ?? 1} 次`}>
+                            <Repeat2 size={14} />
+                            <strong>{issue.occurrenceCount ?? 1}</strong>
+                          </span>
+                        ) : null}
+                      </div>
                       <div className="endpoint-row">
                         <span className="transfer-task-type-pill">{issue.category}</span>
                         <span className={`issue-nature-pill ${issue.nature === 'BLOCKING' ? 'blocking' : 'risk'}`}>

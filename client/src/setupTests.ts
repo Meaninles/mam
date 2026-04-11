@@ -265,6 +265,45 @@ beforeEach(() => {
         } as Response;
       }
 
+      if (url.includes('/api/notifications')) {
+        return {
+          ok: true,
+          json: async () => ({
+            data: {
+              items: [],
+              total: 0,
+              page: 1,
+              pageSize: 50,
+            },
+          }),
+        } as Response;
+      }
+
+      if (url.includes('/api/issues/by-jobs')) {
+        return {
+          ok: true,
+          json: async () => ({
+            data: {
+              items: [],
+            },
+          }),
+        } as Response;
+      }
+
+      if (url.includes('/api/issues')) {
+        return {
+          ok: true,
+          json: async () => ({
+            data: {
+              items: [],
+              total: 0,
+              page: 1,
+              pageSize: 20,
+            },
+          }),
+        } as Response;
+      }
+
       return {
         ok: false,
         status: 503,

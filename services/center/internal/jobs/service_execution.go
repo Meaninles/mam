@@ -285,6 +285,7 @@ func (s *Service) finishItemCompleted(ctx context.Context, jobID string, itemID 
 	}
 	s.publish(event)
 	s.syncJobIssues(ctx, jobID)
+	s.syncJobNotifications(ctx, jobID)
 	return nil
 }
 
@@ -352,6 +353,7 @@ func (s *Service) finishItemFailed(ctx context.Context, jobID string, itemID str
 	}
 	s.publish(event)
 	s.syncJobIssues(ctx, jobID)
+	s.syncJobNotifications(ctx, jobID)
 	return nil
 }
 
@@ -448,6 +450,7 @@ func (s *Service) finalizeJob(ctx context.Context, jobID string) error {
 	}
 	s.publish(event)
 	s.syncJobIssues(ctx, jobID)
+	s.syncJobNotifications(ctx, jobID)
 	return nil
 }
 
@@ -494,6 +497,7 @@ func (s *Service) failJobWithError(ctx context.Context, jobID string, code strin
 	}
 	s.publish(event)
 	s.syncJobIssues(ctx, jobID)
+	s.syncJobNotifications(ctx, jobID)
 	return nil
 }
 

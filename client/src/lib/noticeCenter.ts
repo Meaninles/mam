@@ -1,6 +1,14 @@
 import type { NoticeKind, NoticeRecord, NoticeStatus } from '../data';
 
-const MUTATION_TIMESTAMP = '刚刚';
+export type NoticeConsumptionState = {
+  byId: Record<
+    string,
+    {
+      status: 'READ' | 'JUMPED';
+      consumedAt: string;
+    }
+  >;
+};
 
 const STATUS_ORDER: Record<NoticeStatus, number> = {
   UNREAD: 0,
@@ -13,6 +21,10 @@ const KIND_ORDER: Record<NoticeKind, number> = {
   ACTION_REQUIRED: 0,
   REMINDER: 1,
 };
+
+export function createEmptyNoticeConsumptionState(): NoticeConsumptionState {
+  return { byId: {} };
+}
 
 export function getUnconsumedNoticeCount(records: NoticeRecord[]) {
   return records.filter((record) => record.status === 'UNREAD').length;
@@ -36,84 +48,103 @@ export function getVisibleNoticeRecords(records: NoticeRecord[]) {
     });
 }
 
-export function consumeReminderNotices(records: NoticeRecord[]) {
-  return records.map((record) =>
-    record.kind === 'REMINDER' && record.status === 'UNREAD'
-      ? {
-          ...record,
-          status: 'READ' as const,
-          readAt: MUTATION_TIMESTAMP,
-          updatedAt: MUTATION_TIMESTAMP,
-        }
-      : record,
-  );
-}
+export function applyNoticeConsumptions(
+  records: NoticeRecord[],
+  state: NoticeConsumptionState,
+  options?: { activeIssueIds?: string[] },
+) {
+  const activeIssueIds = options?.activeIssueIds ? new Set(options.activeIssueIds) : null;
 
-export function markNoticeAsRead(records: NoticeRecord[], noticeId: string) {
-  return records.map((record) =>
-    record.id === noticeId && record.status === 'UNREAD'
-      ? {
-          ...record,
-          status: 'READ' as const,
-          readAt: MUTATION_TIMESTAMP,
-          updatedAt: MUTATION_TIMESTAMP,
-        }
-      : record,
-  );
-}
-
-export function markNoticeAfterJump(records: NoticeRecord[], noticeId: string) {
   return records.map((record) => {
-    if (record.id !== noticeId || record.status === 'STALE') {
-      return record;
+    const local = state.byId[record.id];
+    const serverUpdatedAt = Date.parse(record.updatedAt);
+    const localConsumedAt = local ? Date.parse(local.consumedAt) : Number.NaN;
+    const shouldPreserveIssueConsumption = record.sourceType === 'ISSUE' && local !== undefined;
+    const sourceIssueStale =
+      record.sourceType === 'ISSUE' &&
+      record.issueId &&
+      activeIssueIds !== null &&
+      !activeIssueIds.has(record.issueId);
+
+    if (record.status === 'STALE' || sourceIssueStale) {
+      return {
+        ...record,
+        status: 'STALE' as const,
+      };
     }
 
-    if (record.kind === 'ACTION_REQUIRED') {
+    if (
+      !local ||
+      Number.isNaN(localConsumedAt) ||
+      (!shouldPreserveIssueConsumption && Number.isFinite(serverUpdatedAt) && localConsumedAt < serverUpdatedAt)
+    ) {
+      return {
+        ...record,
+        status: 'UNREAD' as const,
+        readAt: undefined,
+        jumpedAt: undefined,
+      };
+    }
+
+    if (local.status === 'JUMPED') {
       return {
         ...record,
         status: 'JUMPED' as const,
-        jumpedAt: MUTATION_TIMESTAMP,
-        updatedAt: MUTATION_TIMESTAMP,
+        jumpedAt: local.consumedAt,
+        readAt: undefined,
       };
     }
 
-    if (record.status === 'UNREAD') {
-      return {
-        ...record,
-        status: 'READ' as const,
-        readAt: MUTATION_TIMESTAMP,
-        updatedAt: MUTATION_TIMESTAMP,
-      };
-    }
-
-    return record;
+    return {
+      ...record,
+      status: 'READ' as const,
+      readAt: local.consumedAt,
+      jumpedAt: undefined,
+    };
   });
 }
 
-export function markIssueLinkedNoticesStale(records: NoticeRecord[], issueIds: string[]) {
-  if (issueIds.length === 0) {
-    return records;
-  }
-
-  const targetIds = new Set(issueIds);
-  return records.map((record) =>
-    record.issueId && targetIds.has(record.issueId)
-      ? {
-          ...record,
-          status: 'STALE' as const,
-          updatedAt: MUTATION_TIMESTAMP,
-        }
-      : record,
-  );
+export function markNoticeConsumed(
+  state: NoticeConsumptionState,
+  noticeId: string,
+  status: 'READ' | 'JUMPED',
+  consumedAt: string,
+) {
+  return {
+    byId: {
+      ...state.byId,
+      [noticeId]: {
+        status,
+        consumedAt,
+      },
+    },
+  };
 }
 
-export function removeIssueLinkedNotices(records: NoticeRecord[], issueIds: string[]) {
-  if (issueIds.length === 0) {
-    return records;
-  }
+export function markNoticeAsRead(state: NoticeConsumptionState, noticeId: string, consumedAt: string) {
+  return markNoticeConsumed(state, noticeId, 'READ', consumedAt);
+}
 
-  const targetIds = new Set(issueIds);
-  return records.filter((record) => !record.issueId || !targetIds.has(record.issueId));
+export function markNoticeAfterJump(state: NoticeConsumptionState, notice: NoticeRecord, consumedAt: string) {
+  if (notice.kind === 'ACTION_REQUIRED') {
+    return markNoticeConsumed(state, notice.id, 'JUMPED', consumedAt);
+  }
+  return markNoticeConsumed(state, notice.id, 'READ', consumedAt);
+}
+
+export function consumeReminderNoticeIds(state: NoticeConsumptionState, records: NoticeRecord[], consumedAt: string) {
+  return records.reduce((current, record) => {
+    if (record.kind !== 'REMINDER' || record.status === 'STALE') {
+      return current;
+    }
+    return markNoticeConsumed(current, record.id, 'READ', consumedAt);
+  }, state);
+}
+
+export function pruneNoticeConsumptions(state: NoticeConsumptionState, activeNoticeIds: string[]) {
+  const activeIds = new Set(activeNoticeIds);
+  const nextById = Object.fromEntries(Object.entries(state.byId).filter(([id]) => activeIds.has(id)));
+  return { byId: nextById };
 }
 
 export function getNoticeKindLabel(kind: NoticeKind) {

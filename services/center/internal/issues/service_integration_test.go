@@ -184,6 +184,105 @@ func TestServiceListsIssuesByJobIDs(t *testing.T) {
 	}
 }
 
+func TestServiceMergesNonConsecutiveRepeatedIssuesByStableDedupeKey(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	defer pool.Close()
+	resetSchema(t, ctx, pool)
+
+	migrator := db.NewMigrator()
+	if _, err := migrator.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO libraries (id, code, name, root_label, status, created_at, updated_at) VALUES ('photo', 'library-photo', '商业摄影资产库', '/', 'ACTIVE', NOW(), NOW())`); err != nil {
+		t.Fatalf("insert library: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO library_directories (id, library_id, relative_path, name, parent_path, depth, source_kind, status, sort_name, created_at, updated_at)
+		VALUES
+			('dir-root', 'photo', '/', '商业摄影资产库', NULL, 0, 'MANUAL', 'ACTIVE', '/', NOW(), NOW()),
+			('dir-launch', 'photo', '2026/Shanghai Launch', 'Shanghai Launch', '/', 1, 'MANUAL', 'ACTIVE', '2026/shanghai launch', NOW(), NOW())
+	`); err != nil {
+		t.Fatalf("insert directories: %v", err)
+	}
+
+	jobService := jobs.NewService(pool)
+	issueService := issues.NewService(pool, jobService)
+	jobService.SetIssueSynchronizer(issueService)
+
+	messages := []string{"conn busy", "permission denied", "conn busy"}
+	jobService.RegisterExecutor(jobs.JobIntentScanDirectory, func(ctx context.Context, execution jobs.ExecutionContext) error {
+		if len(messages) == 0 {
+			return nil
+		}
+		message := messages[0]
+		messages = messages[1:]
+		return fmt.Errorf("%s", message)
+	})
+	jobService.Start(ctx)
+
+	for i := 0; i < 3; i++ {
+		result, err := jobService.CreateJob(ctx, jobs.CreateJobInput{
+			LibraryID:      ptr("photo"),
+			JobFamily:      jobs.JobFamilyMaintenance,
+			JobIntent:      jobs.JobIntentScanDirectory,
+			Title:          "扫描目录：/2026/Shanghai Launch",
+			Summary:        "测试异常去重",
+			SourceDomain:   jobs.SourceDomainFileCenter,
+			SourceSnapshot: map[string]any{"libraryName": "商业摄影资产库", "directoryId": "dir-launch", "path": "2026/Shanghai Launch"},
+			Priority:       jobs.PriorityNormal,
+			CreatedByType:  jobs.CreatedByUser,
+			Items: []jobs.CreateItemInput{
+				{
+					ItemKey:    fmt.Sprintf("dir:dir-launch:%d", i),
+					ItemType:   jobs.ItemTypeDirectoryScan,
+					Title:      "扫描目录：/2026/Shanghai Launch",
+					Summary:    "扫描目录",
+					TargetPath: ptr("2026/Shanghai Launch"),
+					Links: []jobs.CreateObjectLinkInput{
+						{LinkRole: jobs.LinkRoleTargetDirectory, ObjectType: jobs.ObjectTypeDirectory, DirectoryID: ptr("dir-launch")},
+					},
+				},
+			},
+			Links: []jobs.CreateObjectLinkInput{
+				{LinkRole: jobs.LinkRoleTargetDirectory, ObjectType: jobs.ObjectTypeDirectory, DirectoryID: ptr("dir-launch")},
+			},
+		})
+		if err != nil {
+			t.Fatalf("create job %d: %v", i, err)
+		}
+		waitForJobStatus(t, ctx, jobService, result.JobID, jobs.StatusFailed)
+	}
+
+	result, err := issueService.ListIssues(ctx, issues.ListQuery{Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatalf("list issues: %v", err)
+	}
+	if len(result.Items) != 2 {
+		t.Fatalf("expected 2 deduped issues, got %+v", result.Items)
+	}
+
+	var repeated *issuedto.Record
+	for i := range result.Items {
+		if result.Items[i].Summary == "conn busy" {
+			repeated = &result.Items[i]
+			break
+		}
+	}
+	if repeated == nil {
+		t.Fatalf("expected merged conn busy issue, got %+v", result.Items)
+	}
+	if repeated.OccurrenceCount != 2 {
+		t.Fatalf("expected occurrence count 2, got %+v", repeated)
+	}
+}
+
 func waitForIssueCount(t *testing.T, ctx context.Context, service *issues.Service, expected int) issuedto.ListResponse {
 	t.Helper()
 

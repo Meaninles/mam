@@ -160,6 +160,10 @@ type IssueSynchronizer interface {
 	SyncJobIssues(ctx context.Context, jobID string) error
 }
 
+type NotificationSynchronizer interface {
+	SyncJobNotifications(ctx context.Context, jobID string) error
+}
+
 type jobRow struct {
 	ID                 string
 	Code               string

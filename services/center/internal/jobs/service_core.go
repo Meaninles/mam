@@ -15,16 +15,17 @@ import (
 )
 
 type Service struct {
-	pool           *pgxpool.Pool
-	now            func() time.Time
-	broker         *Broker
-	executors      map[string]ItemExecutor
-	issueSync      IssueSynchronizer
-	runningItems   map[string]context.CancelFunc
-	runningItemsMu sync.Mutex
-	wakeCh         chan struct{}
-	startOnce      sync.Once
-	backgroundCtx  context.Context
+	pool             *pgxpool.Pool
+	now              func() time.Time
+	broker           *Broker
+	executors        map[string]ItemExecutor
+	issueSync        IssueSynchronizer
+	notificationSync NotificationSynchronizer
+	runningItems     map[string]context.CancelFunc
+	runningItemsMu   sync.Mutex
+	wakeCh           chan struct{}
+	startOnce        sync.Once
+	backgroundCtx    context.Context
 }
 
 func NewService(pool *pgxpool.Pool) *Service {
@@ -59,6 +60,10 @@ func (s *Service) RegisterExecutor(jobIntent string, executor ItemExecutor) {
 
 func (s *Service) SetIssueSynchronizer(sync IssueSynchronizer) {
 	s.issueSync = sync
+}
+
+func (s *Service) SetNotificationSynchronizer(sync NotificationSynchronizer) {
+	s.notificationSync = sync
 }
 
 func (s *Service) registerRunningItem(itemID string, cancel context.CancelFunc) {

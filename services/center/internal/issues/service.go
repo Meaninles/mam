@@ -10,8 +10,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	apperrors "mare/services/center/internal/errors"
-	jobdto "mare/shared/contracts/dto/job"
 	issuedto "mare/shared/contracts/dto/issue"
+	jobdto "mare/shared/contracts/dto/job"
 )
 
 const (
@@ -79,9 +79,12 @@ type ListQuery struct {
 type ActionRequest = issuedto.ActionRequest
 
 type Service struct {
-	pool          *pgxpool.Pool
-	now           func() time.Time
-	jobController JobController
+	pool             *pgxpool.Pool
+	now              func() time.Time
+	jobController    JobController
+	notificationSync interface {
+		SyncJobNotifications(ctx context.Context, jobID string) error
+	}
 }
 
 func NewService(pool *pgxpool.Pool, jobController JobController) *Service {
@@ -94,6 +97,12 @@ func NewService(pool *pgxpool.Pool, jobController JobController) *Service {
 
 func (s *Service) SetJobController(jobController JobController) {
 	s.jobController = jobController
+}
+
+func (s *Service) SetNotificationSynchronizer(sync interface {
+	SyncJobNotifications(ctx context.Context, jobID string) error
+}) {
+	s.notificationSync = sync
 }
 
 func (s *Service) ListIssues(ctx context.Context, query ListQuery) (issuedto.ListResponse, error) {
@@ -175,7 +184,7 @@ func (s *Service) ListIssues(ctx context.Context, query ListQuery) (issuedto.Lis
 	rows, err := s.pool.Query(ctx, `
 		SELECT
 			id, code, library_id, issue_category, issue_type, nature, source_domain, severity, status, dedupe_key,
-			title, summary, object_label, asset_label, suggested_action, suggested_action_label, suggestion, detail,
+			title, summary, object_label, asset_label, suggested_action, suggested_action_label, suggestion, detail, occurrence_count, last_detection_key,
 			source_snapshot, impact_snapshot, first_detected_at, last_detected_at, last_status_changed_at,
 			resolved_at, archived_at, latest_event_at, latest_error_code, latest_error_message, created_at, updated_at
 		FROM issues
@@ -310,6 +319,14 @@ func (s *Service) ClearHistory(ctx context.Context, request issuedto.ClearHistor
 		if err := s.refreshJobIssueCounters(ctx, jobID); err != nil {
 			return issuedto.ClearHistoryResponse{}, err
 		}
+		s.syncJobNotifications(ctx, jobID)
 	}
 	return issuedto.ClearHistoryResponse{Message: "历史异常已清理", IDs: request.IDs}, nil
+}
+
+func (s *Service) syncJobNotifications(ctx context.Context, jobID string) {
+	if s.notificationSync == nil || strings.TrimSpace(jobID) == "" {
+		return
+	}
+	_ = s.notificationSync.SyncJobNotifications(ctx, jobID)
 }

@@ -54,6 +54,7 @@ func (s *Service) SyncJobIssues(ctx context.Context, jobID string) error {
 		}
 		candidates = append(candidates, candidate)
 	}
+	candidates = normalizeIssueCandidates(candidates)
 
 	existingByDedupe, err := s.loadExistingIssuesByDedupe(ctx, tx, collectDedupeKeys(candidates))
 	if err != nil {
@@ -81,7 +82,11 @@ func (s *Service) SyncJobIssues(ctx context.Context, jobID string) error {
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-	return s.refreshJobIssueCounters(ctx, jobID)
+	if err := s.refreshJobIssueCounters(ctx, jobID); err != nil {
+		return err
+	}
+	s.syncJobNotifications(ctx, jobID)
+	return nil
 }
 
 func (s *Service) transitionIssues(ctx context.Context, ids []string, nextStatus string, eventType string, message string) ([]string, error) {
@@ -94,7 +99,7 @@ func (s *Service) transitionIssues(ctx context.Context, ids []string, nextStatus
 	rows, err := tx.Query(ctx, `
 		SELECT
 			id, code, library_id, issue_category, issue_type, nature, source_domain, severity, status, dedupe_key,
-			title, summary, object_label, asset_label, suggested_action, suggested_action_label, suggestion, detail,
+			title, summary, object_label, asset_label, suggested_action, suggested_action_label, suggestion, detail, occurrence_count, last_detection_key,
 			source_snapshot, impact_snapshot, first_detected_at, last_detected_at, last_status_changed_at,
 			resolved_at, archived_at, latest_event_at, latest_error_code, latest_error_message, created_at, updated_at
 		FROM issues
@@ -162,6 +167,7 @@ func (s *Service) transitionIssues(ctx context.Context, ids []string, nextStatus
 		if err := s.refreshJobIssueCounters(ctx, jobID); err != nil {
 			return nil, err
 		}
+		s.syncJobNotifications(ctx, jobID)
 		result = append(result, jobID)
 	}
 	return result, nil
@@ -196,14 +202,14 @@ func (s *Service) buildItemIssueCandidate(ctx context.Context, tx pgx.Tx, job jo
 		RouteLabel:    linkContext.RouteLabel,
 	}
 
-	return issueCandidate{
+	candidate := issueCandidate{
 		LibraryID:            job.LibraryID,
 		IssueCategory:        deriveIssueCategory(job, item),
 		IssueType:            deriveIssueType(job, item),
 		Nature:               NatureBlocking,
 		SourceDomain:         deriveSourceDomain(job),
 		Severity:             deriveSeverity(job, deriveIssueCategory(job, item)),
-		DedupeKey:            "job-item:" + item.ID,
+		DedupeKey:            "",
 		Title:                deriveIssueTitle(job, item, linkContext),
 		Summary:              detail,
 		ObjectLabel:          deriveObjectLabel(linkContext, item, job),
@@ -212,12 +218,15 @@ func (s *Service) buildItemIssueCandidate(ctx context.Context, tx pgx.Tx, job jo
 		SuggestedActionLabel: suggestedActionLabel,
 		Suggestion:           suggestion,
 		Detail:               ptr(detail),
+		DetectionKeys:        []string{buildItemDetectionKey(job, item)},
 		SourceSnapshot:       sourceSnapshot,
 		ImpactSnapshot:       buildImpactSummary(linkContext, true),
 		LatestErrorCode:      item.LatestErrorCode,
 		LatestErrorMessage:   ptr(detail),
 		Links:                buildIssueLinks(job, &item, linkContext),
-	}, nil
+	}
+	candidate.DedupeKey = buildIssueDedupeKey(candidate)
+	return candidate, nil
 }
 
 func (s *Service) buildJobIssueCandidate(ctx context.Context, tx pgx.Tx, job jobSnapshot, jobLinks []issueLinkRow) (issueCandidate, error) {
@@ -242,14 +251,14 @@ func (s *Service) buildJobIssueCandidate(ctx context.Context, tx pgx.Tx, job job
 		SourceLabel:   linkContext.SourceLabel,
 		RouteLabel:    linkContext.RouteLabel,
 	}
-	return issueCandidate{
+	candidate := issueCandidate{
 		LibraryID:            job.LibraryID,
 		IssueCategory:        deriveIssueCategory(job, jobItemSnapshot{}),
 		IssueType:            strings.ToUpper(job.JobIntent) + "_FAILED",
 		Nature:               NatureBlocking,
 		SourceDomain:         deriveSourceDomain(job),
 		Severity:             deriveSeverity(job, deriveIssueCategory(job, jobItemSnapshot{})),
-		DedupeKey:            "job:" + job.ID,
+		DedupeKey:            "",
 		Title:                job.Title + " 执行失败",
 		Summary:              detail,
 		ObjectLabel:          deriveObjectLabel(linkContext, jobItemSnapshot{}, job),
@@ -258,12 +267,15 @@ func (s *Service) buildJobIssueCandidate(ctx context.Context, tx pgx.Tx, job job
 		SuggestedActionLabel: suggestedActionLabel,
 		Suggestion:           suggestion,
 		Detail:               ptr(detail),
+		DetectionKeys:        []string{buildJobDetectionKey(job)},
 		SourceSnapshot:       sourceSnapshot,
 		ImpactSnapshot:       buildImpactSummary(linkContext, true),
 		LatestErrorCode:      job.LatestErrorCode,
 		LatestErrorMessage:   ptr(detail),
 		Links:                buildIssueLinks(job, nil, linkContext),
-	}, nil
+	}
+	candidate.DedupeKey = buildIssueDedupeKey(candidate)
+	return candidate, nil
 }
 
 func (s *Service) buildLinkContext(ctx context.Context, tx pgx.Tx, jobLinks []issueLinkRow, itemLinks []issueLinkRow) (issueLinkContext, error) {
@@ -371,7 +383,7 @@ func (s *Service) loadExistingIssuesByDedupe(ctx context.Context, tx pgx.Tx, ded
 	rows, err := tx.Query(ctx, `
 		SELECT
 			id, code, library_id, issue_category, issue_type, nature, source_domain, severity, status, dedupe_key,
-			title, summary, object_label, asset_label, suggested_action, suggested_action_label, suggestion, detail,
+			title, summary, object_label, asset_label, suggested_action, suggested_action_label, suggestion, detail, occurrence_count, last_detection_key,
 			source_snapshot, impact_snapshot, first_detected_at, last_detected_at, last_status_changed_at,
 			resolved_at, archived_at, latest_event_at, latest_error_code, latest_error_message, created_at, updated_at
 		FROM issues
@@ -415,17 +427,17 @@ func (s *Service) insertIssue(ctx context.Context, tx pgx.Tx, candidate issueCan
 	_, err = tx.Exec(ctx, `
 		INSERT INTO issues (
 			id, code, library_id, issue_category, issue_type, nature, source_domain, severity, status, dedupe_key,
-			title, summary, object_label, asset_label, suggested_action, suggested_action_label, suggestion, detail,
+			title, summary, object_label, asset_label, suggested_action, suggested_action_label, suggestion, detail, occurrence_count, last_detection_key,
 			source_snapshot, impact_snapshot, first_detected_at, last_detected_at, last_status_changed_at,
 			latest_event_at, latest_error_code, latest_error_message, created_at, updated_at
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, 'OPEN', $9,
-			$10, $11, $12, $13, $14, $15, $16, $17,
-			$18, $19, $20, $20, $20,
-			$20, $21, $22, $20, $20
+			$10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
+			$20, $21, $22, $22, $22,
+			$22, $23, $24, $22, $22
 		)
 	`, issueID, issueCode, candidate.LibraryID, candidate.IssueCategory, candidate.IssueType, candidate.Nature, candidate.SourceDomain, candidate.Severity, candidate.DedupeKey,
-		candidate.Title, candidate.Summary, candidate.ObjectLabel, candidate.AssetLabel, candidate.SuggestedAction, candidate.SuggestedActionLabel, candidate.Suggestion, candidate.Detail,
+		candidate.Title, candidate.Summary, candidate.ObjectLabel, candidate.AssetLabel, candidate.SuggestedAction, candidate.SuggestedActionLabel, candidate.Suggestion, candidate.Detail, len(dedupeStrings(candidate.DetectionKeys)), encodeDetectionKeys(candidate.DetectionKeys),
 		sourceSnapshot, impactSnapshot, now, candidate.LatestErrorCode, candidate.LatestErrorMessage)
 	if err != nil {
 		return err
@@ -458,6 +470,11 @@ func (s *Service) upsertExistingIssue(ctx context.Context, tx pgx.Tx, existing i
 	impactSnapshot, err := json.Marshal(candidate.ImpactSnapshot)
 	if err != nil {
 		return err
+	}
+	delta := detectionSetDelta(existing.LastDetectionKey, candidate.DetectionKeys)
+	nextOccurrenceCount := existing.OccurrenceCount
+	if delta > 0 {
+		nextOccurrenceCount += delta
 	}
 
 	nextStatus := existing.Status
@@ -497,20 +514,22 @@ func (s *Service) upsertExistingIssue(ctx context.Context, tx pgx.Tx, existing i
 		    suggested_action_label = $14,
 		    suggestion = $15,
 		    detail = $16,
-		    source_snapshot = $17,
-		    impact_snapshot = $18,
-		    last_detected_at = $19,
-		    last_status_changed_at = CASE WHEN $20 THEN $19 ELSE last_status_changed_at END,
-		    resolved_at = CASE WHEN $8 = 'RESOLVED' THEN COALESCE(resolved_at, $19) ELSE NULL END,
-		    archived_at = CASE WHEN $8 = 'ARCHIVED' THEN COALESCE(archived_at, $19) ELSE NULL END,
-		    latest_event_at = $19,
-		    latest_error_code = $21,
-		    latest_error_message = $22,
-		    updated_at = $19
+		    occurrence_count = $17,
+		    last_detection_key = $18,
+		    source_snapshot = $19,
+		    impact_snapshot = $20,
+		    last_detected_at = CASE WHEN $21 > 0 THEN $22 ELSE last_detected_at END,
+		    last_status_changed_at = CASE WHEN $23 THEN $22 ELSE last_status_changed_at END,
+		    resolved_at = CASE WHEN $8 = 'RESOLVED' THEN COALESCE(resolved_at, $22) ELSE NULL END,
+		    archived_at = CASE WHEN $8 = 'ARCHIVED' THEN COALESCE(archived_at, $22) ELSE NULL END,
+		    latest_event_at = $22,
+		    latest_error_code = $24,
+		    latest_error_message = $25,
+		    updated_at = $22
 		WHERE id = $1
 	`, existing.ID, candidate.LibraryID, candidate.IssueCategory, candidate.IssueType, candidate.Nature, candidate.SourceDomain, candidate.Severity, nextStatus,
 		candidate.Title, candidate.Summary, candidate.ObjectLabel, candidate.AssetLabel, candidate.SuggestedAction, candidate.SuggestedActionLabel, candidate.Suggestion, candidate.Detail,
-		sourceSnapshot, impactSnapshot, now, statusChanged, candidate.LatestErrorCode, candidate.LatestErrorMessage)
+		nextOccurrenceCount, encodeDetectionKeys(candidate.DetectionKeys), sourceSnapshot, impactSnapshot, delta, now, statusChanged, candidate.LatestErrorCode, candidate.LatestErrorMessage)
 	if err != nil {
 		return err
 	}
@@ -533,7 +552,7 @@ func (s *Service) resolveNoLongerDetectedIssues(ctx context.Context, tx pgx.Tx, 
 	rows, err := tx.Query(ctx, `
 		SELECT
 			id, code, library_id, issue_category, issue_type, nature, source_domain, severity, status, dedupe_key,
-			title, summary, object_label, asset_label, suggested_action, suggested_action_label, suggestion, detail,
+			title, summary, object_label, asset_label, suggested_action, suggested_action_label, suggestion, detail, occurrence_count, last_detection_key,
 			source_snapshot, impact_snapshot, first_detected_at, last_detected_at, last_status_changed_at,
 			resolved_at, archived_at, latest_event_at, latest_error_code, latest_error_message, created_at, updated_at
 		FROM issues
@@ -733,7 +752,7 @@ func scanIssueRow(row pgx.Row) (issueRow, error) {
 	var item issueRow
 	err := row.Scan(
 		&item.ID, &item.Code, &item.LibraryID, &item.IssueCategory, &item.IssueType, &item.Nature, &item.SourceDomain, &item.Severity, &item.Status, &item.DedupeKey,
-		&item.Title, &item.Summary, &item.ObjectLabel, &item.AssetLabel, &item.SuggestedAction, &item.SuggestedActionLabel, &item.Suggestion, &item.Detail,
+		&item.Title, &item.Summary, &item.ObjectLabel, &item.AssetLabel, &item.SuggestedAction, &item.SuggestedActionLabel, &item.Suggestion, &item.Detail, &item.OccurrenceCount, &item.LastDetectionKey,
 		&item.SourceSnapshot, &item.ImpactSnapshot, &item.FirstDetectedAt, &item.LastDetectedAt, &item.LastStatusChangedAt,
 		&item.ResolvedAt, &item.ArchivedAt, &item.LatestEventAt, &item.LatestErrorCode, &item.LatestErrorMessage, &item.CreatedAt, &item.UpdatedAt,
 	)

@@ -9,7 +9,6 @@ import type {
   ImportSourceNodeRecord,
   ImportTargetEndpointRecord,
   IssueRecord,
-  NoticeRecord,
   SettingSection,
   SettingsTab,
   StorageNode,
@@ -29,11 +28,11 @@ import {
   importSourceFiles,
   importSourceNodes,
   importTargetEndpoints,
-  noticeRecords,
   storageNodes,
   taskItemRecords,
   taskRecords,
 } from '../data';
+import { createEmptyNoticeConsumptionState, type NoticeConsumptionState } from './noticeCenter';
 
 export interface PersistedState {
   fileNodes: FileNode[];
@@ -46,7 +45,7 @@ export interface PersistedState {
   importSourceNodes: ImportSourceNodeRecord[];
   importTargetEndpoints: ImportTargetEndpointRecord[];
   issueRecords: IssueRecord[];
-  noticeRecords: NoticeRecord[];
+  noticeConsumptions: NoticeConsumptionState;
   settings: Record<SettingsTab, SettingSection[]>;
   storageNodes: StorageNode[];
   taskItemRecords: TaskItemRecord[];
@@ -68,7 +67,7 @@ export function createInitialState(): PersistedState {
     importSourceNodes: structuredClone(importSourceNodes),
     importTargetEndpoints: structuredClone(importTargetEndpoints),
     issueRecords: [],
-    noticeRecords: structuredClone(noticeRecords),
+    noticeConsumptions: createEmptyNoticeConsumptionState(),
     settings: cloneSettingsContent(),
     storageNodes: structuredClone(storageNodes),
     taskItemRecords: structuredClone(taskItemRecords),
@@ -109,7 +108,7 @@ export function loadPersistedState(): PersistedState {
       importSourceNodes: taskSeeds.importSourceNodes,
       importTargetEndpoints: taskSeeds.importTargetEndpoints,
       issueRecords: [],
-      noticeRecords: structuredClone(parsed.noticeRecords ?? noticeRecords),
+      noticeConsumptions: parsed.noticeConsumptions ?? createEmptyNoticeConsumptionState(),
       settings: parsed.settings ? cloneSettingsRecord(parsed.settings) : cloneSettingsContent(),
       taskItemRecords: structuredClone(parsed.taskItemRecords ?? taskItemRecords),
       taskRecords: structuredClone(parsed.taskRecords ?? taskRecords),

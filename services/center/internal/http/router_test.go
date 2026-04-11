@@ -13,11 +13,13 @@ import (
 	"mare/services/center/internal/db"
 	"mare/services/center/internal/issues"
 	"mare/services/center/internal/jobs"
+	"mare/services/center/internal/notifications"
 	"mare/services/center/internal/runtime"
 	"mare/services/center/internal/storage"
 	assetdto "mare/shared/contracts/dto/asset"
 	issuedto "mare/shared/contracts/dto/issue"
 	jobdto "mare/shared/contracts/dto/job"
+	notificationdto "mare/shared/contracts/dto/notification"
 	storagedto "mare/shared/contracts/dto/storage"
 	tagdto "mare/shared/contracts/dto/tag"
 )
@@ -51,6 +53,7 @@ type fakeNASNodeService struct{}
 type fakeAssetService struct{}
 type fakeJobService struct{}
 type fakeIssueService struct{}
+type fakeNotificationService struct{}
 type fakeTagService struct{}
 
 func (fakeAgentService) Register(_ context.Context, registration agentregistry.Registration) (agentregistry.Agent, error) {
@@ -462,6 +465,59 @@ func (fakeIssueService) ApplyAction(context.Context, issuedto.ActionRequest) (is
 
 func (fakeIssueService) ClearHistory(context.Context, issuedto.ClearHistoryRequest) (issuedto.ClearHistoryResponse, error) {
 	return issuedto.ClearHistoryResponse{Message: "历史异常已清理", IDs: []string{"issue-1"}}, nil
+}
+
+func (fakeNotificationService) ListNotifications(context.Context, notifications.ListQuery) (notificationdto.ListResponse, error) {
+	return notificationdto.ListResponse{
+		Items: []notificationdto.Record{
+			{
+				ID:                "notice-1",
+				Kind:              notifications.KindReminder,
+				SourceType:        notifications.SourceTypeJob,
+				SourceID:          "job-1",
+				JobID:             ptr("job-1"),
+				LibraryID:         ptr("photo"),
+				LifecycleStatus:   notifications.LifecycleActive,
+				DefaultTargetKind: notifications.TargetTaskCenter,
+				Title:             "扫描任务已完成",
+				Summary:           "已完成 1 个扫描子项",
+				Severity:          "INFO",
+				ObjectLabel:       "商业摄影资产库 / 2026 / Shanghai Launch",
+				CreatedAt:         "2026-04-12T08:00:00Z",
+				UpdatedAt:         "2026-04-12T08:01:00Z",
+				Source: notificationdto.Source{
+					SourceDomain: ptr("TASK_CENTER"),
+					SourceLabel:  ptr("任务中心"),
+					RouteLabel:   ptr("任务中心 / 扫描"),
+					TaskID:       ptr("job-1"),
+				},
+				Capabilities: notificationdto.Capabilities{
+					CanMarkRead:       true,
+					CanOpenTaskCenter: true,
+				},
+				JumpParams: notificationdto.JumpParams{
+					Kind:   notifications.TargetTaskCenter,
+					TaskID: ptr("job-1"),
+				},
+			},
+		},
+		Total:    1,
+		Page:     1,
+		PageSize: 20,
+	}, nil
+}
+
+func (fakeNotificationService) Subscribe() (<-chan notificationdto.StreamEvent, func()) {
+	ch := make(chan notificationdto.StreamEvent, 1)
+	ch <- notificationdto.StreamEvent{
+		EventID:        "notification-event-1",
+		Topic:          "NOTIFICATION",
+		EventType:      notifications.StreamEventCreated,
+		NotificationID: "notice-1",
+		CreatedAt:      "2026-04-12T08:01:00Z",
+	}
+	close(ch)
+	return ch, func() {}
 }
 
 func fakeCreateJobResponse(message string) jobdto.CreateResponse {
@@ -1052,6 +1108,31 @@ func TestIssueListRouteReturnsIssues(t *testing.T) {
 	if !bytes.Contains(recorder.Body.Bytes(), []byte(`"issueType":"REPLICATE_FAILED"`)) {
 		t.Fatalf("expected issue payload, got %s", recorder.Body.String())
 	}
+}
+
+func TestNotificationListRouteReturnsNotifications(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(Dependencies{
+		Runtime:       fakeRuntimeService{},
+		Agents:        fakeAgentService{},
+		Notifications: fakeNotificationService{},
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/api/notifications?page=1&pageSize=20", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte(`"sourceType":"JOB"`)) {
+		t.Fatalf("expected notification payload, got %s", recorder.Body.String())
+	}
+}
+
+func ptr[T any](value T) *T {
+	return &value
 }
 
 func TestIssueActionRouteAcceptsValidPayload(t *testing.T) {

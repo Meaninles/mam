@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -78,6 +79,7 @@ func mapIssueRow(row issueRow, histories []issuedto.HistoryRecord) issuedto.Reco
 		SuggestedActionLabel: row.SuggestedActionLabel,
 		Suggestion:           row.Suggestion,
 		Detail:               row.Detail,
+		OccurrenceCount:      row.OccurrenceCount,
 		CreatedAt:            row.FirstDetectedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:            row.UpdatedAt.UTC().Format(time.RFC3339),
 		ResolvedAt:           formatOptionalRFC3339(row.ResolvedAt),
@@ -343,6 +345,135 @@ func collectDedupeKeys(candidates []issueCandidate) []string {
 	return items
 }
 
+func normalizeIssueCandidates(candidates []issueCandidate) []issueCandidate {
+	if len(candidates) <= 1 {
+		return candidates
+	}
+
+	merged := make(map[string]issueCandidate)
+	order := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		current, ok := merged[candidate.DedupeKey]
+		if !ok {
+			current = candidate
+			current.DetectionKeys = dedupeStrings(candidate.DetectionKeys)
+			merged[candidate.DedupeKey] = current
+			order = append(order, candidate.DedupeKey)
+			continue
+		}
+
+		current.DetectionKeys = dedupeStrings(append(current.DetectionKeys, candidate.DetectionKeys...))
+		if strings.TrimSpace(current.Summary) == "" && strings.TrimSpace(candidate.Summary) != "" {
+			current.Summary = candidate.Summary
+		}
+		if strings.TrimSpace(nullableString(current.Detail)) == "" && strings.TrimSpace(nullableString(candidate.Detail)) != "" {
+			current.Detail = candidate.Detail
+		}
+		merged[candidate.DedupeKey] = current
+	}
+
+	items := make([]issueCandidate, 0, len(order))
+	for _, key := range order {
+		items = append(items, merged[key])
+	}
+	return items
+}
+
+func buildIssueDedupeKey(candidate issueCandidate) string {
+	parts := []string{
+		normalizeDedupePart(candidate.Title),
+		normalizeDedupePart(candidate.IssueType),
+		normalizeDedupePart(candidate.IssueCategory),
+		normalizeDedupePart(candidate.SourceDomain),
+		normalizeDedupePart(nullableString(candidate.LibraryID)),
+		normalizeDedupePart(nullableString(candidate.LatestErrorCode)),
+		normalizeDedupePart(nullableString(candidate.LatestErrorMessage)),
+		normalizeDedupePart(candidate.ObjectLabel),
+		normalizeDedupePart(nullableString(candidate.SourceSnapshot.EndpointID)),
+		normalizeDedupePart(nullableString(candidate.SourceSnapshot.EntryID)),
+		normalizeDedupePart(nullableString(candidate.SourceSnapshot.Path)),
+	}
+	return strings.Join(parts, "|")
+}
+
+func buildItemDetectionKey(job jobSnapshot, item jobItemSnapshot) string {
+	return strings.Join([]string{
+		"item",
+		item.ID,
+		normalizeDedupePart(nullableString(item.LatestErrorCode)),
+		normalizeDedupePart(nullableString(item.LatestErrorMessage)),
+		normalizeDedupePart(nullableString(item.TargetPath)),
+		normalizeDedupePart(nullableString(item.SourcePath)),
+		normalizeDedupePart(job.ID),
+	}, "|")
+}
+
+func buildJobDetectionKey(job jobSnapshot) string {
+	return strings.Join([]string{
+		"job",
+		job.ID,
+		normalizeDedupePart(nullableString(job.LatestErrorCode)),
+		normalizeDedupePart(nullableString(job.LatestErrorMessage)),
+	}, "|")
+}
+
+func detectionSetDelta(previousKey *string, currentKeys []string) int {
+	current := dedupeStrings(currentKeys)
+	if len(current) == 0 {
+		return 0
+	}
+	previous := make(map[string]struct{})
+	if previousKey != nil && strings.TrimSpace(*previousKey) != "" {
+		for _, item := range strings.Split(*previousKey, "|#|") {
+			if strings.TrimSpace(item) == "" {
+				continue
+			}
+			previous[item] = struct{}{}
+		}
+	}
+
+	delta := 0
+	for _, key := range current {
+		if _, ok := previous[key]; !ok {
+			delta++
+		}
+	}
+	return delta
+}
+
+func encodeDetectionKeys(keys []string) *string {
+	items := dedupeStrings(keys)
+	if len(items) == 0 {
+		return nil
+	}
+	joined := strings.Join(items, "|#|")
+	return &joined
+}
+
+func dedupeStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	items := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		items = append(items, value)
+	}
+	sort.Strings(items)
+	return items
+}
+
+func normalizeDedupePart(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
 func extractTaskID(snapshot []byte) string {
 	if len(snapshot) == 0 {
 		return ""
@@ -436,6 +567,8 @@ type issueRow struct {
 	SuggestedActionLabel *string
 	Suggestion           *string
 	Detail               *string
+	OccurrenceCount      int
+	LastDetectionKey     *string
 	SourceSnapshot       []byte
 	ImpactSnapshot       []byte
 	FirstDetectedAt      time.Time
@@ -515,6 +648,7 @@ type issueCandidate struct {
 	SuggestedActionLabel *string
 	Suggestion           *string
 	Detail               *string
+	DetectionKeys        []string
 	SourceSnapshot       issuedto.SourceContext
 	ImpactSnapshot       issuedto.ImpactSummary
 	LatestErrorCode      *string

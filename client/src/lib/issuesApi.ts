@@ -28,6 +28,7 @@ type IssueDto = {
   suggestedActionLabel?: string;
   suggestion?: string;
   detail?: string;
+  occurrenceCount: number;
   createdAt: string;
   updatedAt: string;
   resolvedAt?: string;
@@ -176,6 +177,7 @@ function mapIssueDtoToRecord(input: IssueDto): IssueRecord {
     actionLabel: input.suggestedActionLabel ?? '查看详情',
     suggestion: input.suggestion ?? '',
     detail: input.detail ?? '',
+    occurrenceCount: input.occurrenceCount || 1,
     status: mapStatus(input.status),
     createdAt: input.createdAt,
     updatedAt: input.updatedAt,

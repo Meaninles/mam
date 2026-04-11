@@ -16,12 +16,14 @@ import (
 	apperrors "mare/services/center/internal/errors"
 	"mare/services/center/internal/issues"
 	"mare/services/center/internal/jobs"
+	"mare/services/center/internal/notifications"
 	"mare/services/center/internal/response"
 	"mare/services/center/internal/runtime"
 	"mare/services/center/internal/storage"
 	assetdto "mare/shared/contracts/dto/asset"
 	issuedto "mare/shared/contracts/dto/issue"
 	jobdto "mare/shared/contracts/dto/job"
+	notificationdto "mare/shared/contracts/dto/notification"
 	storagedto "mare/shared/contracts/dto/storage"
 	tagdto "mare/shared/contracts/dto/tag"
 )
@@ -128,18 +130,24 @@ type IssueService interface {
 	ClearHistory(ctx context.Context, request issuedto.ClearHistoryRequest) (issuedto.ClearHistoryResponse, error)
 }
 
+type NotificationService interface {
+	ListNotifications(ctx context.Context, query notifications.ListQuery) (notificationdto.ListResponse, error)
+	Subscribe() (<-chan notificationdto.StreamEvent, func())
+}
+
 type Dependencies struct {
-	Logger       *slog.Logger
-	Runtime      RuntimeService
-	Agents       AgentService
-	Jobs         JobService
-	Issues       IssueService
-	LocalNodes   LocalNodeService
-	NasNodes     NASNodeService
-	CloudNodes   CloudNodeService
-	LocalFolders LocalFolderService
-	Assets       AssetService
-	Tags         TagService
+	Logger        *slog.Logger
+	Runtime       RuntimeService
+	Agents        AgentService
+	Jobs          JobService
+	Issues        IssueService
+	Notifications NotificationService
+	LocalNodes    LocalNodeService
+	NasNodes      NASNodeService
+	CloudNodes    CloudNodeService
+	LocalFolders  LocalFolderService
+	Assets        AssetService
+	Tags          TagService
 }
 
 func NewRouter(deps Dependencies) http.Handler {
@@ -971,6 +979,65 @@ func NewRouter(deps Dependencies) http.Handler {
 			return
 		}
 		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("GET /api/notifications", func(w http.ResponseWriter, r *http.Request) {
+		if deps.Notifications == nil {
+			writeError(deps.Logger, w, apperrors.Internal("通知服务未启用"))
+			return
+		}
+		query := notifications.ListQuery{
+			Page:         parsePositiveInt(r.URL.Query().Get("page"), 1),
+			PageSize:     parsePositiveInt(r.URL.Query().Get("pageSize"), 50),
+			Kind:         strings.TrimSpace(r.URL.Query().Get("kind")),
+			SearchText:   strings.TrimSpace(r.URL.Query().Get("searchText")),
+			IncludeStale: strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("includeStale")), "true"),
+		}
+		payload, err := deps.Notifications.ListNotifications(r.Context(), query)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("GET /api/notifications/stream", func(w http.ResponseWriter, r *http.Request) {
+		if deps.Notifications == nil {
+			writeError(deps.Logger, w, apperrors.Internal("通知服务未启用"))
+			return
+		}
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			writeError(deps.Logger, w, apperrors.Internal("当前连接不支持事件流"))
+			return
+		}
+
+		events, cancel := deps.Notifications.Subscribe()
+		defer cancel()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.WriteHeader(http.StatusOK)
+		flusher.Flush()
+
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case event, ok := <-events:
+				if !ok {
+					return
+				}
+				payload, err := json.Marshal(event)
+				if err != nil {
+					continue
+				}
+				_, _ = io.WriteString(w, "event: "+event.EventType+"\n")
+				_, _ = io.WriteString(w, "data: "+string(payload)+"\n\n")
+				flusher.Flush()
+			}
+		}
 	})
 
 	mux.HandleFunc("GET /api/events/stream", func(w http.ResponseWriter, r *http.Request) {
