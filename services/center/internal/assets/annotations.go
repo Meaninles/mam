@@ -2,6 +2,7 @@ package assets
 
 import (
 	"context"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -16,6 +17,9 @@ func (s *Service) UpdateAnnotations(
 ) (assetdto.UpdateAnnotationsResponse, error) {
 	if request.Rating < 0 || request.Rating > 5 {
 		return assetdto.UpdateAnnotationsResponse{}, apperrors.BadRequest("星级范围无效")
+	}
+	if !isAllowedColorLabel(request.ColorLabel) {
+		return assetdto.UpdateAnnotationsResponse{}, apperrors.BadRequest("色标无效")
 	}
 
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
@@ -83,4 +87,13 @@ func (s *Service) UpdateAnnotations(
 	}
 
 	return assetdto.UpdateAnnotationsResponse{Message: "资产标记已更新"}, nil
+}
+
+func isAllowedColorLabel(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "无", "红标", "黄标", "绿标", "蓝标", "紫标":
+		return true
+	default:
+		return false
+	}
 }

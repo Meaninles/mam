@@ -66,12 +66,6 @@ export function FileDetailSheet({
         </div>
       </div>
 
-      <div className="sheet-section">
-        {item.metadata.map((row) => (
-          <DenseRow key={row.label} label={row.label} value={row.value} />
-        ))}
-      </div>
-
       {item.type === 'file' ? (
         <div className="sheet-section">
           <div className="annotation-section">
@@ -128,12 +122,6 @@ export function FileDetailSheet({
               {hasChanged ? '保存标记' : '已保存'}
             </ActionButton>
           </div>
-        </div>
-      ) : null}
-
-      {item.notes ? (
-        <div className="sheet-section">
-          <DenseRow label="备注" value={item.notes} />
         </div>
       ) : null}
     </Sheet>

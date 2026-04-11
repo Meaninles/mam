@@ -2240,12 +2240,21 @@ export default function App() {
       return;
     }
 
+    const existingTagUniverse = resolveBatchTagUnion(batchTagState.items);
+    const selectedTagSet = new Set(tags);
+    const removableTags = existingTagUniverse.filter((tag) => !selectedTagSet.has(tag));
+
     await Promise.all(
       batchTagState.items.map((item) =>
         fileCenterApi.updateAnnotations(item.id, {
           rating: item.rating,
           colorLabel: item.colorLabel,
-          tags: Array.from(new Set([...item.tags, ...tags])),
+          tags: Array.from(
+            new Set([
+              ...item.tags.filter((tag) => !removableTags.includes(tag)),
+              ...tags,
+            ]),
+          ),
         }),
       ),
     );
@@ -3601,10 +3610,10 @@ function BatchTagDialog({
   onSave: (tags: string[]) => void;
 }) {
   const [searchText, setSearchText] = useState('');
-  const [selectedTags, setSelectedTags] = useState<string[]>(resolveCommonTags(items));
+  const [selectedTags, setSelectedTags] = useState<string[]>(resolveBatchTagUnion(items));
 
   useEffect(() => {
-    setSelectedTags(resolveCommonTags(items));
+    setSelectedTags(resolveBatchTagUnion(items));
     setSearchText('');
   }, [items]);
 
@@ -3634,7 +3643,7 @@ function BatchTagDialog({
           <strong>批量标签</strong>
         </div>
         <div className="dialog-card">
-          <p className="muted-paragraph">将为选中的 {items.length} 项条目统一设置标签。当前默认勾选的是这些条目共同已有的标签。</p>
+          <p className="muted-paragraph">将为选中的 {items.length} 项条目批量调整标签。已存在于任一条目上的标签都可直接取消，系统会自动跳过原本没有该标签的条目。</p>
         </div>
         <div className="tag-editor-toolbar">
           <div className="tag-editor-search">
@@ -3687,11 +3696,8 @@ function BatchTagDialog({
   );
 }
 
-function resolveCommonTags(items: FileCenterEntry[]) {
-  if (items.length === 0) {
-    return [];
-  }
-  return items[0].tags.filter((tag) => items.every((item) => item.tags.includes(tag)));
+function resolveBatchTagUnion(items: FileCenterEntry[]) {
+  return Array.from(new Set(items.flatMap((item) => item.tags)));
 }
 
 function resolveBatchColorClass(colorLabel: FileCenterColorLabel) {

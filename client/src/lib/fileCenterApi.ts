@@ -1,5 +1,3 @@
-import initSqlJs from 'sql.js/dist/sql-wasm-browser.js';
-import sqlWasmUrl from 'sql.js/dist/sql-wasm.wasm?url';
 import type { AssetLifecycleState, FileTypeFilter, Severity } from '../data';
 import { getRuntimeConfig } from './runtimeConfig';
 
@@ -18,7 +16,7 @@ export type FileCenterEndpoint = {
   endpointType: FileCenterEndpointType;
 };
 
-export type FileCenterMetadataRow = {
+type FileCenterMetadataRow = {
   label: string;
   value: string;
 };
@@ -37,7 +35,6 @@ export type FileCenterEntry = {
   size: string;
   path: string;
   sourceLabel: string;
-  notes: string;
   lastTaskText: string;
   lastTaskTone: Severity;
   rating: number;
@@ -46,7 +43,6 @@ export type FileCenterEntry = {
   riskTags: string[];
   tags: string[];
   endpoints: FileCenterEndpoint[];
-  metadata: FileCenterMetadataRow[];
 };
 
 export type FileCenterTagSuggestion = {
@@ -124,7 +120,7 @@ export type FileCenterLoadParams = {
   partialSyncEndpointNames?: string[];
 };
 
-type SqlJsModule = Awaited<ReturnType<typeof initSqlJs>>;
+type SqlJsModule = Awaited<ReturnType<typeof createSqlModule>>;
 type SqlDatabase = InstanceType<SqlJsModule['Database']>;
 
 type EntryRow = {
@@ -158,13 +154,6 @@ type EndpointRow = {
   tone: Severity;
   last_sync_at: string;
   endpoint_type: FileCenterEndpointType;
-};
-
-type MetadataRow = {
-  entry_id: string;
-  order_index: number;
-  label: string;
-  value: string;
 };
 
 type TagRow = {
@@ -252,49 +241,35 @@ export const fileCenterApi = {
     parentId: string | null;
     name: string;
   }): Promise<{ message: string; item: FileCenterEntry }> {
-    try {
-      const result = await fetchFileCenterData<{ message: string; entry: FileCenterEntry }>(
-        `/api/libraries/${input.libraryId}/directories`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            parentId: input.parentId,
-            name: input.name,
-          }),
-        },
-      );
-      return {
-        message: result.message,
-        item: result.entry,
-      };
-    } catch (error) {
-      if (isTestRuntime()) {
-        return createFolderFromLocalDatabase(input);
-      }
-      throw error;
-    }
-  },
-
-  async scanDirectory(input: { libraryId: string; parentId: string | null }): Promise<{ message: string; jobId?: string }> {
-    try {
-      return await fetchFileCenterData<{ message: string; jobId?: string }>(`/api/libraries/${input.libraryId}/scan`, {
+    const result = await fetchFileCenterData<{ message: string; entry: FileCenterEntry }>(
+      `/api/libraries/${input.libraryId}/directories`,
+      {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           parentId: input.parentId,
+          name: input.name,
         }),
-      });
-    } catch (error) {
-      if (isTestRuntime()) {
-        return scanDirectoryFromLocalDatabase(input);
-      }
-      throw error;
-    }
+      },
+    );
+    return {
+      message: result.message,
+      item: result.entry,
+    };
+  },
+
+  async scanDirectory(input: { libraryId: string; parentId: string | null }): Promise<{ message: string; jobId?: string }> {
+    return await fetchFileCenterData<{ message: string; jobId?: string }>(`/api/libraries/${input.libraryId}/scan`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        parentId: input.parentId,
+      }),
+    });
   },
 
   async uploadSelection(input: {
@@ -307,206 +282,42 @@ export const fileCenterApi = {
       return { message: '未选择任何上传内容', createdCount: 0 };
     }
 
-    try {
-      const formData = new FormData();
-      formData.set('mode', input.mode);
-      if (input.parentId) {
-        formData.set('parentId', input.parentId);
-      }
-      const manifest = input.items.map((item, index) => {
-        const field = `file${index}`;
-        formData.append(field, item.file, item.name);
-        return {
-          field,
-          name: item.name,
-          relativePath: item.relativePath ?? item.name,
-        };
-      });
-      formData.set('manifest', JSON.stringify(manifest));
-      return fetchFileCenterData<{ message: string; createdCount: number }>(
-        `/api/libraries/${input.libraryId}/uploads`,
-        {
-          method: 'POST',
-          body: formData,
-        },
-      );
-    } catch (error) {
-      if (!isTestRuntime()) {
-        throw error;
-      }
+    const formData = new FormData();
+    formData.set('mode', input.mode);
+    if (input.parentId) {
+      formData.set('parentId', input.parentId);
     }
-
-    const db = await getDatabase();
-    const library = querySingle<{ name: string }>(db, 'SELECT name FROM libraries WHERE id = $libraryId', {
-      $libraryId: input.libraryId,
+    const manifest = input.items.map((item, index) => {
+      const field = `file${index}`;
+      formData.append(field, item.file, item.name);
+      return {
+        field,
+        name: item.name,
+        relativePath: item.relativePath ?? item.name,
+      };
     });
-    if (!library) {
-      throw new Error('未找到指定资产库');
-    }
-    if (input.items.length === 0) {
-      return { message: '未选择任何上传内容', createdCount: 0 };
-    }
-
-    const parent = input.parentId
-      ? querySingle<{ id: string; path: string }>(db, 'SELECT id, path FROM entries WHERE id = $id', { $id: input.parentId })
-      : null;
-    const basePath = parent ? parent.path : library.name;
-    const folderIdMap = new Map<string, string>();
-    let createdCount = 0;
-    let sequence = 0;
-
-    const getFolderId = (relativeFolderPath: string) => {
-      const cached = folderIdMap.get(relativeFolderPath);
-      if (cached) {
-        return cached;
-      }
-
-      const segments = relativeFolderPath.split('/').filter(Boolean);
-      let currentParentId = input.parentId;
-      let currentRelativePath = '';
-      let currentPath = basePath;
-      let currentId = input.parentId;
-
-      segments.forEach((segment) => {
-        currentRelativePath = currentRelativePath ? `${currentRelativePath}/${segment}` : segment;
-        const existingId = folderIdMap.get(currentRelativePath);
-        if (existingId) {
-          currentId = existingId;
-          currentParentId = existingId;
-          currentPath = `${currentPath} / ${segment}`;
-          return;
-        }
-
-        currentPath = `${currentPath} / ${segment}`;
-        const id = `upload-folder-${Math.random().toString(36).slice(2, 10)}`;
-        const now = Date.now() + sequence;
-        const timeLabel = formatRecentTimeLabel(now);
-        const detailedTime = formatDetailedTimestamp(now);
-        sequence += 1;
-        insertEntry(
-          db,
-          createEntryRow({
-            id,
-            libraryId: input.libraryId,
-            parentId: currentParentId,
-            type: 'folder',
-            name: segment,
-            fileKind: '文件夹',
-            displayType: '文件夹',
-            modifiedAt: timeLabel,
-            modifiedAtSort: now,
-            createdAt: detailedTime,
-            sizeLabel: '0 项',
-            sizeBytes: 0,
-            path: currentPath,
-            sourceLabel: '本地上传',
-            notes: '',
-          }),
-          '本地上传完成，待同步到其它端点',
-          'warning',
-        );
-        insertLocalOnlyEndpoints(db, id, input.libraryId);
-        insertMetadataRows(db, id, [
-          { label: '来源', value: '本地上传' },
-          { label: '路径', value: currentPath },
-          { label: '上传方式', value: '上传文件夹' },
-          { label: '生命周期', value: 'ACTIVE' },
-        ]);
-        insertTagRows(db, id, [{ kind: 'badge', value: '上传目录' }]);
-        folderIdMap.set(currentRelativePath, id);
-        currentId = id;
-        currentParentId = id;
-        createdCount += 1;
-      });
-
-      if (!currentId) {
-        throw new Error('目录创建失败');
-      }
-      return currentId;
-    };
-
-    input.items.forEach((item) => {
-      const normalizedRelativePath = item.relativePath?.replace(/\\/g, '/').trim() ?? item.name;
-      const pathSegments = normalizedRelativePath.split('/').filter(Boolean);
-      const fileName = pathSegments[pathSegments.length - 1] ?? item.name;
-      const folderRelativePath = pathSegments.slice(0, -1).join('/');
-      const parentId = folderRelativePath ? getFolderId(folderRelativePath) : input.parentId;
-      const parentPath = folderRelativePath ? `${basePath} / ${folderRelativePath.split('/').join(' / ')}` : basePath;
-      const id = `upload-file-${Math.random().toString(36).slice(2, 10)}`;
-      const now = Date.now() + sequence;
-      const timeLabel = formatRecentTimeLabel(now);
-      const detailedTime = formatDetailedTimestamp(now);
-      sequence += 1;
-      const fileKind = inferFileKindFromName(fileName);
-      const displayType = inferDisplayTypeFromName(fileName, fileKind);
-      const fullPath = `${parentPath} / ${fileName}`;
-
-      insertEntry(
-        db,
-        createEntryRow({
-          id,
-          libraryId: input.libraryId,
-          parentId,
-          type: 'file',
-          name: fileName,
-          fileKind,
-          displayType,
-          modifiedAt: timeLabel,
-          modifiedAtSort: now,
-          createdAt: detailedTime,
-          sizeLabel: formatUploadSize(item.size),
-          sizeBytes: item.size,
-          path: fullPath,
-          sourceLabel: '本地上传',
-          notes: '',
-        }),
-        '本地上传完成，待同步到其它端点',
-        'warning',
-      );
-      insertLocalOnlyEndpoints(db, id, input.libraryId);
-      insertMetadataRows(db, id, [
-        { label: '来源', value: '本地上传' },
-        { label: '路径', value: fullPath },
-        { label: '文件类型', value: displayType },
-        { label: '生命周期', value: 'ACTIVE' },
-      ]);
-      insertTagRows(db, id, [
-        { kind: 'badge', value: input.mode === 'folder' ? '文件夹上传' : '本地上传' },
-      ]);
-      createdCount += 1;
-    });
-
-    persistDatabase(db);
-    emitFileCenterUpdate();
-
-    return {
-      message:
-        input.mode === 'folder'
-          ? `已开始上传文件夹，共新增 ${createdCount} 项`
-          : `已开始上传 ${input.items.length} 个文件`,
-      createdCount,
-    };
+    formData.set('manifest', JSON.stringify(manifest));
+    return await fetchFileCenterData<{ message: string; createdCount: number }>(
+      `/api/libraries/${input.libraryId}/uploads`,
+      {
+        method: 'POST',
+        body: formData,
+      },
+    );
   },
 
   async deleteAssets(ids: string[]): Promise<{ message: string }> {
-    try {
-      if (ids.length === 0) {
-        return { message: '未找到需要删除的条目' };
-      }
-      const results = await Promise.all(
-        ids.map((id) =>
-          fetchFileCenterData<{ message: string }>(`/api/file-entries/${id}`, {
-            method: 'DELETE',
-          }),
-        ),
-      );
-      return { message: results.at(-1)?.message ?? '条目已删除' };
-    } catch (error) {
-      if (isTestRuntime()) {
-        return deleteAssetsFromLocalDatabase(ids);
-      }
-      throw error;
+    if (ids.length === 0) {
+      return { message: '未找到需要删除的条目' };
     }
+    const results = await Promise.all(
+      ids.map((id) =>
+        fetchFileCenterData<{ message: string }>(`/api/file-entries/${id}`, {
+          method: 'DELETE',
+        }),
+      ),
+    );
+    return { message: results.at(-1)?.message ?? '条目已删除' };
   },
 
   async deleteFromEndpoint(id: string, endpointName: string): Promise<{ message: string; deleted: boolean; deletedCount: number }> {
@@ -673,40 +484,40 @@ export const fileCenterApi = {
 
   async updateAnnotations(
     id: string,
-    input: { rating: number; colorLabel: FileCenterColorLabel; tags: string[] },
+    input: {
+      rating: number;
+      colorLabel: FileCenterColorLabel;
+      tags: string[];
+    },
   ): Promise<{ message: string }> {
-    try {
-      return await fetchFileCenterData<{ message: string }>(`/api/file-entries/${id}/annotations`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          rating: Math.max(0, Math.min(5, input.rating)),
-          colorLabel: input.colorLabel,
-          tags: input.tags,
-        }),
-      });
-    } catch (error) {
-      if (!isTestRuntime()) {
-        throw error;
-      }
-    }
-
-    const db = await getDatabase();
-    db.run(
-      `UPDATE entries
-       SET rating = $rating, color_label = $colorLabel
-       WHERE id = $id`,
-      {
-        $id: id,
-        $rating: Math.max(0, Math.min(5, input.rating)),
-        $colorLabel: input.colorLabel,
+    const result = await fetchFileCenterData<{ message: string }>(`/api/file-entries/${id}/annotations`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
       },
-    );
-    replaceEntryDisplayTagsInDatabase(db, id, input.tags);
-    persistDatabase(db);
-    return { message: '资产标记已更新' };
+      body: JSON.stringify({
+        rating: Math.max(0, Math.min(5, input.rating)),
+        colorLabel: input.colorLabel,
+        tags: input.tags,
+      }),
+    });
+    if (isTestRuntime() && shouldUseLegacyPrototypeStore()) {
+      const db = await getDatabase();
+      db.run(
+        `UPDATE entries
+         SET rating = $rating, color_label = $colorLabel
+         WHERE id = $id`,
+        {
+          $id: id,
+          $rating: Math.max(0, Math.min(5, input.rating)),
+          $colorLabel: input.colorLabel,
+        },
+      );
+      replaceEntryDisplayTagsInDatabase(db, id, input.tags);
+      persistDatabase(db);
+      emitFileCenterUpdate();
+    }
+    return result;
   },
 
   async replaceEntryTagsByNames(
@@ -813,7 +624,6 @@ async function loadDirectoryFromLocalDatabase(params: FileCenterLoadParams): Pro
       size_bytes,
       path,
       source_label,
-      notes,
       last_task_text,
       last_task_tone,
       rating,
@@ -863,7 +673,6 @@ async function loadEntryDetailFromLocalDatabase(id: string): Promise<FileCenterE
       size_bytes,
       path,
       source_label,
-      notes,
       last_task_text,
       last_task_tone,
       rating,
@@ -987,22 +796,28 @@ function isTestRuntime() {
   return typeof import.meta !== 'undefined' && import.meta.env?.MODE === 'test';
 }
 
+function shouldUseLegacyPrototypeStore() {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+  return Boolean((window as Window & { __MARE_ENABLE_FILE_CENTER_MOCK_SYNC__?: boolean }).__MARE_ENABLE_FILE_CENTER_MOCK_SYNC__);
+}
+
 async function getSqlModule() {
   if (!sqlModulePromise) {
-    sqlModulePromise = (async () => {
-      const isNodeRuntime = typeof process !== 'undefined' && Boolean(process.versions?.node);
-      if (isNodeRuntime) {
-        const { readFile } = await import('node:fs/promises');
-        const { resolve } = await import('node:path');
-        const wasmBinary = await readFile(resolve(process.cwd(), 'node_modules/sql.js/dist/sql-wasm.wasm'));
-        return initSqlJs({ wasmBinary });
-      }
-      return initSqlJs({
-        locateFile: () => sqlWasmUrl,
-      });
-    })();
+    sqlModulePromise = createSqlModule();
   }
   return sqlModulePromise;
+}
+
+async function createSqlModule() {
+  const [{ default: initSqlJs }, { default: sqlWasmUrl }] = await Promise.all([
+    import('sql.js/dist/sql-wasm-browser.js'),
+    import('sql.js/dist/sql-wasm.wasm?url'),
+  ]);
+  return initSqlJs({
+    locateFile: () => sqlWasmUrl,
+  });
 }
 
 async function getDatabase() {
@@ -2146,14 +1961,6 @@ function hydrateEntries(db: SqlDatabase, rows: EntryRow[]): FileCenterEntry[] {
      ORDER BY entry_id ASC, order_index ASC`,
     placeholders.parameters,
   );
-  const metadataRows = queryAll<MetadataRow>(
-    db,
-    `SELECT entry_id, order_index, label, value
-     FROM entry_metadata
-     WHERE entry_id IN (${placeholders.sql})
-     ORDER BY entry_id ASC, order_index ASC`,
-    placeholders.parameters,
-  );
   const tagRows = queryAll<TagRow>(
     db,
     `SELECT entry_id, order_index, tag, kind
@@ -2163,7 +1970,6 @@ function hydrateEntries(db: SqlDatabase, rows: EntryRow[]): FileCenterEntry[] {
     placeholders.parameters,
   );
   const endpointMap = groupBy(endpointRows, (row) => row.entry_id);
-  const metadataMap = groupBy(metadataRows, (row) => row.entry_id);
   const tagMap = groupBy(tagRows, (row) => row.entry_id);
   const folderEndpointStateCache = new Map<string, FileCenterEndpointState>();
 
@@ -2193,7 +1999,6 @@ function hydrateEntries(db: SqlDatabase, rows: EntryRow[]): FileCenterEntry[] {
       size: row.size_label,
       path: row.path,
       sourceLabel: row.source_label,
-      notes: row.notes,
       lastTaskText: row.last_task_text,
       lastTaskTone: row.last_task_tone,
       rating: Number(row.rating),
@@ -2202,10 +2007,6 @@ function hydrateEntries(db: SqlDatabase, rows: EntryRow[]): FileCenterEntry[] {
       riskTags: tags.filter((item) => item.kind === 'risk').map((item) => item.tag),
       tags: tags.filter((item) => item.kind === 'tag').map((item) => item.tag),
       endpoints,
-      metadata: (metadataMap.get(row.id) ?? []).map((item) => ({
-        label: item.label,
-        value: item.value,
-      })),
     };
   });
 }
@@ -2429,6 +2230,15 @@ const FILE_CENTER_LEGACY_QUERY_REFERENCES = [
   sortEntryRows,
   sortEntryRowsForDisplay,
   filterEntriesByStatus,
+  createFolderFromLocalDatabase,
+  scanDirectoryFromLocalDatabase,
+  deleteAssetsFromLocalDatabase,
+  replaceEntryDisplayTagsInDatabase,
+  formatUploadSize,
+  formatRecentTimeLabel,
+  formatDetailedTimestamp,
+  inferFileKindFromName,
+  inferDisplayTypeFromName,
 ];
 void FILE_CENTER_LEGACY_QUERY_REFERENCES;
 

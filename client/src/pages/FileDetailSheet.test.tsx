@@ -18,7 +18,6 @@ const baseItem: FileCenterEntry = {
   size: '48.6 MB',
   path: '商业摄影资产库 / 拍摄原片 / 2026-03-29_上海发布会_A-cam_001.RAW',
   sourceLabel: 'Sony A7R V',
-  notes: '',
   lastTaskText: '等待补齐到 115',
   lastTaskTone: 'warning',
   rating: 4,
@@ -27,7 +26,6 @@ const baseItem: FileCenterEntry = {
   riskTags: [],
   tags: ['发布会'],
   endpoints: [{ name: '本地NVMe', state: '已同步', tone: 'success', lastSyncAt: '今天 09:18', endpointType: 'local' }],
-  metadata: [{ label: '设备', value: 'Sony A7R V' }],
 };
 
 describe('FileDetailSheet', () => {

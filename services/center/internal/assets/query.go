@@ -50,7 +50,6 @@ type assetModel struct {
 	LifecycleState      string
 	Rating              int16
 	ColorLabel          string
-	Note                *string
 	CanonicalModifiedAt *time.Time
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
@@ -312,7 +311,7 @@ func (s *Service) loadAssetByID(ctx context.Context, id string) (assetModel, err
 	err := s.pool.QueryRow(ctx, `
 		SELECT
 			id, library_id, directory_id, relative_path, name, extension, size_bytes,
-			file_kind, lifecycle_state, rating, color_label, note, canonical_modified_at,
+			file_kind, lifecycle_state, rating, color_label, canonical_modified_at,
 			created_at, updated_at
 		FROM assets
 		WHERE id = $1
@@ -329,7 +328,6 @@ func (s *Service) loadAssetByID(ctx context.Context, id string) (assetModel, err
 		&row.LifecycleState,
 		&row.Rating,
 		&row.ColorLabel,
-		&row.Note,
 		&row.CanonicalModifiedAt,
 		&row.CreatedAt,
 		&row.UpdatedAt,
@@ -371,7 +369,7 @@ func (s *Service) loadDirectAssets(ctx context.Context, libraryID string, direct
 	rows, err := s.pool.Query(ctx, `
 		SELECT
 			id, library_id, directory_id, relative_path, name, extension, size_bytes,
-			file_kind, lifecycle_state, rating, color_label, note, canonical_modified_at,
+			file_kind, lifecycle_state, rating, color_label, canonical_modified_at,
 			created_at, updated_at
 		FROM assets
 		WHERE library_id = $1
@@ -386,7 +384,7 @@ func (s *Service) loadDirectAssets(ctx context.Context, libraryID string, direct
 	items := make([]assetModel, 0)
 	for rows.Next() {
 		var row assetModel
-		if err := rows.Scan(&row.ID, &row.LibraryID, &row.DirectoryID, &row.RelativePath, &row.Name, &row.Extension, &row.SizeBytes, &row.FileKind, &row.LifecycleState, &row.Rating, &row.ColorLabel, &row.Note, &row.CanonicalModifiedAt, &row.CreatedAt, &row.UpdatedAt); err != nil {
+		if err := rows.Scan(&row.ID, &row.LibraryID, &row.DirectoryID, &row.RelativePath, &row.Name, &row.Extension, &row.SizeBytes, &row.FileKind, &row.LifecycleState, &row.Rating, &row.ColorLabel, &row.CanonicalModifiedAt, &row.CreatedAt, &row.UpdatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, row)
@@ -402,19 +400,6 @@ func (s *Service) buildDirectoryEntry(ctx context.Context, library libraryModel,
 	descendants, err := s.countDirectoryDescendants(ctx, library.ID, directory.RelativePath)
 	if err != nil {
 		return assetdto.EntryRecord{}, err
-	}
-
-	metadata := []assetdto.MetadataRow{}
-	if withMetadata {
-		children, err := s.countDirectoryDirectChildren(ctx, library.ID, directory.ID, directory.RelativePath)
-		if err != nil {
-			return assetdto.EntryRecord{}, err
-		}
-		metadata = []assetdto.MetadataRow{
-			{Label: "逻辑路径", Value: directory.RelativePath},
-			{Label: "直接子项", Value: fmt.Sprintf("%d", children)},
-			{Label: "目录状态", Value: mapDirectoryStatus(directory.Status)},
-		}
 	}
 
 	tags, err := s.loadDirectoryTags(ctx, directory.ID)
@@ -436,7 +421,6 @@ func (s *Service) buildDirectoryEntry(ctx context.Context, library libraryModel,
 		Size:           fmt.Sprintf("%d 项", descendants),
 		Path:           buildDisplayPath(library.Name, directory.RelativePath),
 		SourceLabel:    "统一目录树",
-		Notes:          "",
 		LastTaskText:   "暂无任务",
 		LastTaskTone:   "info",
 		Rating:         0,
@@ -445,7 +429,6 @@ func (s *Service) buildDirectoryEntry(ctx context.Context, library libraryModel,
 		RiskTags:       []string{},
 		Tags:           tags,
 		Endpoints:      endpoints,
-		Metadata:       metadata,
 	}, nil
 }
 
@@ -453,19 +436,6 @@ func (s *Service) buildAssetEntry(ctx context.Context, library libraryModel, ass
 	endpoints, err := s.loadAssetEndpoints(ctx, asset.ID, asset.LibraryID)
 	if err != nil {
 		return assetdto.EntryRecord{}, err
-	}
-
-	metadata := []assetdto.MetadataRow{}
-	if withMetadata {
-		metadata = []assetdto.MetadataRow{
-			{Label: "逻辑路径", Value: asset.RelativePath},
-			{Label: "生命周期", Value: mapLifecycleState(asset.LifecycleState)},
-		}
-		rows, err := s.loadAssetMetadata(ctx, asset.ID)
-		if err != nil {
-			return assetdto.EntryRecord{}, err
-		}
-		metadata = append(metadata, rows...)
 	}
 
 	parentID := asset.DirectoryID
@@ -487,7 +457,6 @@ func (s *Service) buildAssetEntry(ctx context.Context, library libraryModel, ass
 		Size:           formatBytes(asset.SizeBytes),
 		Path:           buildDisplayPath(library.Name, asset.RelativePath),
 		SourceLabel:    "统一资产",
-		Notes:          derefString(asset.Note),
 		LastTaskText:   "暂无任务",
 		LastTaskTone:   "info",
 		Rating:         int(asset.Rating),
@@ -496,7 +465,6 @@ func (s *Service) buildAssetEntry(ctx context.Context, library libraryModel, ass
 		RiskTags:       []string{},
 		Tags:           tags,
 		Endpoints:      endpoints,
-		Metadata:       metadata,
 	}, nil
 }
 
@@ -795,34 +763,6 @@ func (s *Service) countDirectoryDirectChildren(ctx context.Context, libraryID st
 			), 0)
 	`, libraryID, relativePath, directoryID).Scan(&total)
 	return total, err
-}
-
-func (s *Service) loadAssetMetadata(ctx context.Context, assetID string) ([]assetdto.MetadataRow, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT namespace, meta_key, meta_value
-		FROM asset_metadata
-		WHERE asset_id = $1
-		ORDER BY namespace ASC, meta_key ASC
-	`, assetID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	items := make([]assetdto.MetadataRow, 0)
-	for rows.Next() {
-		var namespace string
-		var key string
-		var value []byte
-		if err := rows.Scan(&namespace, &key, &value); err != nil {
-			return nil, err
-		}
-		items = append(items, assetdto.MetadataRow{
-			Label: namespace + "." + key,
-			Value: stringifyJSON(value),
-		})
-	}
-	return items, rows.Err()
 }
 
 func filterEntries(items []assetdto.EntryRecord, query assetdto.BrowseQuery) []assetdto.EntryRecord {

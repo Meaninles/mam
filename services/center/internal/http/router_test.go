@@ -461,7 +461,6 @@ func (fakeAssetService) CreateDirectory(_ context.Context, libraryID string, req
 			RiskTags:       []string{},
 			Tags:           []string{},
 			Endpoints:      []assetdto.EntryEndpoint{},
-			Metadata:       []assetdto.MetadataRow{},
 		},
 	}, nil
 }
@@ -508,7 +507,6 @@ func (fakeAssetService) BrowseLibrary(_ context.Context, libraryID string, _ ass
 				Endpoints: []assetdto.EntryEndpoint{
 					{Name: "商业摄影原片库", State: "已同步", Tone: "success", LastSyncAt: "2026-04-10 12:20", EndpointType: "local"},
 				},
-				Metadata: []assetdto.MetadataRow{{Label: "逻辑路径", Value: "/原片/cover.jpg"}},
 			},
 		},
 		Total:               1,
@@ -540,7 +538,6 @@ func (fakeAssetService) LoadEntry(context.Context, string) (*assetdto.EntryRecor
 		Endpoints: []assetdto.EntryEndpoint{
 			{Name: "商业摄影原片库", State: "已同步", Tone: "success", LastSyncAt: "2026-04-10 12:20", EndpointType: "local"},
 		},
-		Metadata: []assetdto.MetadataRow{{Label: "逻辑路径", Value: "/原片/cover.jpg"}},
 	}, nil
 }
 

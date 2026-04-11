@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __FILE_CENTER_TESTING__, fileCenterApi, resetFileCenterMock } from './fileCenterApi';
 
 vi.mock('./runtimeConfig', () => ({
@@ -9,6 +9,10 @@ vi.mock('./runtimeConfig', () => ({
 }));
 
 describe('fileCenterApi', () => {
+  beforeEach(() => {
+    (window as Window & { __MARE_ENABLE_FILE_CENTER_MOCK_SYNC__?: boolean }).__MARE_ENABLE_FILE_CENTER_MOCK_SYNC__ = false;
+  });
+
   afterEach(async () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -38,7 +42,6 @@ describe('fileCenterApi', () => {
                 size: '2 项',
                 path: '商业摄影资产库 / 原片',
                 sourceLabel: '统一目录树',
-                notes: '',
                 lastTaskText: '暂无任务',
                 lastTaskTone: 'info',
                 rating: 0,
@@ -56,7 +59,6 @@ describe('fileCenterApi', () => {
                     endpointType: 'local',
                   },
                 ],
-                metadata: [],
               },
             ],
             total: 1,
@@ -108,7 +110,6 @@ describe('fileCenterApi', () => {
                 size: '2 项',
                 path: '商业摄影资产库 / 拍摄原片',
                 sourceLabel: '统一目录',
-                notes: '',
                 lastTaskText: '暂无任务',
                 lastTaskTone: 'info',
                 rating: 5,
@@ -117,7 +118,6 @@ describe('fileCenterApi', () => {
                 riskTags: [],
                 tags: [],
                 endpoints: [],
-                metadata: [],
               },
             ],
             total: 1,
@@ -262,7 +262,6 @@ describe('fileCenterApi', () => {
             size: '1.2 MB',
             path: '商业摄影资产库 / 原片 / cover.jpg',
             sourceLabel: '统一资产',
-            notes: '',
             lastTaskText: '暂无任务',
             lastTaskTone: 'info',
             rating: 0,
@@ -280,7 +279,6 @@ describe('fileCenterApi', () => {
                 endpointType: 'local',
               },
             ],
-            metadata: [{ label: '逻辑路径', value: '/原片/cover.jpg' }],
           },
         }),
       }),
@@ -289,7 +287,6 @@ describe('fileCenterApi', () => {
     const result = await fileCenterApi.loadEntryDetail('asset-cover');
 
     expect(result?.name).toBe('cover.jpg');
-    expect(result?.metadata[0]?.value).toBe('/原片/cover.jpg');
   });
 
   it('目录查询会透传分页和筛选参数', async () => {

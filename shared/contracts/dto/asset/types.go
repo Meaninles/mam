@@ -59,11 +59,6 @@ type EntryEndpoint struct {
 	EndpointType string `json:"endpointType"`
 }
 
-type MetadataRow struct {
-	Label string `json:"label"`
-	Value string `json:"value"`
-}
-
 type EntryRecord struct {
 	ID             string          `json:"id"`
 	LibraryID      string          `json:"libraryId"`
@@ -78,7 +73,6 @@ type EntryRecord struct {
 	Size           string          `json:"size"`
 	Path           string          `json:"path"`
 	SourceLabel    string          `json:"sourceLabel"`
-	Notes          string          `json:"notes"`
 	LastTaskText   string          `json:"lastTaskText"`
 	LastTaskTone   string          `json:"lastTaskTone"`
 	Rating         int             `json:"rating"`
@@ -87,7 +81,6 @@ type EntryRecord struct {
 	RiskTags       []string        `json:"riskTags"`
 	Tags           []string        `json:"tags"`
 	Endpoints      []EntryEndpoint `json:"endpoints"`
-	Metadata       []MetadataRow   `json:"metadata"`
 }
 
 type BrowseLibraryResponse struct {

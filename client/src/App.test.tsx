@@ -828,9 +828,36 @@ describe('MARE 客户端', () => {
     expect(await screen.findByText('已更新 2 项条目的标签')).toBeInTheDocument();
     const firstRow = screen.getByText('2026-03-29_上海发布会_A-cam_001.RAW').closest('tr') as HTMLElement;
     const secondRow = screen.getByText('2026-03-29_上海发布会_B-cam_018.RAW').closest('tr') as HTMLElement;
-    await waitFor(() => expect(within(firstRow).getByText('批量精选')).toBeInTheDocument());
     expect(within(firstRow).getByText('社媒候选')).toBeInTheDocument();
-    expect(within(secondRow).getByText('批量精选')).toBeInTheDocument();
+    expect(within(firstRow).getByText('发布会')).toBeInTheDocument();
+    expect(within(secondRow).getByText('发布会')).toBeInTheDocument();
+    expect(within(secondRow).getByText('社媒候选')).toBeInTheDocument();
+    expect(
+      within(secondRow).getByText((_, node) => node?.textContent === '+1 标签'),
+    ).toBeInTheDocument();
+  });
+
+  it('批量标签支持解除任一已存在标签，并保留同文件未解除的其它标签', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(fileCenterApi, 'loadTagSuggestions').mockResolvedValue([]);
+    render(<App />);
+
+    await user.dblClick(await screen.findByText('拍摄原片'));
+    await user.click(screen.getByLabelText('选择 2026-03-29_上海发布会_A-cam_001.RAW'));
+    await user.click(screen.getByLabelText('选择 2026-03-29_上海发布会_B-cam_018.RAW'));
+
+    await user.click(screen.getByRole('button', { name: '批量标签' }));
+    const dialog = await screen.findByRole('dialog', { name: '批量标签' });
+
+    expect(within(dialog).getByRole('button', { name: '社媒候选' })).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: '社媒候选' }));
+    await user.click(within(dialog).getByRole('button', { name: '保存标签' }));
+
+    expect(await screen.findByText('已更新 2 项条目的标签')).toBeInTheDocument();
+    const firstRow = screen.getByText('2026-03-29_上海发布会_A-cam_001.RAW').closest('tr') as HTMLElement;
+    const secondRow = screen.getByText('2026-03-29_上海发布会_B-cam_018.RAW').closest('tr') as HTMLElement;
+    await waitFor(() => expect(within(firstRow).queryByText('社媒候选')).toBeNull());
+    expect(within(firstRow).getByText('发布会')).toBeInTheDocument();
     expect(within(secondRow).getByText('发布会')).toBeInTheDocument();
   });
 

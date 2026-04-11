@@ -2,10 +2,30 @@ import '@testing-library/jest-dom/vitest';
 import { beforeEach, vi } from 'vitest';
 
 beforeEach(() => {
+  (window as Window & { __MARE_ENABLE_FILE_CENTER_MOCK_SYNC__?: boolean }).__MARE_ENABLE_FILE_CENTER_MOCK_SYNC__ = true;
+  class MockEventSource {
+    onmessage: ((event: MessageEvent<string>) => void) | null = null;
+
+    addEventListener() {
+      return undefined;
+    }
+
+    close() {
+      return undefined;
+    }
+  }
+
+  vi.stubGlobal('EventSource', MockEventSource);
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+      if (url.includes('sql-wasm.wasm')) {
+        const { readFile } = await import('node:fs/promises');
+        const { resolve } = await import('node:path');
+        const wasmBinary = await readFile(resolve(process.cwd(), 'node_modules/sql.js/dist/sql-wasm.wasm'));
+        return new Response(wasmBinary, { status: 200 });
+      }
       if (url.includes('/api/libraries')) {
         return {
           ok: true,
@@ -204,6 +224,43 @@ beforeEach(() => {
                 },
               ],
             },
+          }),
+        } as Response;
+      }
+
+      if (url.includes('/api/file-entries/') && url.endsWith('/annotations')) {
+        return {
+          ok: true,
+          json: async () => ({
+            data: {
+              message: '资产标记已更新',
+            },
+          }),
+        } as Response;
+      }
+
+      if (url.includes('/api/tags/suggestions')) {
+        return {
+          ok: true,
+          json: async () => ({
+            data: [
+              {
+                id: 'tag-publish',
+                name: '发布会',
+                count: 8,
+                groupName: '未分组',
+                isPinned: true,
+                libraryIds: ['photo'],
+              },
+              {
+                id: 'tag-live',
+                name: '直播切片',
+                count: 5,
+                groupName: '未分组',
+                isPinned: false,
+                libraryIds: ['photo'],
+              },
+            ],
           }),
         } as Response;
       }

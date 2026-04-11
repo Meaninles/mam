@@ -18,7 +18,6 @@ const sampleEntry: FileCenterEntry = {
   size: '47.8 MB',
   path: '商业摄影资产库 / 拍摄原片 / 2026-03-29_上海发布会_B-cam_018.RAW',
   sourceLabel: 'Sony A7 IV',
-  notes: '',
   lastTaskText: 'NAS 补齐进行中',
   lastTaskTone: 'warning',
   rating: 0,
@@ -31,7 +30,6 @@ const sampleEntry: FileCenterEntry = {
     { name: '影像NAS', state: '同步中', tone: 'warning', lastSyncAt: '刚刚', endpointType: 'nas' },
     { name: '115', state: '未同步', tone: 'critical', lastSyncAt: '尚未开始', endpointType: 'cloud' },
   ],
-  metadata: [{ label: '设备', value: 'Sony A7 IV' }],
 };
 
 describe('FileCenterPage', () => {

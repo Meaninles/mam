@@ -60,7 +60,6 @@ func TestBrowseLibraryResponseJSONShape(t *testing.T) {
 				Size:           "1.2 MB",
 				Path:           "商业摄影资产库 / 原片 / cover.jpg",
 				SourceLabel:    "统一资产",
-				Notes:          "",
 				LastTaskText:   "暂无任务",
 				LastTaskTone:   "info",
 				Rating:         0,
@@ -70,9 +69,6 @@ func TestBrowseLibraryResponseJSONShape(t *testing.T) {
 				Tags:           []string{},
 				Endpoints: []EntryEndpoint{
 					{Name: "商业摄影原片库", State: "已同步", Tone: "success", LastSyncAt: "2026-04-10 12:20", EndpointType: "local"},
-				},
-				Metadata: []MetadataRow{
-					{Label: "逻辑路径", Value: "/原片/cover.jpg"},
 				},
 			},
 		},

@@ -1,5 +1,6 @@
-import type { FileNode, StorageNode, TaskRecord } from '../data';
+import type { StorageNode, TaskRecord } from '../data';
 import type { ContextMenuTarget } from '../App';
+import type { FileCenterEntry } from '../lib/fileCenterApi';
 
 export function ContextMenu({
   menu,
@@ -11,8 +12,8 @@ export function ContextMenu({
 }: {
   menu: ContextMenuTarget;
   onClose: () => void;
-  onOpenFileDetail: (item: FileNode) => void;
-  onOpenFolder: (item: FileNode) => void;
+  onOpenFileDetail: (item: FileCenterEntry) => void;
+  onOpenFolder: (item: FileCenterEntry) => void;
   onOpenStorageDetail: (item: StorageNode) => void;
   onOpenTaskDetail: (item: TaskRecord) => void;
 }) {
@@ -37,17 +38,6 @@ export function ContextMenu({
           >
             {menu.item.type === 'folder' ? '进入目录' : '查看详情'}
           </button>
-          {menu.item.type === 'file' ? (
-            <button
-              type="button"
-              onClick={() => {
-                onOpenFileDetail(menu.item);
-                onClose();
-              }}
-            >
-              查看元数据
-            </button>
-          ) : null}
         </>
       )}
 
