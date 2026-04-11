@@ -141,11 +141,15 @@ const EMPTY_CLOUD_DRAFT: CloudDraft = {
 
 export function StorageNodesPage({
   libraries,
+  focusRequest,
+  onConsumeFocusRequest,
   onFeedback,
   onOpenIssueCenter,
   onOpenTaskCenter,
 }: {
   libraries: Library[];
+  focusRequest?: { id?: string; label: string; path?: string } | null;
+  onConsumeFocusRequest?: () => void;
   onFeedback?: (value: FeedbackState) => void;
   onOpenIssueCenter?: (context: { id: string; label: string; path?: string }) => void;
   onOpenTaskCenter?: (id: string) => void;
@@ -207,6 +211,19 @@ export function StorageNodesPage({
   useEffect(() => {
     setPageBySubPage((current) => ({ ...current, cloud: 1 }));
   }, [searchText, statusFilter, subPage]);
+
+  useEffect(() => {
+    if (!focusRequest) {
+      return;
+    }
+
+    setSubPage('mounts');
+    setShowMountManagement(false);
+    setStatusFilter('全部');
+    setMountLibraryFilter('全部资产库');
+    setSearchText(focusRequest.path ?? focusRequest.label);
+    onConsumeFocusRequest?.();
+  }, [focusRequest, onConsumeFocusRequest]);
 
   useEffect(() => {
     if (!menuState) {

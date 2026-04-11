@@ -14,11 +14,13 @@ import (
 	"mare/services/center/internal/agentregistry"
 	"mare/services/center/internal/assets"
 	apperrors "mare/services/center/internal/errors"
+	"mare/services/center/internal/issues"
 	"mare/services/center/internal/jobs"
 	"mare/services/center/internal/response"
 	"mare/services/center/internal/runtime"
 	"mare/services/center/internal/storage"
 	assetdto "mare/shared/contracts/dto/asset"
+	issuedto "mare/shared/contracts/dto/issue"
 	jobdto "mare/shared/contracts/dto/job"
 	storagedto "mare/shared/contracts/dto/storage"
 	tagdto "mare/shared/contracts/dto/tag"
@@ -119,11 +121,19 @@ type JobService interface {
 	Subscribe(jobID string) (<-chan jobdto.StreamEvent, func())
 }
 
+type IssueService interface {
+	ListIssues(ctx context.Context, query issues.ListQuery) (issuedto.ListResponse, error)
+	ListByJobIDs(ctx context.Context, jobIDs []string) ([]issuedto.Record, error)
+	ApplyAction(ctx context.Context, request issuedto.ActionRequest) (issuedto.ActionResponse, error)
+	ClearHistory(ctx context.Context, request issuedto.ClearHistoryRequest) (issuedto.ClearHistoryResponse, error)
+}
+
 type Dependencies struct {
 	Logger       *slog.Logger
 	Runtime      RuntimeService
 	Agents       AgentService
 	Jobs         JobService
+	Issues       IssueService
 	LocalNodes   LocalNodeService
 	NasNodes     NASNodeService
 	CloudNodes   CloudNodeService
@@ -902,6 +912,67 @@ func NewRouter(deps Dependencies) http.Handler {
 		response.WriteSuccess(w, http.StatusOK, result)
 	})
 
+	mux.HandleFunc("GET /api/issues", func(w http.ResponseWriter, r *http.Request) {
+		query := issues.ListQuery{
+			Page:          parsePositiveInt(r.URL.Query().Get("page"), 1),
+			PageSize:      parsePositiveInt(r.URL.Query().Get("pageSize"), 20),
+			SearchText:    strings.TrimSpace(r.URL.Query().Get("searchText")),
+			IssueCategory: strings.TrimSpace(r.URL.Query().Get("issueCategory")),
+			SourceDomain:  strings.TrimSpace(r.URL.Query().Get("sourceDomain")),
+			LibraryID:     strings.TrimSpace(r.URL.Query().Get("libraryId")),
+			Status:        strings.TrimSpace(r.URL.Query().Get("status")),
+			Severity:      strings.TrimSpace(r.URL.Query().Get("severity")),
+			Nature:        strings.TrimSpace(r.URL.Query().Get("nature")),
+			SortValue:     strings.TrimSpace(r.URL.Query().Get("sortValue")),
+			EndpointID:    strings.TrimSpace(r.URL.Query().Get("endpointId")),
+			Path:          strings.TrimSpace(r.URL.Query().Get("path")),
+			JobIDs:        r.URL.Query()["jobId"],
+		}
+		payload, err := deps.Issues.ListIssues(r.Context(), query)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("GET /api/issues/by-jobs", func(w http.ResponseWriter, r *http.Request) {
+		payload, err := deps.Issues.ListByJobIDs(r.Context(), r.URL.Query()["jobId"])
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, map[string]any{"items": payload})
+	})
+
+	mux.HandleFunc("POST /api/issues/actions", func(w http.ResponseWriter, r *http.Request) {
+		var payload issuedto.ActionRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("异常动作请求格式无效"))
+			return
+		}
+		result, err := deps.Issues.ApplyAction(r.Context(), payload)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("POST /api/issues/history/clear", func(w http.ResponseWriter, r *http.Request) {
+		var payload issuedto.ClearHistoryRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("清理异常历史请求格式无效"))
+			return
+		}
+		result, err := deps.Issues.ClearHistory(r.Context(), payload)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
 	mux.HandleFunc("GET /api/events/stream", func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
 		if !ok {
@@ -989,6 +1060,18 @@ func parseBrowseQuery(raw *url.URL) (assetdto.BrowseQuery, error) {
 		SortDirection:            values.Get("sortDirection"),
 		PartialSyncEndpointNames: values["partialSyncEndpointName"],
 	}, nil
+}
+
+func parsePositiveInt(raw string, fallback int) int {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
 }
 
 func parseJobListQuery(raw *url.URL) (jobs.ListQuery, error) {

@@ -3,7 +3,6 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createInitialState } from '../lib/clientState';
 import { jobsApi } from '../lib/jobsApi';
-import { taskExceptionsApi } from '../lib/taskExceptionsApi';
 import { TaskCenterWorkspace } from './TaskCenterWorkspace';
 
 vi.mock('../lib/jobsApi', () => ({
@@ -22,17 +21,10 @@ vi.mock('../lib/jobsApi', () => ({
   },
 }));
 
-vi.mock('../lib/taskExceptionsApi', () => ({
-  taskExceptionsApi: {
-    listByJobIds: vi.fn(),
-  },
-}));
-
 describe('TaskCenterWorkspace', () => {
   const seed = createInitialState();
 
   beforeEach(() => {
-    vi.mocked(taskExceptionsApi.listByJobIds).mockResolvedValue([]);
     vi.mocked(jobsApi.list).mockResolvedValue({
       items: [
         {
@@ -167,12 +159,15 @@ describe('TaskCenterWorkspace', () => {
       <TaskCenterWorkspace
         activeTab="other"
         fileNodes={seed.fileNodes}
+        issues={[]}
         libraries={[{ id: 'photo', name: '商业摄影资产库', rootLabel: '/', itemCount: '0', health: '100%', storagePolicy: '本地' }]}
         preselectedTaskIds={null}
         statusFilter="全部"
         onConsumePreselectedTaskIds={() => {}}
         onFeedback={() => {}}
         onOpenFileCenterForTask={() => {}}
+        onOpenIssueCenterForIssue={() => {}}
+        onOpenIssueCenterForTask={() => {}}
         onOpenStorageNodesForTask={() => {}}
         onSetActiveTab={() => {}}
         onSetTaskStatusFilter={() => {}}

@@ -80,6 +80,7 @@ func (s *Service) CancelJob(ctx context.Context, id string) (jobdto.MutationResp
 	}
 
 	s.publish(event)
+	s.syncJobIssues(ctx, id)
 	job, err := s.loadJobRecord(ctx, id)
 	if err != nil {
 		return jobdto.MutationResponse{}, err
@@ -159,6 +160,7 @@ func (s *Service) RetryJob(ctx context.Context, id string) (jobdto.MutationRespo
 
 	s.publish(event)
 	s.wake()
+	s.syncJobIssues(ctx, id)
 	job, err := s.loadJobRecord(ctx, id)
 	if err != nil {
 		return jobdto.MutationResponse{}, err

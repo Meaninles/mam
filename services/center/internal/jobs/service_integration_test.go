@@ -608,6 +608,9 @@ func resetSchema(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
 
 	if _, err := pool.Exec(ctx, `
+		DROP TABLE IF EXISTS issue_object_links;
+		DROP TABLE IF EXISTS issue_events;
+		DROP TABLE IF EXISTS issues;
 		DROP TABLE IF EXISTS directory_tag_links;
 		DROP TABLE IF EXISTS asset_tag_links;
 		DROP TABLE IF EXISTS job_object_links;

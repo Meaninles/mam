@@ -45,11 +45,17 @@ func TestNewServerStartsAgainstDevelopmentDatabase(t *testing.T) {
 		serverDone <- application.Run(ctx)
 	}()
 
-	time.Sleep(500 * time.Millisecond)
-
-	response, err := http.Get("http://127.0.0.1:18080/healthz")
-	if err != nil {
-		t.Fatalf("call healthz: %v", err)
+	var response *http.Response
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		response, err = http.Get("http://127.0.0.1:18080/healthz")
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("call healthz: %v", err)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	defer response.Body.Close()
 

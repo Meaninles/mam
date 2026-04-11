@@ -19,11 +19,11 @@ import { ActionButton, DenseRow, EmptyState, SelectPill, Sheet, TonePill } from 
 const CATEGORY_OPTIONS = ['全部', '冲突', '传输', '校验', '节点与权限', '容量与资源', '扫描与解析', '清理与治理'] as const;
 const NATURE_OPTIONS = ['全部问题', '阻塞型异常', '提醒型风险'] as const;
 const SOURCE_OPTIONS = ['全部来源', '传输任务', '其他任务', '文件中心', '存储节点', '系统治理'] as const;
-const STATUS_OPTIONS = ['全部', '待处理', '待确认', '处理中', '已延后', '已忽略', '已解决', '已归档'] as const;
+const STATUS_OPTIONS = ['全部', '待处理', '待确认', '处理中', '已忽略', '已解决', '已归档'] as const;
 const SEVERITY_OPTIONS = ['全部级别', '高优先级', '需尽快处理', '信息'] as const;
 const SORT_OPTIONS = ['默认排序', '最近更新时间', '严重级别', '名称'] as const;
 
-type IssueActionType = 'retry' | 'confirm' | 'postpone' | 'ignore' | 'refresh' | 'archive';
+type IssueActionType = 'retry' | 'confirm' | 'ignore' | 'archive';
 type IssueFilterContext = {
   issueId?: string;
   taskId?: string;
@@ -574,14 +574,8 @@ function buildBatchActions(issues: IssueRecord[]) {
   if (allCan((capabilities, issue) => canConfirmIssue(issue, capabilities))) {
     actions.push({ id: 'confirm', label: '批量标记已确认' });
   }
-  if (allCan((capabilities, issue) => canPostponeIssue(issue, capabilities))) {
-    actions.push({ id: 'postpone', label: '批量延后' });
-  }
   if (allCan((capabilities, issue) => canIgnoreIssue(issue, capabilities))) {
     actions.push({ id: 'ignore', label: '批量忽略' });
-  }
-  if (allCan((capabilities, issue) => canRefreshIssue(issue, capabilities))) {
-    actions.push({ id: 'refresh', label: '批量刷新检测' });
   }
   if (allCan((capabilities, issue) => canArchiveIssue(issue, capabilities))) {
     actions.push({ id: 'archive', label: '批量归档' });
@@ -598,9 +592,7 @@ function buildIssueMenuActions(issue: IssueRecord) {
 
   if (canRetryIssue(issue, issue.capabilities)) actions.push({ kind: 'command', id: 'retry', label: '重试' });
   if (canConfirmIssue(issue, issue.capabilities)) actions.push({ kind: 'command', id: 'confirm', label: '标记已确认' });
-  if (canPostponeIssue(issue, issue.capabilities)) actions.push({ kind: 'command', id: 'postpone', label: '延后处理' });
   if (canIgnoreIssue(issue, issue.capabilities)) actions.push({ kind: 'command', id: 'ignore', label: '忽略' });
-  if (canRefreshIssue(issue, issue.capabilities)) actions.push({ kind: 'command', id: 'refresh', label: '刷新检测' });
   if (canArchiveIssue(issue, issue.capabilities)) actions.push({ kind: 'command', id: 'archive', label: '归档' });
   if (issue.capabilities.canOpenTaskCenter) actions.push({ kind: 'link', id: 'open-task', label: '打开任务中心' });
   if (issue.capabilities.canOpenFileCenter) actions.push({ kind: 'link', id: 'open-file', label: '打开文件中心' });
@@ -612,35 +604,25 @@ function buildIssueMenuActions(issue: IssueRecord) {
 function resolvePrimaryAction(issue: IssueRecord) {
   if (canRetryIssue(issue, issue.capabilities)) return { id: 'retry' as const, label: '重试' };
   if (canConfirmIssue(issue, issue.capabilities)) return { id: 'confirm' as const, label: '标记确认' };
-  if (canRefreshIssue(issue, issue.capabilities)) return { id: 'refresh' as const, label: '刷新检测' };
-  if (canArchiveIssue(issue, issue.capabilities)) return { id: 'archive' as const, label: '归档' };
-  if (canPostponeIssue(issue, issue.capabilities)) return { id: 'postpone' as const, label: '延后处理' };
   if (canIgnoreIssue(issue, issue.capabilities)) return { id: 'ignore' as const, label: '忽略' };
+  if (canArchiveIssue(issue, issue.capabilities)) return { id: 'archive' as const, label: '归档' };
   return null;
 }
 
 function canRetryIssue(issue: IssueRecord, capabilities: IssueCapabilities) {
-  return Boolean(capabilities.canRetry) && ['待处理', '处理中', '已延后'].includes(issue.status);
+  return Boolean(capabilities.canRetry) && ['待处理', '处理中'].includes(issue.status);
 }
 
 function canConfirmIssue(issue: IssueRecord, capabilities: IssueCapabilities) {
-  return Boolean(capabilities.canConfirm) && ['待处理', '待确认', '已延后'].includes(issue.status);
-}
-
-function canPostponeIssue(issue: IssueRecord, capabilities: IssueCapabilities) {
-  return Boolean(capabilities.canPostpone) && ['待处理', '待确认', '处理中'].includes(issue.status);
+  return Boolean(capabilities.canConfirm) && ['待处理', '待确认'].includes(issue.status);
 }
 
 function canIgnoreIssue(issue: IssueRecord, capabilities: IssueCapabilities) {
-  return Boolean(capabilities.canIgnore) && ['待处理', '待确认', '处理中', '已延后'].includes(issue.status);
-}
-
-function canRefreshIssue(issue: IssueRecord, capabilities: IssueCapabilities) {
-  return Boolean(capabilities.canRefreshCheck) && !isHistoricalStatus(issue.status);
+  return Boolean(capabilities.canIgnore) && ['待处理', '待确认', '处理中'].includes(issue.status);
 }
 
 function canArchiveIssue(issue: IssueRecord, capabilities: IssueCapabilities) {
-  return Boolean(capabilities.canArchive) && ['已解决', '已忽略', '已延后'].includes(issue.status);
+  return Boolean(capabilities.canArchive) && ['已解决', '已忽略'].includes(issue.status);
 }
 
 function isHistoricalStatus(status: IssueStatus) {
@@ -660,7 +642,7 @@ function getSeverityLabel(severity: Severity) {
 
 function resolveStatusTone(status: IssueStatus): Severity {
   if (status === '待处理') return 'critical';
-  if (status === '待确认' || status === '处理中' || status === '已延后') return 'warning';
+  if (status === '待确认' || status === '处理中') return 'warning';
   if (status === '已解决') return 'success';
   return 'info';
 }
@@ -770,10 +752,9 @@ function statusOrder(status: IssueStatus) {
   if (status === '待处理') return 0;
   if (status === '待确认') return 1;
   if (status === '处理中') return 2;
-  if (status === '已延后') return 3;
-  if (status === '已忽略') return 4;
-  if (status === '已解决') return 5;
-  return 6;
+  if (status === '已忽略') return 3;
+  if (status === '已解决') return 4;
+  return 5;
 }
 
 function severityOrder(severity: Severity) {

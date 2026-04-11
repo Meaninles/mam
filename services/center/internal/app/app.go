@@ -12,6 +12,7 @@ import (
 	"mare/services/center/internal/config"
 	"mare/services/center/internal/db"
 	httpapi "mare/services/center/internal/http"
+	"mare/services/center/internal/issues"
 	"mare/services/center/internal/jobs"
 	"mare/services/center/internal/logging"
 	"mare/services/center/internal/runtime"
@@ -59,6 +60,8 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 	nasNodeService := storage.NewNASNodeService(pool)
 	cloudNodeService := storage.NewCloudNodeService(pool)
 	jobService := jobs.NewService(pool)
+	issueService := issues.NewService(pool, jobService)
+	jobService.SetIssueSynchronizer(issueService)
 	jobService.RegisterExecutor(jobs.JobIntentScanDirectory, func(ctx context.Context, execution jobs.ExecutionContext) error {
 		if execution.Job.SourceDomain == jobs.SourceDomainStorageNodes {
 			mountID := findMountLinkID(execution.ItemLinks)
@@ -115,6 +118,7 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 		Runtime:      runtimeService,
 		Agents:       agentService,
 		Jobs:         jobService,
+		Issues:       issueService,
 		LocalNodes:   localFolderService,
 		NasNodes:     nasNodeService,
 		CloudNodes:   cloudNodeService,

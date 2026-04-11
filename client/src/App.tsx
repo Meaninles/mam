@@ -70,6 +70,8 @@ import {
   type FileCenterStatusFilter,
   type FileCenterTagSuggestion,
 } from './lib/fileCenterApi';
+import { issuesApi } from './lib/issuesApi';
+import { jobsApi, type JobStreamEvent } from './lib/jobsApi';
 import {
   storageNodesApi,
   type StorageHeartbeatPolicy,
@@ -105,6 +107,7 @@ export type ContextMenuTarget =
 type FeedbackState = { message: string; tone: Severity } | null;
 type IssueFocusState = IssueFocusRequest;
 type PendingFileCenterJump = { libraryId: string; folderId: string | null; selectedIds: string[] } | null;
+type StorageFocusState = { id?: string; label: string; path?: string } | null;
 type PendingTaskFocus = {
   taskIds: string[];
   issueId?: string;
@@ -471,213 +474,6 @@ function isBlockingTransferTaskStatus(status: string) {
 }
 void isBlockingTransferTaskStatus;
 
-function resolveFileCenterJumpForTask(
-  fileNodes: PersistedState['fileNodes'],
-  task: TaskRecord,
-  taskItems: PersistedState['taskItemRecords'],
-) {
-  const relatedNodeIds = Array.from(
-    new Set([
-      ...(task.fileNodeIds ?? []),
-      ...taskItems
-        .filter((item) => item.taskId === task.id)
-        .map((item) => item.fileNodeId)
-        .filter((id): id is string => Boolean(id)),
-    ]),
-  );
-
-  if (relatedNodeIds.length === 0) {
-    return { folderId: null, selectedIds: [] as string[] };
-  }
-
-  const relatedNodes = fileNodes.filter((node) => relatedNodeIds.includes(node.id));
-  const parentIds = Array.from(new Set(relatedNodes.map((node) => node.parentId).filter((id): id is string => Boolean(id))));
-  if (parentIds.length === 1 && relatedNodes.every((node) => node.parentId === parentIds[0])) {
-    return {
-      folderId: parentIds[0],
-      selectedIds: relatedNodes.map((node) => node.id),
-    };
-  }
-
-  const topLevelIds = new Set<string>();
-  relatedNodes.forEach((node) => {
-    let cursor = node;
-    let parent = fileNodes.find((entry) => entry.id === cursor.parentId);
-    while (parent && parent.parentId !== null) {
-      cursor = parent;
-      parent = fileNodes.find((entry) => entry.id === cursor.parentId);
-    }
-    topLevelIds.add(parent ? parent.id : cursor.id);
-  });
-
-  return {
-    folderId: null,
-    selectedIds: Array.from(topLevelIds),
-  };
-}
-
-function resolveFileCenterJumpForIssue(
-  fileNodes: PersistedState['fileNodes'],
-  taskRecords: PersistedState['taskRecords'],
-  taskItems: PersistedState['taskItemRecords'],
-  issue: IssueRecord,
-) {
-  const sourceFileNodeId = issue.source.fileNodeId;
-  if (sourceFileNodeId) {
-    const node = fileNodes.find((item) => item.id === sourceFileNodeId);
-    if (node) {
-      return {
-        folderId: node.parentId,
-        selectedIds: [node.id],
-      };
-    }
-  }
-
-  const taskId = issue.source.taskId ?? issue.taskId;
-  if (taskId) {
-    const task = taskRecords.find((item) => item.id === taskId);
-    if (task) {
-      return resolveFileCenterJumpForTask(fileNodes, task, taskItems);
-    }
-  }
-
-  if (issue.source.path) {
-    const exactNode = fileNodes.find((node) => issue.source.path?.includes(node.path));
-    if (exactNode) {
-      return {
-        folderId: exactNode.parentId,
-        selectedIds: [exactNode.id],
-      };
-    }
-  }
-
-  return {
-    folderId: null,
-    selectedIds: [] as string[],
-  };
-}
-
-function appendIssueHistory(issue: IssueRecord, action: string, operatorLabel: string, result: string): IssueRecord['histories'] {
-  return [
-    ...issue.histories,
-    {
-      id: createId(`${issue.id}-history`),
-      issueId: issue.id,
-      action,
-      operatorLabel,
-      result,
-      createdAt: '刚刚',
-    },
-  ];
-}
-
-function applyIssueAction(issue: IssueRecord, action: 'retry' | 'confirm' | 'postpone' | 'ignore' | 'refresh' | 'archive'): IssueRecord {
-  if (action === 'retry') {
-    return {
-      ...issue,
-      status: '处理中',
-      updatedAt: '刚刚',
-      histories: appendIssueHistory(issue, '重试', '异常中心', '已重新发起处理，等待结果回写。'),
-    };
-  }
-
-  if (action === 'confirm') {
-    return {
-      ...issue,
-      status: '已解决',
-      updatedAt: '刚刚',
-      resolvedAt: '刚刚',
-      histories: appendIssueHistory(issue, '标记已确认', '异常中心', '已确认当前风险，主工作区不再继续提醒。'),
-    };
-  }
-
-  if (action === 'postpone') {
-    return {
-      ...issue,
-      status: '已延后',
-      updatedAt: '刚刚',
-      histories: appendIssueHistory(issue, '延后处理', '异常中心', '已延后到后续治理窗口继续处理。'),
-    };
-  }
-
-  if (action === 'ignore') {
-    return {
-      ...issue,
-      status: '已忽略',
-      updatedAt: '刚刚',
-      histories: appendIssueHistory(issue, '忽略', '异常中心', '已忽略当前异常，但历史记录仍保留。'),
-    };
-  }
-
-  if (action === 'refresh') {
-    return {
-      ...issue,
-      updatedAt: '刚刚',
-      histories: appendIssueHistory(issue, '刷新检测', '异常中心', '已重新拉取当前异常状态。'),
-    };
-  }
-
-  return {
-    ...issue,
-    status: '已归档',
-    updatedAt: '刚刚',
-    archivedAt: '刚刚',
-    histories: appendIssueHistory(issue, '归档', '异常中心', '已从主工作区归档，可在历史中回查。'),
-  };
-}
-
-function applyIssueActionToState(
-  current: PersistedState,
-  issueIds: string[],
-  action: 'retry' | 'confirm' | 'postpone' | 'ignore' | 'refresh' | 'archive',
-) {
-  const targetIds = new Set(issueIds);
-  const targetIssues = current.issueRecords.filter((issue) => targetIds.has(issue.id));
-  const relatedTaskIds = new Set(
-    targetIssues
-      .map((issue) => issue.source.taskId ?? issue.taskId)
-      .filter((value): value is string => Boolean(value)),
-  );
-  const relatedTaskItemIds = new Set(
-    targetIssues
-      .map((issue) => issue.source.taskItemId ?? issue.taskItemId)
-      .filter((value): value is string => Boolean(value)),
-  );
-
-  return {
-    ...current,
-    issueRecords: current.issueRecords.map((issue) => (targetIds.has(issue.id) ? applyIssueAction(issue, action) : issue)),
-    noticeRecords: markIssueLinkedNoticesStale(current.noticeRecords, issueIds),
-    taskRecords:
-      action === 'retry' || action === 'refresh'
-        ? current.taskRecords.map((task) =>
-            relatedTaskIds.has(task.id)
-              ? {
-                  ...task,
-                  status: '运行中',
-                  statusTone: resolveTaskStatusTone('运行中'),
-                  updatedAt: '刚刚',
-                  eta: task.status === '已暂停' ? '继续处理中' : task.eta,
-                }
-              : task,
-          )
-        : current.taskRecords,
-    taskItemRecords:
-      action === 'retry' || action === 'refresh'
-        ? current.taskItemRecords.map((item) =>
-            relatedTaskItemIds.has(item.id)
-              ? {
-                  ...item,
-                  status: '运行中',
-                  phase: '运行中',
-                  statusTone: resolveTaskItemStatusTone('运行中'),
-                }
-              : item,
-          )
-        : current.taskItemRecords,
-  };
-}
-
 function resolveIssueActionFeedback(action: 'retry' | 'confirm' | 'postpone' | 'ignore' | 'refresh' | 'archive', count: number): FeedbackState {
   const quantity = count > 1 ? `${count} 条异常` : '当前异常';
 
@@ -702,6 +498,7 @@ function resolveIssueActionFeedback(action: 'retry' | 'confirm' | 'postpone' | '
 export default function App() {
   const runtimeConfig = useMemo(() => getRuntimeConfig(), []);
   const [persisted, setPersisted] = useState<PersistedState>(loadPersistedState);
+  const [issueRecords, setIssueRecords] = useState<IssueRecord[]>([]);
   const [libraries, setLibraries] = useState<Library[]>([]);
   const startupWorkspaceViewRef = useRef<WorkspaceView>(resolveStartupWorkspace(persisted.settings));
   const [openWorkspaceViews, setOpenWorkspaceViews] = useState<WorkspaceView[]>([startupWorkspaceViewRef.current]);
@@ -716,6 +513,7 @@ export default function App() {
   const [partialSyncEndpointNames, setPartialSyncEndpointNames] = useState<string[]>([]);
   const [taskStatusFilter, setTaskStatusFilter] = useState('活跃中');
   const [issueFocusRequest, setIssueFocusRequest] = useState<IssueFocusState>(null);
+  const [storageFocus, setStorageFocus] = useState<StorageFocusState>(null);
   const [searchText, setSearchText] = useState('');
   const [fileSort, setFileSort] = useState<FileCenterSortValue>('修改时间');
   const [fileSortDirection, setFileSortDirection] = useState<FileCenterSortDirection>('desc');
@@ -728,6 +526,10 @@ export default function App() {
   const [historyIndex, setHistoryIndex] = useState(0);
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
   const [feedback, setFeedback] = useState<FeedbackState>(null);
+  const issueRefreshTimeoutRef = useRef<number | null>(null);
+  const issueRefreshInFlightRef = useRef(false);
+  const issueRefreshDirtyRef = useRef(true);
+  const lastIssueSignatureRef = useRef('');
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [runtimeLightState, setRuntimeLightState] = useState<RuntimeLightState>(null);
   const [libraryMenuOpen, setLibraryMenuOpen] = useState(false);
@@ -763,6 +565,63 @@ export default function App() {
     'storage-nodes': 0,
     settings: 0,
   });
+
+  const shouldKeepIssuesFresh =
+    openWorkspaceViews.includes('issues') ||
+    openWorkspaceViews.includes('task-center') ||
+    openWorkspaceViews.includes('import-center') ||
+    (openWorkspaceViews.includes('settings') && settingsTab === 'issue-governance');
+
+  const computeIssueSignature = (items: IssueRecord[]) =>
+    items.map((item) => `${item.id}:${item.status}:${item.updatedAt}:${item.histories.length}`).join('|');
+
+  const isIssueRelevantJobEvent = (event: JobStreamEvent) =>
+    [
+      'JOB_RETRIED',
+      'JOB_FAILED',
+      'JOB_PARTIAL_SUCCESS',
+      'JOB_COMPLETED',
+      'JOB_CANCELED',
+      'JOB_ITEM_FAILED',
+      'JOB_ITEM_COMPLETED',
+      'JOB_ITEM_CANCELED',
+    ].includes(event.eventType);
+
+  const refreshIssues = async () => {
+    issueRefreshDirtyRef.current = false;
+    if (issueRefreshInFlightRef.current) {
+      issueRefreshDirtyRef.current = true;
+      return;
+    }
+
+    issueRefreshInFlightRef.current = true;
+    try {
+      const items = await issuesApi.listAll();
+      const nextSignature = computeIssueSignature(items);
+      if (lastIssueSignatureRef.current !== nextSignature) {
+        lastIssueSignatureRef.current = nextSignature;
+        startTransition(() => {
+          setIssueRecords(items);
+        });
+      }
+    } catch (error) {
+      issueRefreshDirtyRef.current = true;
+      if (import.meta.env.MODE !== 'test') {
+        console.error('load issues failed', error);
+      }
+    } finally {
+      issueRefreshInFlightRef.current = false;
+      if (issueRefreshDirtyRef.current && shouldKeepIssuesFresh) {
+        if (issueRefreshTimeoutRef.current !== null) {
+          window.clearTimeout(issueRefreshTimeoutRef.current);
+        }
+        issueRefreshTimeoutRef.current = window.setTimeout(() => {
+          issueRefreshTimeoutRef.current = null;
+          void refreshIssues();
+        }, 240);
+      }
+    }
+  };
 
   useEffect(() => {
     let disposed = false;
@@ -909,7 +768,7 @@ export default function App() {
     if (settingsTab === 'issue-governance') {
       return (
         <IssueGovernanceSettingsPanel
-          issues={persisted.issueRecords}
+          issues={issueRecords}
           sections={settingsDraft['issue-governance']}
           onChangeSetting={(sectionId, rowId, value) =>
             setSettingsDraft((current) => ({
@@ -950,7 +809,7 @@ export default function App() {
     openWorkspaceViews,
     persisted.importDeviceSessions,
     persisted.importReports,
-    persisted.issueRecords,
+    issueRecords,
     libraries,
     persisted.noticeRecords,
     persisted.taskRecords,
@@ -977,6 +836,38 @@ export default function App() {
     setSettingsDraft(cloneSettingsRecord(persisted.settings));
     setPageSize(getDefaultPageSize(persisted.settings));
   }, [persisted.settings]);
+
+  useEffect(() => {
+    if (shouldKeepIssuesFresh && issueRefreshDirtyRef.current) {
+      void refreshIssues();
+    }
+
+    const unsubscribe = jobsApi.subscribe((event: JobStreamEvent) => {
+      if (!isIssueRelevantJobEvent(event)) {
+        return;
+      }
+
+      issueRefreshDirtyRef.current = true;
+      if (!shouldKeepIssuesFresh) {
+        return;
+      }
+
+      if (issueRefreshTimeoutRef.current !== null) {
+        window.clearTimeout(issueRefreshTimeoutRef.current);
+      }
+      issueRefreshTimeoutRef.current = window.setTimeout(() => {
+        issueRefreshTimeoutRef.current = null;
+        void refreshIssues();
+      }, 240);
+    });
+
+    return () => {
+      unsubscribe();
+      if (issueRefreshTimeoutRef.current !== null) {
+        window.clearTimeout(issueRefreshTimeoutRef.current);
+      }
+    };
+  }, [shouldKeepIssuesFresh]);
 
   useEffect(() => {
     if (!feedback) return;
@@ -1352,7 +1243,7 @@ export default function App() {
 
   const openIssueCenterForIds = (issueIds: string[]) => {
     const issue = issueIds
-      .map((issueId) => persisted.issueRecords.find((item) => item.id === issueId) ?? null)
+      .map((issueId) => issueRecords.find((item) => item.id === issueId) ?? null)
       .find((item): item is IssueRecord => Boolean(item));
 
     if (!issue) {
@@ -1381,17 +1272,14 @@ export default function App() {
   const openTaskCenterForIssue = (issue: IssueRecord) => {
     const taskId = issue.source.taskId ?? issue.taskId;
     if (taskId) {
-      const task = persisted.taskRecords.find((item) => item.id === taskId);
-      if (task) {
-        setTaskTab(task.kind);
-        setPendingTaskSelection({
-          taskIds: [task.id],
-          issueId: issue.id,
-          taskItemId: issue.source.taskItemId ?? issue.taskItemId,
-          openIssuePopover: true,
-        });
-        setTaskStatusFilter('全部');
-      }
+      setTaskTab(issue.sourceDomain === '传输任务' ? 'transfer' : 'other');
+      setPendingTaskSelection({
+        taskIds: [taskId],
+        issueId: issue.id,
+        taskItemId: issue.source.taskItemId ?? issue.taskItemId,
+        openIssuePopover: true,
+      });
+      setTaskStatusFilter('全部');
     }
     activateWorkspace('task-center');
   };
@@ -1408,28 +1296,39 @@ export default function App() {
     activateWorkspace('task-center');
   };
 
-  const openFileCenterForIssue = (issue: IssueRecord) => {
-    const jumpTarget = resolveFileCenterJumpForIssue(
-      persisted.fileNodes,
-      persisted.taskRecords,
-      persisted.taskItemRecords,
-      issue,
-    );
+  const openFileCenterForIssue = async (issue: IssueRecord) => {
+    let folderId: string | null = null;
+    let selectedIds: string[] = [];
+
+    if (issue.source.fileNodeId) {
+      const detail = await fileCenterApi.loadEntryDetail(issue.source.fileNodeId);
+      if (detail) {
+        folderId = detail.type === 'folder' ? detail.id : detail.parentId;
+        selectedIds = [detail.id];
+      }
+    }
 
     setActiveLibraryId(issue.libraryId);
-    setCurrentFolderId(jumpTarget.folderId);
-    setFolderHistory([jumpTarget.folderId]);
+    setCurrentFolderId(folderId);
+    setFolderHistory([folderId]);
     setHistoryIndex(0);
-    setSelectedFileIds(jumpTarget.selectedIds);
+    setSelectedFileIds(selectedIds);
     setPendingFileCenterJump({
       libraryId: issue.libraryId,
-      folderId: jumpTarget.folderId,
-      selectedIds: jumpTarget.selectedIds,
+      folderId,
+      selectedIds,
     });
     activateWorkspace('file-center');
   };
 
-  const openStorageNodesForIssue = () => {
+  const openStorageNodesForIssue = (issue?: IssueRecord) => {
+    if (issue?.source.endpointId || issue?.source.path) {
+      setStorageFocus({
+        id: issue.source.endpointId,
+        label: issue.source.endpointLabel ?? issue.title,
+        path: issue.source.path,
+      });
+    }
     activateWorkspace('storage-nodes');
   };
 
@@ -1450,7 +1349,7 @@ export default function App() {
   };
 
   const findNoticeIssue = (notice: NoticeRecord) =>
-    notice.issueId ? persisted.issueRecords.find((issue) => issue.id === notice.issueId) ?? null : null;
+    notice.issueId ? issueRecords.find((issue) => issue.id === notice.issueId) ?? null : null;
 
   const handleNoticeMarkRead = (noticeId: string) => {
     setPersisted((current) => ({
@@ -2391,7 +2290,7 @@ export default function App() {
                 key={`import-center-${workspaceRefreshTokens['import-center']}`}
                 devices={persisted.importDeviceSessions}
                 drafts={persisted.importDrafts}
-                issues={persisted.issueRecords}
+                issues={issueRecords}
                 reports={persisted.importReports}
                 sourceNodes={persisted.importSourceNodes}
                 targetEndpoints={persisted.importTargetEndpoints}
@@ -2679,6 +2578,7 @@ export default function App() {
               key={`task-center-${workspaceRefreshTokens['task-center']}`}
               activeTab={taskTab}
               fileNodes={persisted.fileNodes}
+              issues={issueRecords}
               libraries={libraries}
               statusFilter={taskStatusFilter}
               preselectedTaskIds={pendingTaskSelection}
@@ -2697,6 +2597,8 @@ export default function App() {
                 });
                 activateWorkspace('file-center');
               }}
+              onOpenIssueCenterForIssue={openIssueCenterForIssue}
+              onOpenIssueCenterForTask={openIssueCenterForTask}
               onOpenStorageNodesForTask={() => {
                 activateWorkspace('storage-nodes');
               }}
@@ -2711,23 +2613,46 @@ export default function App() {
           createPortal(
             <IssuesPage
               key={`issues-${workspaceRefreshTokens.issues}`}
-              issues={persisted.issueRecords}
+              issues={issueRecords}
               libraries={libraries}
               focusRequest={issueFocusRequest}
               onClearFocusRequest={() => setIssueFocusRequest(null)}
               onConsumeFocusRequest={() => setIssueFocusRequest(null)}
               onIssueAction={(ids, action) =>
-                commitState((current) => applyIssueActionToState(current, ids, action), resolveIssueActionFeedback(action, ids.length))
+                void issuesApi
+                  .applyAction(ids, action)
+                  .then(() => {
+                    setPersisted((current) => ({
+                      ...current,
+                      noticeRecords: markIssueLinkedNoticesStale(current.noticeRecords, ids),
+                    }));
+                    void refreshIssues();
+                    setFeedback(resolveIssueActionFeedback(action, ids.length));
+                  })
+                  .catch((error) =>
+                    setFeedback({
+                      message: error instanceof Error ? error.message : '异常处理失败',
+                      tone: 'warning',
+                    }),
+                  )
               }
               onClearHistory={(ids) =>
-                commitState(
-                  (current) => ({
-                    ...current,
-                    issueRecords: current.issueRecords.filter((issue) => !ids.includes(issue.id)),
-                    noticeRecords: removeIssueLinkedNotices(current.noticeRecords, ids),
-                  }),
-                  { message: `已清理 ${ids.length} 条历史异常`, tone: 'success' },
-                )
+                void issuesApi
+                  .clearHistory(ids)
+                  .then(() => {
+                    setPersisted((current) => ({
+                      ...current,
+                      noticeRecords: removeIssueLinkedNotices(current.noticeRecords, ids),
+                    }));
+                    void refreshIssues();
+                    setFeedback({ message: `已清理 ${ids.length} 条历史异常`, tone: 'success' });
+                  })
+                  .catch((error) =>
+                    setFeedback({
+                      message: error instanceof Error ? error.message : '清理历史异常失败',
+                      tone: 'warning',
+                    }),
+                  )
               }
               onOpenTaskCenter={openTaskCenterForIssue}
               onOpenFileCenter={openFileCenterForIssue}
@@ -2741,17 +2666,20 @@ export default function App() {
           createPortal(
             <StorageNodesPage
               key={`storage-nodes-${workspaceRefreshTokens['storage-nodes']}`}
-            libraries={libraries}
-            onFeedback={setFeedback}
-            onOpenIssueCenter={(context) => {
-              setIssueFocusRequest({
-                sourceDomain: '存储节点',
-                path: context.path,
-                label: `按存储节点查看异常：${context.label}`,
-              });
-              activateWorkspace('issues');
-            }}
-            onOpenTaskCenter={() => activateWorkspace('task-center')}
+              libraries={libraries}
+              focusRequest={storageFocus}
+              onConsumeFocusRequest={() => setStorageFocus(null)}
+              onFeedback={setFeedback}
+              onOpenIssueCenter={(context) => {
+                setIssueFocusRequest({
+                  sourceDomain: '存储节点',
+                  endpointId: context.id,
+                  path: context.path,
+                  label: `按存储节点查看异常：${context.label}`,
+                });
+                activateWorkspace('issues');
+              }}
+              onOpenTaskCenter={() => activateWorkspace('task-center')}
             />,
             getWorkspaceContainer('storage-nodes'),
           )

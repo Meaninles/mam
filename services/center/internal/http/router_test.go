@@ -11,10 +11,12 @@ import (
 	"mare/services/center/internal/agentregistry"
 	"mare/services/center/internal/assets"
 	"mare/services/center/internal/db"
+	"mare/services/center/internal/issues"
 	"mare/services/center/internal/jobs"
 	"mare/services/center/internal/runtime"
 	"mare/services/center/internal/storage"
 	assetdto "mare/shared/contracts/dto/asset"
+	issuedto "mare/shared/contracts/dto/issue"
 	jobdto "mare/shared/contracts/dto/job"
 	storagedto "mare/shared/contracts/dto/storage"
 	tagdto "mare/shared/contracts/dto/tag"
@@ -48,6 +50,7 @@ type fakeLocalNodeService struct{}
 type fakeNASNodeService struct{}
 type fakeAssetService struct{}
 type fakeJobService struct{}
+type fakeIssueService struct{}
 type fakeTagService struct{}
 
 func (fakeAgentService) Register(_ context.Context, registration agentregistry.Registration) (agentregistry.Agent, error) {
@@ -406,6 +409,59 @@ func (fakeJobService) Subscribe(string) (<-chan jobdto.StreamEvent, func()) {
 	ch := make(chan jobdto.StreamEvent)
 	close(ch)
 	return ch, func() {}
+}
+
+func (fakeIssueService) ListIssues(context.Context, issues.ListQuery) (issuedto.ListResponse, error) {
+	return issuedto.ListResponse{
+		Items: []issuedto.Record{
+			{
+				ID:            "issue-1",
+				Code:          "issue-1",
+				IssueCategory: "TRANSFER",
+				IssueType:     "REPLICATE_FAILED",
+				Nature:        "BLOCKING",
+				SourceDomain:  "TRANSFER_JOB",
+				Severity:      "CRITICAL",
+				Status:        "OPEN",
+				Title:         "封面图同步失败",
+				Summary:       "目标端点写入失败",
+				ObjectLabel:   "cover.jpg / 商业摄影原片库",
+				CreatedAt:     "2026-04-12T12:00:00Z",
+				UpdatedAt:     "2026-04-12T12:00:00Z",
+			},
+		},
+		Total:    1,
+		Page:     1,
+		PageSize: 20,
+	}, nil
+}
+
+func (fakeIssueService) ListByJobIDs(context.Context, []string) ([]issuedto.Record, error) {
+	return []issuedto.Record{
+		{
+			ID:            "issue-1",
+			Code:          "issue-1",
+			IssueCategory: "TRANSFER",
+			IssueType:     "REPLICATE_FAILED",
+			Nature:        "BLOCKING",
+			SourceDomain:  "TRANSFER_JOB",
+			Severity:      "CRITICAL",
+			Status:        "OPEN",
+			Title:         "封面图同步失败",
+			Summary:       "目标端点写入失败",
+			ObjectLabel:   "cover.jpg / 商业摄影原片库",
+			CreatedAt:     "2026-04-12T12:00:00Z",
+			UpdatedAt:     "2026-04-12T12:00:00Z",
+		},
+	}, nil
+}
+
+func (fakeIssueService) ApplyAction(context.Context, issuedto.ActionRequest) (issuedto.ActionResponse, error) {
+	return issuedto.ActionResponse{Message: "异常已处理", IDs: []string{"issue-1"}}, nil
+}
+
+func (fakeIssueService) ClearHistory(context.Context, issuedto.ClearHistoryRequest) (issuedto.ClearHistoryResponse, error) {
+	return issuedto.ClearHistoryResponse{Message: "历史异常已清理", IDs: []string{"issue-1"}}, nil
 }
 
 func fakeCreateJobResponse(message string) jobdto.CreateResponse {
@@ -974,6 +1030,56 @@ func TestCreateTagRouteAcceptsValidPayload(t *testing.T) {
 	}
 	if !bytes.Contains(recorder.Body.Bytes(), []byte(`"tagId":"tag-new"`)) {
 		t.Fatalf("expected tag create response, got %s", recorder.Body.String())
+	}
+}
+
+func TestIssueListRouteReturnsIssues(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(Dependencies{
+		Runtime: fakeRuntimeService{},
+		Agents:  fakeAgentService{},
+		Issues:  fakeIssueService{},
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/api/issues?page=1&pageSize=20", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte(`"issueType":"REPLICATE_FAILED"`)) {
+		t.Fatalf("expected issue payload, got %s", recorder.Body.String())
+	}
+}
+
+func TestIssueActionRouteAcceptsValidPayload(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(Dependencies{
+		Runtime: fakeRuntimeService{},
+		Agents:  fakeAgentService{},
+		Issues:  fakeIssueService{},
+	})
+
+	body, err := json.Marshal(issuedto.ActionRequest{
+		IDs:    []string{"issue-1"},
+		Action: "retry",
+	})
+	if err != nil {
+		t.Fatalf("marshal issue action payload: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/issues/actions", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte(`"message":"异常已处理"`)) {
+		t.Fatalf("expected issue action payload, got %s", recorder.Body.String())
 	}
 }
 

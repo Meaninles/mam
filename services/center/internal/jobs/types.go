@@ -156,6 +156,10 @@ type ExecutionContext struct {
 
 type ItemExecutor func(ctx context.Context, execution ExecutionContext) error
 
+type IssueSynchronizer interface {
+	SyncJobIssues(ctx context.Context, jobID string) error
+}
+
 type jobRow struct {
 	ID                 string
 	Code               string

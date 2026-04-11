@@ -317,6 +317,5 @@ function resolveReportTone(status: ImportReportSnapshot['status']) {
 function resolveIssueTone(status: IssueRecord['status'], nature: IssueRecord['nature']) {
   if (status === '已归档' || status === '已解决') return 'success';
   if (nature === 'BLOCKING') return 'critical';
-  if (status === '已延后') return 'warning';
   return 'info';
 }

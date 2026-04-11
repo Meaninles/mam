@@ -10,7 +10,6 @@ import {
   type JobStatus,
   type JobStreamEvent,
 } from '../lib/jobsApi';
-import { taskExceptionsApi } from '../lib/taskExceptionsApi';
 import { TaskCenterPage, TaskDetailSheet } from './TaskCenterPage';
 
 type PendingTaskFocus = {
@@ -28,30 +27,35 @@ type WorkspaceFeedback = {
 type TaskCenterWorkspaceProps = {
   activeTab: TaskTab;
   fileNodes: FileNode[];
+  issues: IssueRecord[];
   libraries: Library[];
   preselectedTaskIds: PendingTaskFocus;
   statusFilter: string;
   onConsumePreselectedTaskIds: () => void;
   onFeedback: (feedback: WorkspaceFeedback) => void;
   onOpenFileCenterForTask: (task: TaskRecord) => void;
+  onOpenIssueCenterForIssue: (issue: IssueRecord) => void;
+  onOpenIssueCenterForTask: (task: TaskRecord) => void;
   onOpenStorageNodesForTask: (task: TaskRecord) => void;
   onSetActiveTab: (value: TaskTab) => void;
   onSetTaskStatusFilter: (value: string) => void;
 };
 
-const EMPTY_ISSUES: IssueRecord[] = [];
 const PAGE_SIZE = 100;
 
 export function TaskCenterWorkspace(props: TaskCenterWorkspaceProps) {
   const {
     activeTab,
     fileNodes,
+    issues,
     libraries,
     preselectedTaskIds,
     statusFilter,
     onConsumePreselectedTaskIds,
     onFeedback,
     onOpenFileCenterForTask,
+    onOpenIssueCenterForIssue,
+    onOpenIssueCenterForTask,
     onOpenStorageNodesForTask,
     onSetActiveTab,
     onSetTaskStatusFilter,
@@ -87,8 +91,6 @@ export function TaskCenterWorkspace(props: TaskCenterWorkspaceProps) {
             }
           }),
         );
-        await taskExceptionsApi.listByJobIds(details.map((detail) => detail.job.id));
-
         if (cancelled) {
           return;
         }
@@ -166,7 +168,6 @@ export function TaskCenterWorkspace(props: TaskCenterWorkspaceProps) {
         }
       }),
     );
-    await taskExceptionsApi.listByJobIds(details.map((detail) => detail.job.id));
     startTransition(() => {
       setJobDetails(details);
       setErrorMessage(null);
@@ -247,7 +248,7 @@ export function TaskCenterWorkspace(props: TaskCenterWorkspaceProps) {
       <TaskCenterPage
         activeTab={activeTab}
         fileNodes={fileNodes}
-        issues={EMPTY_ISSUES}
+        issues={issues}
         libraries={libraries}
         preselectedTaskIds={preselectedTaskIds}
         statusFilter={statusFilter}
@@ -257,8 +258,8 @@ export function TaskCenterWorkspace(props: TaskCenterWorkspaceProps) {
         onChangeTaskItemStatus={(taskItemIds, action) => void changeTaskItemStatus(taskItemIds, action)}
         onChangeTaskStatus={(taskIds, action) => void changeTaskStatus(taskIds, action)}
         onConsumePreselectedTaskIds={onConsumePreselectedTaskIds}
-        onOpenIssueCenterForIssue={() => undefined}
-        onOpenIssueCenterForTask={() => undefined}
+        onOpenIssueCenterForIssue={onOpenIssueCenterForIssue}
+        onOpenIssueCenterForTask={onOpenIssueCenterForTask}
         onOpenTaskDetail={(value) => setTaskDetailId(value?.id ?? null)}
         onSetActiveTab={onSetActiveTab}
         onSetTaskStatusFilter={onSetTaskStatusFilter}
@@ -268,14 +269,14 @@ export function TaskCenterWorkspace(props: TaskCenterWorkspaceProps) {
         <TaskDetailSheet
           fileNodes={fileNodes}
           item={taskDetail}
-          issues={EMPTY_ISSUES}
+          issues={issues}
           items={workspace.taskItemsByTaskId[taskDetail.id] ?? []}
           onChangeTaskPriority={(taskIds, priority) => void changeTaskPriority(taskIds, priority)}
           onChangeTaskItemStatus={(taskItemIds, action) => void changeTaskItemStatus(taskItemIds, action)}
           onChangeTaskStatus={(taskIds, action) => void changeTaskStatus(taskIds, action)}
           onClose={() => setTaskDetailId(null)}
           onOpenFileCenterForTask={onOpenFileCenterForTask}
-          onOpenIssueCenterForTask={() => undefined}
+          onOpenIssueCenterForTask={onOpenIssueCenterForTask}
           onOpenStorageNodesForTask={onOpenStorageNodesForTask}
         />
       ) : null}

@@ -19,6 +19,7 @@ type Service struct {
 	now            func() time.Time
 	broker         *Broker
 	executors      map[string]ItemExecutor
+	issueSync      IssueSynchronizer
 	runningItems   map[string]context.CancelFunc
 	runningItemsMu sync.Mutex
 	wakeCh         chan struct{}
@@ -54,6 +55,10 @@ func (s *Service) Subscribe(jobID string) (<-chan jobdto.StreamEvent, func()) {
 
 func (s *Service) RegisterExecutor(jobIntent string, executor ItemExecutor) {
 	s.executors[jobIntent] = executor
+}
+
+func (s *Service) SetIssueSynchronizer(sync IssueSynchronizer) {
+	s.issueSync = sync
 }
 
 func (s *Service) registerRunningItem(itemID string, cancel context.CancelFunc) {
