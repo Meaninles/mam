@@ -23,13 +23,18 @@ func TestMigratorApplyIsIdempotent(t *testing.T) {
 	resetSchema(t, ctx, pool)
 
 	migrator := NewMigrator()
+	files, err := loadMigrationFiles()
+	if err != nil {
+		t.Fatalf("load migration files: %v", err)
+	}
+	expectedLatest := files[len(files)-1].Version
 
 	firstState, err := migrator.Apply(ctx, pool)
 	if err != nil {
 		t.Fatalf("first apply: %v", err)
 	}
 
-	if firstState.CurrentVersion != 5 || firstState.LatestVersion != 5 || firstState.Status != "ready" {
+	if firstState.CurrentVersion != expectedLatest || firstState.LatestVersion != expectedLatest || firstState.Status != "ready" {
 		t.Fatalf("unexpected first state: %+v", firstState)
 	}
 
@@ -38,7 +43,7 @@ func TestMigratorApplyIsIdempotent(t *testing.T) {
 		t.Fatalf("second apply: %v", err)
 	}
 
-	if secondState.CurrentVersion != 5 || secondState.LatestVersion != 5 || secondState.Status != "ready" {
+	if secondState.CurrentVersion != expectedLatest || secondState.LatestVersion != expectedLatest || secondState.Status != "ready" {
 		t.Fatalf("unexpected second state: %+v", secondState)
 	}
 }
@@ -56,6 +61,11 @@ func TestMigratorStateReportsPendingWithoutApply(t *testing.T) {
 	resetSchema(t, ctx, pool)
 
 	migrator := NewMigrator()
+	files, err := loadMigrationFiles()
+	if err != nil {
+		t.Fatalf("load migration files: %v", err)
+	}
+	expectedLatest := files[len(files)-1].Version
 	state, err := migrator.State(ctx, pool)
 	if err != nil {
 		t.Fatalf("state: %v", err)
@@ -64,7 +74,7 @@ func TestMigratorStateReportsPendingWithoutApply(t *testing.T) {
 	if state.Status != "pending" {
 		t.Fatalf("expected pending state, got %+v", state)
 	}
-	if state.CurrentVersion != 0 || state.LatestVersion != 5 {
+	if state.CurrentVersion != 0 || state.LatestVersion != expectedLatest {
 		t.Fatalf("unexpected pending version state: %+v", state)
 	}
 }
@@ -115,6 +125,11 @@ func resetSchema(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	if _, err := pool.Exec(ctx, `
 		DROP TABLE IF EXISTS directory_tag_links;
 		DROP TABLE IF EXISTS asset_tag_links;
+		DROP TABLE IF EXISTS job_object_links;
+		DROP TABLE IF EXISTS job_events;
+		DROP TABLE IF EXISTS job_attempts;
+		DROP TABLE IF EXISTS job_items;
+		DROP TABLE IF EXISTS jobs;
 		DROP TABLE IF EXISTS tag_library_scopes;
 		DROP TABLE IF EXISTS tags;
 		DROP TABLE IF EXISTS tag_groups;

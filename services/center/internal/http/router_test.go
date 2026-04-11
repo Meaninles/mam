@@ -9,9 +9,13 @@ import (
 	"testing"
 
 	"mare/services/center/internal/agentregistry"
+	"mare/services/center/internal/assets"
 	"mare/services/center/internal/db"
+	"mare/services/center/internal/jobs"
 	"mare/services/center/internal/runtime"
+	"mare/services/center/internal/storage"
 	assetdto "mare/shared/contracts/dto/asset"
+	jobdto "mare/shared/contracts/dto/job"
 	storagedto "mare/shared/contracts/dto/storage"
 	tagdto "mare/shared/contracts/dto/tag"
 )
@@ -43,6 +47,7 @@ type fakeLocalFolderService struct{}
 type fakeLocalNodeService struct{}
 type fakeNASNodeService struct{}
 type fakeAssetService struct{}
+type fakeJobService struct{}
 type fakeTagService struct{}
 
 func (fakeAgentService) Register(_ context.Context, registration agentregistry.Registration) (agentregistry.Agent, error) {
@@ -108,6 +113,21 @@ func (fakeLocalFolderService) SaveLocalFolder(_ context.Context, request storage
 
 func (fakeLocalFolderService) RunLocalFolderScan(context.Context, []string) (storagedto.RunLocalFolderScanResponse, error) {
 	return storagedto.RunLocalFolderScanResponse{Message: "已为 1 个挂载文件夹创建扫描任务"}, nil
+}
+
+func (fakeLocalFolderService) PrepareMountScanPlan(context.Context, []string) (storage.MountScanPlan, error) {
+	return storage.MountScanPlan{
+		Targets: []storage.MountScanTargetPlan{
+			{
+				MountID:     "mount-1",
+				MountName:   "商业摄影原片库",
+				LibraryID:   "photo",
+				LibraryName: "商业摄影资产库",
+				NodeType:    "LOCAL",
+				SourcePath:  "D:\\Mare\\Assets\\PhotoRaw",
+			},
+		},
+	}, nil
 }
 
 func (fakeLocalFolderService) RunLocalFolderConnectionTest(context.Context, []string) (storagedto.RunLocalFolderConnectionTestResponse, error) {
@@ -263,6 +283,126 @@ func (fakeAssetService) CreateLibrary(_ context.Context, request assetdto.Create
 	}, nil
 }
 
+func (fakeAssetService) PrepareDirectoryScanPlan(_ context.Context, libraryID string, request assetdto.ScanDirectoryRequest) (assets.DirectoryScanPlan, error) {
+	return assets.DirectoryScanPlan{
+		LibraryID:             libraryID,
+		LibraryName:           "商业摄影资产库",
+		DirectoryID:           "dir-root-photo",
+		DirectoryRelativePath: "/",
+		ParentID:              request.ParentID,
+		Targets: []assets.DirectoryScanTargetPlan{
+			{
+				MountID:      "mount-1",
+				MountName:    "商业摄影原片库",
+				LibraryID:    libraryID,
+				LibraryName:  "商业摄影资产库",
+				DirectoryID:  "dir-root-photo",
+				RelativePath: "/",
+				PhysicalPath: "D:\\Mare\\Assets\\PhotoRaw",
+			},
+		},
+	}, nil
+}
+
+func (fakeJobService) CreateMountScanJob(context.Context, storage.MountScanPlan) (jobdto.CreateResponse, error) {
+	return fakeCreateJobResponse("挂载扫描任务已创建"), nil
+}
+
+func (fakeJobService) CreateDirectoryScanJob(context.Context, assets.DirectoryScanPlan) (jobdto.CreateResponse, error) {
+	return fakeCreateJobResponse("目录扫描任务已创建"), nil
+}
+
+func (fakeJobService) ListJobs(context.Context, jobs.ListQuery) (jobdto.ListResponse, error) {
+	return jobdto.ListResponse{
+		Items: []jobdto.Record{
+			{
+				ID:              "job-1",
+				Code:            "job-1",
+				JobFamily:       jobs.JobFamilyMaintenance,
+				JobIntent:       jobs.JobIntentScanDirectory,
+				Status:          jobs.StatusRunning,
+				Priority:        jobs.PriorityNormal,
+				Title:           "扫描目录：/",
+				Summary:         "正在执行",
+				SourceDomain:    jobs.SourceDomainFileCenter,
+				ProgressPercent: 50,
+				TotalItems:      1,
+				CreatedByType:   jobs.CreatedByUser,
+				CreatedAt:       "2026-04-11T12:00:00Z",
+				UpdatedAt:       "2026-04-11T12:00:01Z",
+			},
+		},
+		Total:    1,
+		Page:     1,
+		PageSize: 20,
+	}, nil
+}
+
+func (fakeJobService) LoadJobDetail(context.Context, string) (jobdto.Detail, error) {
+	list, _ := fakeJobService{}.ListJobs(context.Background(), jobs.ListQuery{})
+	return jobdto.Detail{Job: list.Items[0]}, nil
+}
+
+func (fakeJobService) ListJobEvents(context.Context, string) (jobdto.EventListResponse, error) {
+	return jobdto.EventListResponse{
+		Items: []jobdto.EventRecord{
+			{ID: "evt-1", JobID: "job-1", EventType: jobs.EventJobStarted, Message: "作业开始执行", CreatedAt: "2026-04-11T12:00:01Z"},
+		},
+	}, nil
+}
+
+func (fakeJobService) PauseJob(context.Context, string) (jobdto.MutationResponse, error) {
+	return jobdto.MutationResponse{Message: "作业已暂停", Job: fakeCreateJobResponse("").Job}, nil
+}
+
+func (fakeJobService) ResumeJob(context.Context, string) (jobdto.MutationResponse, error) {
+	return jobdto.MutationResponse{Message: "作业已恢复排队", Job: fakeCreateJobResponse("").Job}, nil
+}
+
+func (fakeJobService) CancelJob(context.Context, string) (jobdto.MutationResponse, error) {
+	return jobdto.MutationResponse{Message: "作业已取消", Job: fakeCreateJobResponse("").Job}, nil
+}
+
+func (fakeJobService) RetryJob(context.Context, string) (jobdto.MutationResponse, error) {
+	return jobdto.MutationResponse{Message: "作业已进入重试队列", Job: fakeCreateJobResponse("").Job}, nil
+}
+
+func (fakeJobService) UpdatePriority(context.Context, string, string) (jobdto.MutationResponse, error) {
+	return jobdto.MutationResponse{Message: "优先级已更新", Job: fakeCreateJobResponse("").Job}, nil
+}
+
+func (fakeJobService) Subscribe(string) (<-chan jobdto.StreamEvent, func()) {
+	ch := make(chan jobdto.StreamEvent)
+	close(ch)
+	return ch, func() {}
+}
+
+func fakeCreateJobResponse(message string) jobdto.CreateResponse {
+	if message == "" {
+		message = "作业已创建"
+	}
+	return jobdto.CreateResponse{
+		Message: message,
+		JobID:   "job-1",
+		Job: jobdto.Record{
+			ID:              "job-1",
+			Code:            "job-1",
+			JobFamily:       jobs.JobFamilyMaintenance,
+			JobIntent:       jobs.JobIntentScanDirectory,
+			Status:          jobs.StatusPending,
+			Priority:        jobs.PriorityNormal,
+			Title:           "扫描目录：/",
+			Summary:         "已创建 1 个扫描子项",
+			SourceDomain:    jobs.SourceDomainFileCenter,
+			ProgressPercent: 0,
+			TotalItems:      1,
+			CreatedByType:   jobs.CreatedByUser,
+			CreatedAt:       "2026-04-11T12:00:00Z",
+			UpdatedAt:       "2026-04-11T12:00:00Z",
+		},
+	}
+}
+
 func (fakeAssetService) CreateDirectory(_ context.Context, libraryID string, request assetdto.CreateDirectoryRequest) (assetdto.CreateDirectoryResponse, error) {
 	return assetdto.CreateDirectoryResponse{
 		Message: "目录已创建",
@@ -393,18 +533,18 @@ func (fakeTagService) LoadManagementSnapshot(context.Context, string) (tagdto.Ma
 		},
 		Tags: []tagdto.Record{
 			{
-				ID:             "tag-1",
-				Name:           "直播切片",
-				NormalizedName: "直播切片",
-				GroupID:        "tag-group-ungrouped",
-				GroupName:      "未分组",
-				OrderIndex:     0,
-				IsPinned:       true,
-				UsageCount:     1,
-				LibraryIDs:     []string{"photo"},
+				ID:               "tag-1",
+				Name:             "直播切片",
+				NormalizedName:   "直播切片",
+				GroupID:          "tag-group-ungrouped",
+				GroupName:        "未分组",
+				OrderIndex:       0,
+				IsPinned:         true,
+				UsageCount:       1,
+				LibraryIDs:       []string{"photo"},
 				LinkedLibraryIDs: []string{"photo"},
-				CreatedAt:      "2026-04-11 10:00",
-				UpdatedAt:      "2026-04-11 10:00",
+				CreatedAt:        "2026-04-11 10:00",
+				UpdatedAt:        "2026-04-11 10:00",
 			},
 		},
 		Libraries: []tagdto.LibraryRecord{

@@ -17,11 +17,11 @@ import (
 )
 
 type LocalFolderService struct {
-	pool   *pgxpool.Pool
-	now    func() time.Time
-	nas    nasConnector
-	cloud  *http.Client
-	cipher credentialCipher
+	pool         *pgxpool.Pool
+	now          func() time.Time
+	nas          nasConnector
+	cloud        *http.Client
+	cipher       credentialCipher
 	assetService interface {
 		SyncMount(ctx context.Context, mountID string) error
 	}
@@ -29,11 +29,11 @@ type LocalFolderService struct {
 
 func NewLocalFolderService(pool *pgxpool.Pool) *LocalFolderService {
 	return &LocalFolderService{
-		pool:   pool,
-		now:    time.Now,
-		nas:    newSMBConnector(5 * time.Second),
-		cloud:  &http.Client{Timeout: 10 * time.Second},
-		cipher: newSystemCredentialCipher(),
+		pool:         pool,
+		now:          time.Now,
+		nas:          newSMBConnector(5 * time.Second),
+		cloud:        &http.Client{Timeout: 10 * time.Second},
+		cipher:       newSystemCredentialCipher(),
 		assetService: assets.NewService(pool),
 	}
 }
@@ -372,101 +372,8 @@ func (s *LocalFolderService) RunLocalFolderScan(ctx context.Context, ids []strin
 		return storagedto.RunLocalFolderScanResponse{}, apperrors.BadRequest("ids 不能为空")
 	}
 
-	now := s.now().UTC()
 	for _, id := range ids {
-		mount, err := s.loadMountExecutionConfig(ctx, id)
-		if err != nil {
-			return storagedto.RunLocalFolderScanResponse{}, err
-		}
-
-		finishedAt := s.now().UTC()
-		scanStatus := "SUCCESS"
-		summary := fmt.Sprintf("%s 扫描完成，目录可读取。", mount.Name)
-		lastErrorCode := ""
-		lastErrorMessage := ""
-		healthStatus := "ONLINE"
-		authStatus := initialMountAuthStatus(mount.NodeType)
-		capacityBytes := int64(0)
-		availableBytes := int64(0)
-
-		switch mount.NodeType {
-		case "LOCAL":
-			entries, readErr := os.ReadDir(mount.SourcePath)
-			summary = fmt.Sprintf("%s 扫描完成，发现 %d 个直接子项。", mount.Name, len(entries))
-			if readErr != nil {
-				scanStatus = "FAILED"
-				summary = fmt.Sprintf("%s 扫描失败：%s", mount.Name, readErr.Error())
-				lastErrorCode = "scan_failed"
-				lastErrorMessage = readErr.Error()
-				healthStatus = "ERROR"
-			}
-			if total, free, usageErr := detectDiskUsage(mount.SourcePath); usageErr == nil {
-				capacityBytes = total
-				availableBytes = free
-			}
-		case "NAS":
-			password, decryptErr := s.cipher.Decrypt(mount.SecretCiphertext)
-			if decryptErr != nil {
-				scanStatus = "FAILED"
-				summary = fmt.Sprintf("%s 扫描失败：NAS 凭据无法读取，请重新保存账号和密码。", mount.Name)
-				healthStatus = "ERROR"
-				authStatus = "FAILED"
-				lastErrorCode = "credential_unreadable"
-				lastErrorMessage = decryptErr.Error()
-				break
-			}
-			probe, probeErr := s.nas.Test(ctx, mount.SourcePath, mount.Username, password)
-			if probeErr != nil {
-				return storagedto.RunLocalFolderScanResponse{}, probeErr
-			}
-			authStatus = probe.AuthStatus
-			healthStatus = probe.HealthStatus
-			if probe.OverallTone != "success" {
-				scanStatus = "FAILED"
-				summary = fmt.Sprintf("%s 扫描失败：%s", mount.Name, probe.Summary)
-				lastErrorCode = probe.LastErrorCode
-				lastErrorMessage = probe.LastErrorMessage
-			} else {
-				summary = fmt.Sprintf("%s 扫描完成，NAS 路径可读取。", mount.Name)
-			}
-		default:
-			return storagedto.RunLocalFolderScanResponse{}, apperrors.BadRequest("当前挂载类型暂不支持扫描")
-		}
-
-		if scanStatus == "SUCCESS" && s.assetService != nil {
-			if syncErr := s.assetService.SyncMount(ctx, id); syncErr != nil {
-				scanStatus = "FAILED"
-				summary = fmt.Sprintf("%s 扫描失败：资产索引写入失败", mount.Name)
-				lastErrorCode = "asset_index_failed"
-				lastErrorMessage = syncErr.Error()
-				healthStatus = "ERROR"
-			}
-		}
-
-		_, err = s.pool.Exec(ctx, `
-			UPDATE mount_runtime
-			SET scan_status = $2,
-			    last_scan_at = $3,
-			    last_scan_summary = $4,
-			    health_status = $5,
-			    auth_status = $6,
-			    last_error_code = NULLIF($7, ''),
-			    last_error_message = NULLIF($8, ''),
-			    capacity_bytes = CASE WHEN $9::bigint > 0 THEN $9::bigint ELSE NULL END,
-			    available_bytes = CASE WHEN $10::bigint > 0 THEN $10::bigint ELSE NULL END,
-			    updated_at = $3
-			WHERE mount_id = $1
-		`, id, scanStatus, finishedAt, summary, healthStatus, authStatus, lastErrorCode, lastErrorMessage, capacityBytes, availableBytes)
-		if err != nil {
-			return storagedto.RunLocalFolderScanResponse{}, err
-		}
-
-		_, err = s.pool.Exec(ctx, `
-			INSERT INTO mount_scan_histories (
-				id, mount_id, started_at, finished_at, status, summary, trigger
-			) VALUES ($1, $2, $3, $4, $5, $6, '手动扫描')
-		`, buildCode("scan-history-id", finishedAt), id, now, finishedAt, scanStatus, summary)
-		if err != nil {
+		if _, err := s.runMountScan(ctx, id); err != nil {
 			return storagedto.RunLocalFolderScanResponse{}, err
 		}
 	}

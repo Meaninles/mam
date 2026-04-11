@@ -25,6 +25,7 @@ type mountConfig struct {
 
 type directorySyncTarget struct {
 	MountID      string
+	MountName    string
 	LibraryID    string
 	LibraryName  string
 	DirectoryID  string
@@ -207,6 +208,7 @@ func (s *Service) loadDirectorySyncTargets(
 		rows, err := s.pool.Query(ctx, `
 			SELECT
 				m.id,
+				m.name,
 				m.library_id,
 				m.library_name,
 				m.source_path
@@ -229,7 +231,7 @@ func (s *Service) loadDirectorySyncTargets(
 			var item directorySyncTarget
 			item.DirectoryID = directory.ID
 			item.RelativePath = directory.RelativePath
-			if err := rows.Scan(&item.MountID, &item.LibraryID, &item.LibraryName, &item.PhysicalPath); err != nil {
+			if err := rows.Scan(&item.MountID, &item.MountName, &item.LibraryID, &item.LibraryName, &item.PhysicalPath); err != nil {
 				return nil, err
 			}
 			items = append(items, item)
@@ -240,6 +242,7 @@ func (s *Service) loadDirectorySyncTargets(
 	rows, err := s.pool.Query(ctx, `
 		SELECT
 			dp.mount_id,
+			m.name,
 			m.library_id,
 			m.library_name,
 			dp.physical_path
@@ -263,7 +266,7 @@ func (s *Service) loadDirectorySyncTargets(
 		var item directorySyncTarget
 		item.DirectoryID = directory.ID
 		item.RelativePath = directory.RelativePath
-		if err := rows.Scan(&item.MountID, &item.LibraryID, &item.LibraryName, &item.PhysicalPath); err != nil {
+		if err := rows.Scan(&item.MountID, &item.MountName, &item.LibraryID, &item.LibraryName, &item.PhysicalPath); err != nil {
 			return nil, err
 		}
 		items = append(items, item)

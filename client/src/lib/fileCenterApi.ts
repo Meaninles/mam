@@ -278,9 +278,9 @@ export const fileCenterApi = {
     }
   },
 
-  async scanDirectory(input: { libraryId: string; parentId: string | null }): Promise<{ message: string }> {
+  async scanDirectory(input: { libraryId: string; parentId: string | null }): Promise<{ message: string; jobId?: string }> {
     try {
-      return await fetchFileCenterData<{ message: string }>(`/api/libraries/${input.libraryId}/scan`, {
+      return await fetchFileCenterData<{ message: string; jobId?: string }>(`/api/libraries/${input.libraryId}/scan`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -943,7 +943,7 @@ async function createFolderFromLocalDatabase(input: {
 async function scanDirectoryFromLocalDatabase(_input: {
   libraryId: string;
   parentId: string | null;
-}): Promise<{ message: string }> {
+}): Promise<{ message: string; jobId?: string }> {
   return { message: '当前目录扫描已完成' };
 }
 

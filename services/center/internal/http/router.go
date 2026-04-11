@@ -9,12 +9,17 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"mare/services/center/internal/agentregistry"
+	"mare/services/center/internal/assets"
 	apperrors "mare/services/center/internal/errors"
+	"mare/services/center/internal/jobs"
 	"mare/services/center/internal/response"
 	"mare/services/center/internal/runtime"
+	"mare/services/center/internal/storage"
 	assetdto "mare/shared/contracts/dto/asset"
+	jobdto "mare/shared/contracts/dto/job"
 	storagedto "mare/shared/contracts/dto/storage"
 	tagdto "mare/shared/contracts/dto/tag"
 )
@@ -34,6 +39,7 @@ type LocalFolderService interface {
 	ListLocalFolders(ctx context.Context) ([]storagedto.LocalFolderRecord, error)
 	SaveLocalFolder(ctx context.Context, request storagedto.SaveLocalFolderRequest) (storagedto.SaveLocalFolderResponse, error)
 	RunLocalFolderScan(ctx context.Context, ids []string) (storagedto.RunLocalFolderScanResponse, error)
+	PrepareMountScanPlan(ctx context.Context, ids []string) (storage.MountScanPlan, error)
 	RunLocalFolderConnectionTest(ctx context.Context, ids []string) (storagedto.RunLocalFolderConnectionTestResponse, error)
 	UpdateLocalFolderHeartbeat(ctx context.Context, ids []string, heartbeatPolicy string) (storagedto.UpdateHeartbeatResponse, error)
 	LoadLocalFolderScanHistory(ctx context.Context, id string) (storagedto.LocalFolderScanHistoryResponse, error)
@@ -74,6 +80,7 @@ type AssetService interface {
 	BrowseLibrary(ctx context.Context, libraryID string, query assetdto.BrowseQuery) (assetdto.BrowseLibraryResponse, error)
 	LoadEntry(ctx context.Context, id string) (*assetdto.EntryRecord, error)
 	ScanDirectory(ctx context.Context, libraryID string, request assetdto.ScanDirectoryRequest) (assetdto.ScanDirectoryResponse, error)
+	PrepareDirectoryScanPlan(ctx context.Context, libraryID string, request assetdto.ScanDirectoryRequest) (assets.DirectoryScanPlan, error)
 }
 
 type TagService interface {
@@ -89,10 +96,25 @@ type TagService interface {
 	DeleteTag(ctx context.Context, id string) (tagdto.MutationResponse, error)
 }
 
+type JobService interface {
+	CreateMountScanJob(ctx context.Context, plan storage.MountScanPlan) (jobdto.CreateResponse, error)
+	CreateDirectoryScanJob(ctx context.Context, plan assets.DirectoryScanPlan) (jobdto.CreateResponse, error)
+	ListJobs(ctx context.Context, query jobs.ListQuery) (jobdto.ListResponse, error)
+	LoadJobDetail(ctx context.Context, id string) (jobdto.Detail, error)
+	ListJobEvents(ctx context.Context, id string) (jobdto.EventListResponse, error)
+	PauseJob(ctx context.Context, id string) (jobdto.MutationResponse, error)
+	ResumeJob(ctx context.Context, id string) (jobdto.MutationResponse, error)
+	CancelJob(ctx context.Context, id string) (jobdto.MutationResponse, error)
+	RetryJob(ctx context.Context, id string) (jobdto.MutationResponse, error)
+	UpdatePriority(ctx context.Context, id string, priority string) (jobdto.MutationResponse, error)
+	Subscribe(jobID string) (<-chan jobdto.StreamEvent, func())
+}
+
 type Dependencies struct {
 	Logger       *slog.Logger
 	Runtime      RuntimeService
 	Agents       AgentService
+	Jobs         JobService
 	LocalNodes   LocalNodeService
 	NasNodes     NASNodeService
 	CloudNodes   CloudNodeService
@@ -444,12 +466,17 @@ func NewRouter(deps Dependencies) http.Handler {
 			return
 		}
 
-		result, err := deps.Assets.ScanDirectory(r.Context(), r.PathValue("libraryId"), payload)
+		plan, err := deps.Assets.PrepareDirectoryScanPlan(r.Context(), r.PathValue("libraryId"), payload)
 		if err != nil {
 			writeError(deps.Logger, w, err)
 			return
 		}
-		response.WriteSuccess(w, http.StatusOK, result)
+		result, err := deps.Jobs.CreateDirectoryScanJob(r.Context(), plan)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusAccepted, result)
 	})
 
 	mux.HandleFunc("GET /api/file-entries/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -636,12 +663,17 @@ func NewRouter(deps Dependencies) http.Handler {
 			return
 		}
 
-		result, err := deps.LocalFolders.RunLocalFolderScan(r.Context(), payload.IDs)
+		plan, err := deps.LocalFolders.PrepareMountScanPlan(r.Context(), payload.IDs)
 		if err != nil {
 			writeError(deps.Logger, w, err)
 			return
 		}
-		response.WriteSuccess(w, http.StatusOK, result)
+		result, err := deps.Jobs.CreateMountScanJob(r.Context(), plan)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusAccepted, result)
 	})
 
 	mux.HandleFunc("POST /api/storage/local-folders/connection-test", func(w http.ResponseWriter, r *http.Request) {
@@ -692,6 +724,130 @@ func NewRouter(deps Dependencies) http.Handler {
 		response.WriteSuccess(w, http.StatusOK, result)
 	})
 
+	mux.HandleFunc("GET /api/jobs", func(w http.ResponseWriter, r *http.Request) {
+		query, err := parseJobListQuery(r.URL)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		payload, err := deps.Jobs.ListJobs(r.Context(), query)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("GET /api/jobs/{id}", func(w http.ResponseWriter, r *http.Request) {
+		payload, err := deps.Jobs.LoadJobDetail(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("GET /api/jobs/{id}/events", func(w http.ResponseWriter, r *http.Request) {
+		payload, err := deps.Jobs.ListJobEvents(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("POST /api/jobs/{id}/pause", func(w http.ResponseWriter, r *http.Request) {
+		payload, err := deps.Jobs.PauseJob(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("POST /api/jobs/{id}/resume", func(w http.ResponseWriter, r *http.Request) {
+		payload, err := deps.Jobs.ResumeJob(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("POST /api/jobs/{id}/cancel", func(w http.ResponseWriter, r *http.Request) {
+		payload, err := deps.Jobs.CancelJob(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("POST /api/jobs/{id}/retry", func(w http.ResponseWriter, r *http.Request) {
+		payload, err := deps.Jobs.RetryJob(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("PATCH /api/jobs/{id}/priority", func(w http.ResponseWriter, r *http.Request) {
+		var payload jobdto.UpdatePriorityRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("优先级更新请求格式无效"))
+			return
+		}
+		result, err := deps.Jobs.UpdatePriority(r.Context(), r.PathValue("id"), payload.Priority)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("GET /api/events/stream", func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			writeError(deps.Logger, w, apperrors.Internal("当前连接不支持事件流"))
+			return
+		}
+
+		jobID := strings.TrimSpace(r.URL.Query().Get("jobId"))
+		events, cancel := deps.Jobs.Subscribe(jobID)
+		defer cancel()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.WriteHeader(http.StatusOK)
+		flusher.Flush()
+
+		heartbeat := time.NewTicker(15 * time.Second)
+		defer heartbeat.Stop()
+
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-heartbeat.C:
+				_, _ = w.Write([]byte(": keep-alive\n\n"))
+				flusher.Flush()
+			case event, ok := <-events:
+				if !ok {
+					return
+				}
+				raw, err := json.Marshal(event)
+				if err != nil {
+					continue
+				}
+				_, _ = w.Write([]byte("event: " + event.EventType + "\n"))
+				_, _ = w.Write([]byte("data: " + string(raw) + "\n\n"))
+				flusher.Flush()
+			}
+		}
+	})
+
 	return withCORS(mux)
 }
 
@@ -736,6 +892,38 @@ func parseBrowseQuery(raw *url.URL) (assetdto.BrowseQuery, error) {
 		SortValue:                values.Get("sortValue"),
 		SortDirection:            values.Get("sortDirection"),
 		PartialSyncEndpointNames: values["partialSyncEndpointName"],
+	}, nil
+}
+
+func parseJobListQuery(raw *url.URL) (jobs.ListQuery, error) {
+	values := raw.Query()
+
+	page := 1
+	if value := strings.TrimSpace(values.Get("page")); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return jobs.ListQuery{}, apperrors.BadRequest("page 参数无效")
+		}
+		page = parsed
+	}
+
+	pageSize := 20
+	if value := strings.TrimSpace(values.Get("pageSize")); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return jobs.ListQuery{}, apperrors.BadRequest("pageSize 参数无效")
+		}
+		pageSize = parsed
+	}
+
+	return jobs.ListQuery{
+		Page:         page,
+		PageSize:     pageSize,
+		SearchText:   strings.TrimSpace(values.Get("searchText")),
+		Status:       strings.TrimSpace(values.Get("status")),
+		JobFamily:    strings.TrimSpace(values.Get("jobFamily")),
+		SourceDomain: strings.TrimSpace(values.Get("sourceDomain")),
+		LibraryID:    strings.TrimSpace(values.Get("libraryId")),
 	}, nil
 }
 

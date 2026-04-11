@@ -12,17 +12,22 @@ import (
 	"mare/services/center/internal/config"
 	"mare/services/center/internal/db"
 	httpapi "mare/services/center/internal/http"
+	"mare/services/center/internal/jobs"
 	"mare/services/center/internal/logging"
 	"mare/services/center/internal/runtime"
 	"mare/services/center/internal/storage"
 	"mare/services/center/internal/tags"
+	jobdto "mare/shared/contracts/dto/job"
 )
 
 type ServerApplication struct {
 	config     config.Config
 	logger     *slog.Logger
 	httpServer *http.Server
-	dbPool     interface {
+	jobService interface {
+		Start(context.Context)
+	}
+	dbPool interface {
 		Close()
 	}
 }
@@ -53,6 +58,22 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 	localFolderService.SetAssetService(assetService)
 	nasNodeService := storage.NewNASNodeService(pool)
 	cloudNodeService := storage.NewCloudNodeService(pool)
+	jobService := jobs.NewService(pool)
+	jobService.RegisterExecutor(jobs.JobIntentScanDirectory, func(ctx context.Context, execution jobs.ExecutionContext) error {
+		if execution.Job.SourceDomain == jobs.SourceDomainStorageNodes {
+			mountID := findMountLinkID(execution.ItemLinks)
+			if mountID == nil {
+				return errors.New("挂载扫描作业缺少目标挂载关联")
+			}
+			return localFolderService.RunSingleMountScan(ctx, *mountID)
+		}
+
+		target := buildDirectoryScanTarget(execution)
+		if target == nil {
+			return errors.New("目录扫描作业缺少目录或挂载关联")
+		}
+		return assetService.ExecuteDirectoryScanTarget(ctx, *target)
+	})
 	runtimeService := runtime.NewService(
 		cfg.ServiceName,
 		cfg.ServiceVersion,
@@ -67,6 +88,7 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 		Logger:       logger,
 		Runtime:      runtimeService,
 		Agents:       agentService,
+		Jobs:         jobService,
 		LocalNodes:   localFolderService,
 		NasNodes:     nasNodeService,
 		CloudNodes:   cloudNodeService,
@@ -83,7 +105,8 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 			Handler:           router,
 			ReadHeaderTimeout: 5 * time.Second,
 		},
-		dbPool: pool,
+		jobService: jobService,
+		dbPool:     pool,
 	}, nil
 }
 
@@ -91,6 +114,9 @@ func (a *ServerApplication) Run(ctx context.Context) error {
 	serverErrors := make(chan error, 1)
 
 	go func() {
+		if a.jobService != nil {
+			a.jobService.Start(ctx)
+		}
 		serverErrors <- a.httpServer.ListenAndServe()
 	}()
 
@@ -124,4 +150,50 @@ func RunMigrations(ctx context.Context, cfg config.Config) error {
 	migrator := db.NewMigrator()
 	_, err = migrator.Apply(ctx, pool)
 	return err
+}
+
+func findMountLinkID(links []jobdto.ObjectLinkRecord) *string {
+	for _, link := range links {
+		if link.ObjectType == jobs.ObjectTypeMount && link.MountID != nil {
+			return link.MountID
+		}
+	}
+	return nil
+}
+
+func buildDirectoryScanTarget(execution jobs.ExecutionContext) *assets.DirectoryScanTargetPlan {
+	var target assets.DirectoryScanTargetPlan
+	for _, link := range execution.ItemLinks {
+		if link.ObjectType == jobs.ObjectTypeDirectory && link.DirectoryID != nil {
+			target.DirectoryID = *link.DirectoryID
+		}
+		if link.ObjectType == jobs.ObjectTypeMount && link.MountID != nil {
+			target.MountID = *link.MountID
+		}
+	}
+	if target.DirectoryID == "" || target.MountID == "" {
+		return nil
+	}
+	if execution.Job.LibraryID == nil {
+		return nil
+	}
+	target.LibraryID = *execution.Job.LibraryID
+	snapshot, ok := execution.Job.SourceSnapshot.(map[string]any)
+	if !ok {
+		return nil
+	}
+	libraryName, ok := snapshot["libraryName"].(string)
+	if !ok || libraryName == "" {
+		return nil
+	}
+	relativePath, ok := snapshot["relativePath"].(string)
+	if !ok || relativePath == "" {
+		return nil
+	}
+	target.LibraryName = libraryName
+	target.RelativePath = relativePath
+	if execution.Item.TargetPath != nil {
+		target.PhysicalPath = *execution.Item.TargetPath
+	}
+	return &target
 }

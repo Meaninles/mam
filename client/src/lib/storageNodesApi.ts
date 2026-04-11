@@ -317,12 +317,12 @@ export const storageNodesApi = {
     return `${centerBaseUrl}/api/storage/cloud-nodes/qr-session/image?payload=${payload}`;
   },
 
-  async runMountScan(ids: string[]): Promise<{ message: string }> {
-    const result = await fetchCenterData<{ message: string }>(`${LOCAL_FOLDERS_API_PATH}/scan`, {
+  async runMountScan(ids: string[]): Promise<{ message: string; jobId?: string }> {
+    const result = await fetchCenterData<{ message: string; jobId?: string }>(`${LOCAL_FOLDERS_API_PATH}/scan`, {
       method: 'POST',
       body: JSON.stringify({ ids }),
     });
-    return { message: result.message };
+    return { message: result.message, jobId: result.jobId };
   },
 
   async runMountConnectionTest(ids: string[]): Promise<{ message: string; results: StorageConnectionTestResult[] }> {
