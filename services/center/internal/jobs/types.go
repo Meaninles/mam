@@ -92,6 +92,8 @@ const (
 	EventJobPartialSuccess  = "JOB_PARTIAL_SUCCESS"
 	EventJobPriorityChanged = "JOB_PRIORITY_CHANGED"
 	EventItemStarted        = "JOB_ITEM_STARTED"
+	EventItemPaused         = "JOB_ITEM_PAUSED"
+	EventItemResumed        = "JOB_ITEM_RESUMED"
 	EventItemCompleted      = "JOB_ITEM_COMPLETED"
 	EventItemFailed         = "JOB_ITEM_FAILED"
 	EventItemCanceled       = "JOB_ITEM_CANCELED"

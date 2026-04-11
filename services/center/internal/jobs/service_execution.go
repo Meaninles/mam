@@ -126,13 +126,24 @@ func (s *Service) executeJob(ctx context.Context, job jobRow) {
 			return
 		}
 
-		execErr := executor(ctx, ExecutionContext{
+		itemCtx, itemCancel := context.WithCancel(ctx)
+		s.registerRunningItem(item.ID, itemCancel)
+		execErr := executor(itemCtx, ExecutionContext{
 			Job:       jobSnapshot,
 			Item:      itemSnapshot,
 			JobLinks:  jobLinks,
 			ItemLinks: itemLinks,
 		})
+		itemCancel()
+		s.clearRunningItem(item.ID)
 		if execErr != nil {
+			if handled, handleErr := s.handleItemExecutionInterruption(ctx, job.ID, item.ID); handled {
+				if handleErr != nil {
+					_ = s.failJobWithError(ctx, job.ID, "resolve_item_interruption_failed", handleErr.Error())
+					return
+				}
+				continue
+			}
 			_ = s.finishItemFailed(ctx, job.ID, item.ID, jobAttemptID, execErr)
 			continue
 		}
@@ -201,6 +212,24 @@ func (s *Service) startItem(ctx context.Context, jobID string, itemID string) (*
 	}
 	s.publish(event)
 	return &attemptID, nil
+}
+
+func (s *Service) handleItemExecutionInterruption(ctx context.Context, jobID string, itemID string) (bool, error) {
+	item, err := s.loadJobItemRecord(ctx, itemID)
+	if err != nil {
+		return false, err
+	}
+	switch item.Status {
+	case ItemStatusPaused:
+		return true, nil
+	case ItemStatusCanceled:
+		if err := s.refreshJobAggregate(ctx, jobID, s.now().UTC()); err != nil {
+			return true, err
+		}
+		return true, nil
+	default:
+		return false, nil
+	}
 }
 
 func (s *Service) finishItemCompleted(ctx context.Context, jobID string, itemID string, attemptID *string) error {

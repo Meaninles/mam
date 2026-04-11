@@ -124,6 +124,20 @@ func (s *Service) loadJobItemRecord(ctx context.Context, itemID string) (jobdto.
 	return mapItemRow(item), nil
 }
 
+func (s *Service) loadItemRowTx(ctx context.Context, tx pgx.Tx, itemID string) (itemRow, error) {
+	row := tx.QueryRow(ctx, `
+		SELECT
+			id, job_id, parent_item_id, item_key, item_type, route_type, status, phase, title, summary,
+			source_path, target_path, progress_percent, speed_bps, eta_seconds, bytes_total, bytes_done,
+			attempt_count, issue_count, latest_error_code, latest_error_message, result_summary,
+			started_at, finished_at, canceled_at, updated_at, created_at
+		FROM job_items
+		WHERE id = $1
+		FOR UPDATE
+	`, itemID)
+	return scanItemRow(row)
+}
+
 func (s *Service) loadJobLinks(ctx context.Context, jobID string) ([]jobdto.ObjectLinkRecord, error) {
 	return s.loadLinks(ctx, "job_id = $1 AND job_item_id IS NULL", jobID)
 }

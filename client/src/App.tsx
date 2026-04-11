@@ -94,7 +94,7 @@ import {
 } from './pages/SettingsPanels';
 import { StorageNodesPage } from './pages/StorageNodesPage';
 import { TagManagementPage } from './pages/TagManagementPage';
-import { TaskCenterPage, TaskDetailSheet } from './pages/TaskCenterPage';
+import { TaskCenterWorkspace } from './pages/TaskCenterWorkspace';
 
 export type PageSize = 10 | 20 | 50 | 100;
 export type ContextMenuTarget =
@@ -325,6 +325,9 @@ function applyTaskPriorityChange(task: TaskRecord, priority: TaskPriority): Task
   return { ...task, priority, updatedAt: '刚刚' };
 }
 
+void applyTaskItemStatusChangeForTask;
+void applyTaskPriorityChange;
+
 function parseTaskSizeLabel(value: string): number {
   const normalized = value.trim().toUpperCase();
   const numeric = Number.parseFloat(normalized.replace(/[^\d.]/g, ''));
@@ -457,6 +460,8 @@ function markTransferTasksForFullSizeRecompute(current: PersistedState, taskIds:
     ),
   };
 }
+
+void markTransferTasksForFullSizeRecompute;
 
 function isBlockingTransferTaskStatus(status: string) {
   return !['已完成', '已取消', '失败', '部分成功'].includes(status);
@@ -762,7 +767,6 @@ export default function App() {
   const [managedLibrary, setManagedLibrary] = useState<Library | null>(null);
   const [libraryCreateState, setLibraryCreateState] = useState<LibraryCreateState>(null);
   const [libraryCreateSources, setLibraryCreateSources] = useState<StorageNodesDashboard | null>(null);
-  const [taskDetail, setTaskDetail] = useState<TaskRecord | null>(null);
   const [fileDetail, setFileDetail] = useState<FileCenterEntry | null>(null);
   const [fileCenterState, setFileCenterState] = useState<FileCenterDirectoryResult>({
     breadcrumbs: [],
@@ -1006,27 +1010,6 @@ export default function App() {
     setSettingsDraft(cloneSettingsRecord(persisted.settings));
     setPageSize(getDefaultPageSize(persisted.settings));
   }, [persisted.settings]);
-
-  useEffect(() => {
-    if (!taskDetail) {
-      return;
-    }
-
-    const nextTaskDetail = persisted.taskRecords.find((task) => task.id === taskDetail.id) ?? null;
-    if (!nextTaskDetail) {
-      setTaskDetail(null);
-      return;
-    }
-
-    setTaskDetail((current) => {
-      if (!current || current.id !== nextTaskDetail.id) {
-        return current;
-      }
-
-      const nextValue = { ...nextTaskDetail, title: current.title };
-      return JSON.stringify(current) === JSON.stringify(nextValue) ? current : nextValue;
-    });
-  }, [persisted.taskRecords, taskDetail?.id, taskDetail?.title]);
 
   useEffect(() => {
     if (!feedback) return;
@@ -1397,6 +1380,9 @@ export default function App() {
     activateWorkspace('issues');
   };
 
+  void openIssueCenterForIssue;
+  void openIssueCenterForTask;
+
   const openIssueCenterForIds = (issueIds: string[]) => {
     const issue = issueIds
       .map((issueId) => persisted.issueRecords.find((item) => item.id === issueId) ?? null)
@@ -1449,12 +1435,9 @@ export default function App() {
       return;
     }
 
-    const task = persisted.taskRecords.find((item) => item.id === taskId);
-    if (task) {
-      setTaskTab(task.kind);
-      setPendingTaskSelection({ taskIds: [task.id] });
-      setTaskStatusFilter('全部');
-    }
+    setTaskTab('other');
+    setPendingTaskSelection({ taskIds: [taskId] });
+    setTaskStatusFilter('全部');
     activateWorkspace('task-center');
   };
 
@@ -1852,6 +1835,8 @@ export default function App() {
     mode: 'asset' | 'endpoint',
     endpointName?: string,
   ): PersistedState => {
+    return current;
+
     const newTasks = items.map((item) => ({
       id: createId('task'),
       kind: 'other' as const,
@@ -1881,6 +1866,8 @@ export default function App() {
     items: FileCenterEntry[],
     endpointName: string,
   ): PersistedState => {
+    return current;
+
     const nextTaskRecords: TaskRecord[] = [];
     const nextTaskItems: PersistedState['taskItemRecords'] = [];
 
@@ -2744,7 +2731,7 @@ export default function App() {
                   }
 
                   const reportId = createId('import-report');
-                  const taskId = createId('task-import');
+                  const taskId = '';
                   const uniqueTargetIds = Array.from(new Set(sourceFiles.flatMap((node) => node.targetEndpointIds)));
                   const targetLabels = uniqueTargetIds.map(
                     (targetId) => persisted.importTargetEndpoints.find((target) => target.id === targetId)?.label ?? targetId,
@@ -2855,6 +2842,12 @@ export default function App() {
                     { message: '已提交导入作业，任务已加入队列', tone: 'success' },
                   );
 
+                  setPersisted((current) => ({
+                    ...current,
+                    taskRecords: current.taskRecords.filter((task) => task.id !== ''),
+                    taskItemRecords: current.taskItemRecords.filter((taskItem) => taskItem.taskId !== ''),
+                  }));
+
                   return reportId;
                 }}
               />,
@@ -2864,78 +2857,33 @@ export default function App() {
 
         {mountedWorkspaceViews.includes('task-center') ? (
           createPortal(
-            <TaskCenterPage
+            <TaskCenterWorkspace
               key={`task-center-${workspaceRefreshTokens['task-center']}`}
-            activeTab={taskTab}
-            fileNodes={persisted.fileNodes}
-            issues={persisted.issueRecords}
-            libraries={libraries}
-            statusFilter={taskStatusFilter}
-            taskItems={persisted.taskItemRecords}
-            tasks={persisted.taskRecords}
-            onChangeTaskPriority={(taskIds, priority) =>
-              commitState((current) => ({
-                ...current,
-                taskRecords: current.taskRecords.map((task) =>
-                  taskIds.includes(task.id) ? applyTaskPriorityChange(task, priority) : task,
-                ),
-                taskItemRecords: current.taskItemRecords.map((item) =>
-                  taskIds.includes(item.taskId) ? { ...item, priority } : item,
-                ),
-              }))
-            }
-            onChangeTaskItemStatus={(taskItemIds, action) =>
-              commitState((current) => {
-                const nextState = {
-                  ...current,
-                  taskItemRecords: current.taskItemRecords.map((item) =>
-                    taskItemIds.includes(item.id) ? applyTaskItemStatusChange(item, action) : item,
-                  ),
-                };
-
-                return action === 'cancel'
-                  ? scheduleTransferTaskSizeAdjustment(current, nextState, [], taskItemIds)
-                  : nextState;
-              })
-            }
-            onChangeTaskStatus={(taskIds, action) =>
-              commitState((current) => {
-                const nextState = {
-                  ...current,
-                  taskRecords: current.taskRecords.map((task) =>
-                    taskIds.includes(task.id) ? applyTaskStatusChange(task, action) : task,
-                  ),
-                  taskItemRecords: current.taskItemRecords.map((item) => {
-                    if (!taskIds.includes(item.taskId)) {
-                      return item;
-                    }
-                    const parentTask = current.taskRecords.find((task) => task.id === item.taskId);
-                    return parentTask ? applyTaskItemStatusChangeForTask(item, parentTask, action) : item;
-                  }),
-                };
-
-                if (action === 'cancel') {
-                  return scheduleTransferTaskSizeAdjustment(current, nextState, taskIds, []);
-                }
-
-                if (action === 'retry') {
-                  return markTransferTasksForFullSizeRecompute(nextState, taskIds);
-                }
-
-                return nextState;
-              })
-            }
-            onOpenIssueCenterForIssue={(issue) => {
-              openIssueCenterForIssue(issue);
-            }}
-            onOpenIssueCenterForTask={(task) => {
-              openIssueCenterForTask(task);
-            }}
-            onOpenTaskDetail={setTaskDetail}
-            preselectedTaskIds={pendingTaskSelection}
-            onConsumePreselectedTaskIds={() => setPendingTaskSelection(null)}
-            onSetActiveTab={setTaskTab}
-            onSetTaskStatusFilter={setTaskStatusFilter}
+              activeTab={taskTab}
+              fileNodes={persisted.fileNodes}
+              libraries={libraries}
+              statusFilter={taskStatusFilter}
+              preselectedTaskIds={pendingTaskSelection}
+              onConsumePreselectedTaskIds={() => setPendingTaskSelection(null)}
+              onFeedback={(value) => setFeedback(value)}
+              onOpenFileCenterForTask={(task) => {
+                setActiveLibraryId(task.libraryId);
+                setCurrentFolderId(null);
+                setFolderHistory([null]);
+                setHistoryIndex(0);
+                setSelectedFileIds([]);
+                setPendingFileCenterJump({
+                  libraryId: task.libraryId,
+                  folderId: null,
+                  selectedIds: [],
+                });
+                activateWorkspace('file-center');
+              }}
+              onOpenStorageNodesForTask={() => {
+                activateWorkspace('storage-nodes');
+              }}
+              onSetActiveTab={setTaskTab}
+              onSetTaskStatusFilter={setTaskStatusFilter}
             />,
             getWorkspaceContainer('task-center'),
           )
@@ -3053,77 +3001,6 @@ export default function App() {
           items={batchTagState.items}
           onClose={() => setBatchTagState(null)}
           onSave={(tags) => void saveBatchTags(tags)}
-        />
-      ) : null}
-
-      {activeView === 'task-center' && taskDetail ? (
-        <TaskDetailSheet
-          fileNodes={persisted.fileNodes}
-          item={taskDetail}
-          issues={persisted.issueRecords}
-          items={persisted.taskItemRecords.filter((item) => item.taskId === taskDetail.id)}
-          onChangeTaskPriority={(taskIds, priority) =>
-            commitState((current) => ({
-              ...current,
-              taskRecords: current.taskRecords.map((task) =>
-                taskIds.includes(task.id) ? applyTaskPriorityChange(task, priority) : task,
-              ),
-              taskItemRecords: current.taskItemRecords.map((item) =>
-                taskIds.includes(item.taskId) ? { ...item, priority } : item,
-              ),
-            }))
-          }
-          onChangeTaskStatus={(taskIds, action) =>
-            commitState((current) => {
-              const nextState = {
-                ...current,
-                taskRecords: current.taskRecords.map((task) =>
-                  taskIds.includes(task.id) ? applyTaskStatusChange(task, action) : task,
-                ),
-                taskItemRecords: current.taskItemRecords.map((item) => {
-                  if (!taskIds.includes(item.taskId)) {
-                    return item;
-                  }
-                  const parentTask = current.taskRecords.find((task) => task.id === item.taskId);
-                  return parentTask ? applyTaskItemStatusChangeForTask(item, parentTask, action) : item;
-                }),
-              };
-
-              if (action === 'cancel') {
-                return scheduleTransferTaskSizeAdjustment(current, nextState, taskIds, []);
-              }
-
-              if (action === 'retry') {
-                return markTransferTasksForFullSizeRecompute(nextState, taskIds);
-              }
-
-              return nextState;
-            })
-          }
-          onClose={() => setTaskDetail(null)}
-          onOpenFileCenterForTask={(task) => {
-            const jumpTarget = resolveFileCenterJumpForTask(persisted.fileNodes, task, persisted.taskItemRecords);
-            setTaskDetail(null);
-            setActiveLibraryId(task.libraryId);
-            setCurrentFolderId(jumpTarget.folderId);
-            setFolderHistory([jumpTarget.folderId]);
-            setHistoryIndex(0);
-            setSelectedFileIds(jumpTarget.selectedIds);
-            setPendingFileCenterJump({
-              libraryId: task.libraryId,
-              folderId: jumpTarget.folderId,
-              selectedIds: jumpTarget.selectedIds,
-            });
-            activateWorkspace('file-center');
-          }}
-          onOpenIssueCenterForTask={(task) => {
-            setTaskDetail(null);
-            openIssueCenterForTask(task);
-          }}
-          onOpenStorageNodesForTask={() => {
-            setTaskDetail(null);
-            activateWorkspace('storage-nodes');
-          }}
         />
       ) : null}
 

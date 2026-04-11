@@ -3698,6 +3698,10 @@ export const noticeRecords: NoticeRecord[] = [
   },
 ];
 
+taskRecords.splice(0, taskRecords.length);
+taskItemRecords.splice(0, taskItemRecords.length);
+issueRecords.splice(0, issueRecords.length);
+
 export const storageNodes: StorageNode[] = [
   {
     id: 'node-1',

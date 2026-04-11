@@ -87,9 +87,6 @@ function createTaskStateSeeds() {
     importSourceFiles: structuredClone(importSourceFiles),
     importSourceNodes: structuredClone(importSourceNodes),
     importTargetEndpoints: structuredClone(importTargetEndpoints),
-    issueRecords: structuredClone(issueRecords),
-    taskItemRecords: structuredClone(taskItemRecords),
-    taskRecords: structuredClone(taskRecords),
   };
 }
 
@@ -112,11 +109,11 @@ export function loadPersistedState(): PersistedState {
       importSourceFiles: taskSeeds.importSourceFiles,
       importSourceNodes: taskSeeds.importSourceNodes,
       importTargetEndpoints: taskSeeds.importTargetEndpoints,
-      issueRecords: taskSeeds.issueRecords,
+      issueRecords: structuredClone(parsed.issueRecords ?? issueRecords),
       noticeRecords: structuredClone(parsed.noticeRecords ?? noticeRecords),
       settings: parsed.settings ? cloneSettingsRecord(parsed.settings) : cloneSettingsContent(),
-      taskItemRecords: taskSeeds.taskItemRecords,
-      taskRecords: taskSeeds.taskRecords,
+      taskItemRecords: structuredClone(parsed.taskItemRecords ?? taskItemRecords),
+      taskRecords: structuredClone(parsed.taskRecords ?? taskRecords),
       lastSelectedLibraryId: parsed.lastSelectedLibraryId ?? '',
     };
   } catch {

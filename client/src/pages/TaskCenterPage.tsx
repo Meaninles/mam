@@ -572,8 +572,8 @@ export function TaskCenterPage(props: {
   onChangeTaskPriority: (ids: string[], priority: TaskPriority) => void;
   onChangeTaskItemStatus: (ids: string[], action: TaskItemStatusAction) => void;
   onChangeTaskStatus: (ids: string[], action: TaskStatusAction) => void;
-  onOpenIssueCenterForIssue: (issue: IssueRecord) => void;
-  onOpenIssueCenterForTask: (task: TaskRecord) => void;
+  onOpenIssueCenterForIssue?: (issue: IssueRecord) => void;
+  onOpenIssueCenterForTask?: (task: TaskRecord) => void;
   onOpenTaskDetail: (value: TaskRecord | null) => void;
   onConsumePreselectedTaskIds: () => void;
   onSetActiveTab: (value: TaskTab) => void;
@@ -970,7 +970,12 @@ export function TaskCenterPage(props: {
                   </div>
                   <div className="task-issue-list">
                     {taskIssues.map((issue) => (
-                      <button key={issue.id} className="task-issue-item" type="button" onClick={() => onOpenIssueCenterForIssue(issue)}>
+                      <button
+                        key={issue.id}
+                        className="task-issue-item"
+                        type="button"
+                        onClick={() => onOpenIssueCenterForIssue?.(issue)}
+                      >
                         <span className={`tone-text-${issue.severity}`}>{issue.type}</span>
                         <strong>{issue.asset}</strong>
                         <p>{issue.detail}</p>
@@ -978,7 +983,9 @@ export function TaskCenterPage(props: {
                     ))}
                   </div>
                   <div className="sheet-actions right">
-                    <ActionButton onClick={() => onOpenIssueCenterForTask(task)}>查看全部异常</ActionButton>
+                    {onOpenIssueCenterForTask ? (
+                      <ActionButton onClick={() => onOpenIssueCenterForTask(task)}>查看全部异常</ActionButton>
+                    ) : null}
                   </div>
                 </div>
               ) : null}
@@ -1304,7 +1311,7 @@ export function TaskCenterPage(props: {
                             key={issue.id}
                             className="task-issue-item"
                             type="button"
-                            onClick={() => onOpenIssueCenterForIssue(issue)}
+                            onClick={() => onOpenIssueCenterForIssue?.(issue)}
                           >
                             <span className={`tone-text-${issue.severity}`}>{issue.type}</span>
                             <strong>{issue.asset}</strong>
@@ -1313,7 +1320,9 @@ export function TaskCenterPage(props: {
                         ))}
                       </div>
                       <div className="sheet-actions right">
-                        <ActionButton onClick={() => onOpenIssueCenterForTask({ ...task, title: displayTitle })}>处置所有异常</ActionButton>
+                        {onOpenIssueCenterForTask ? (
+                          <ActionButton onClick={() => onOpenIssueCenterForTask({ ...task, title: displayTitle })}>处置所有异常</ActionButton>
+                        ) : null}
                       </div>
                     </div>
                   ) : null}
@@ -1476,6 +1485,7 @@ export function TaskDetailSheet({
   issues,
   items,
   onChangeTaskPriority,
+  onChangeTaskItemStatus,
   onChangeTaskStatus,
   onClose,
   onOpenFileCenterForTask,
@@ -1487,10 +1497,11 @@ export function TaskDetailSheet({
   issues: IssueRecord[];
   items: TaskItemRecord[];
   onChangeTaskPriority: (ids: string[], priority: TaskPriority) => void;
+  onChangeTaskItemStatus: (ids: string[], action: TaskItemStatusAction) => void;
   onChangeTaskStatus: (ids: string[], action: TaskStatusAction) => void;
   onClose: () => void;
   onOpenFileCenterForTask: (task: TaskRecord) => void;
-  onOpenIssueCenterForTask: (task: TaskRecord) => void;
+  onOpenIssueCenterForTask?: (task: TaskRecord) => void;
   onOpenStorageNodesForTask: (task: TaskRecord) => void;
 }) {
   const itemIssues = getTaskIssues(item, issues);
@@ -1565,6 +1576,21 @@ export function TaskDetailSheet({
                 <div className="row-progress">
                   <ProgressBar value={taskItem.progress} />
                 </div>
+                <div className="row-actions">
+                  {resolvePrimaryTaskItemAction(taskItem) === 'resume' ? (
+                    <ActionButton onClick={() => onChangeTaskItemStatus([taskItem.id], 'resume')}>继续</ActionButton>
+                  ) : null}
+                  {resolvePrimaryTaskItemAction(taskItem) === 'pause' ? (
+                    <ActionButton onClick={() => onChangeTaskItemStatus([taskItem.id], 'pause')}>暂停</ActionButton>
+                  ) : null}
+                  <ActionButton
+                    disabled={!canCancelItem(taskItem)}
+                    tone="danger"
+                    onClick={() => onChangeTaskItemStatus([taskItem.id], 'cancel')}
+                  >
+                    取消
+                  </ActionButton>
+                </div>
               </div>
             ))
           )}
@@ -1582,7 +1608,9 @@ export function TaskDetailSheet({
         ) : (
           <ActionButton onClick={() => onOpenFileCenterForTask(item)}>查看文件中心</ActionButton>
         )}
-        <ActionButton onClick={() => onOpenIssueCenterForTask(item)}>查看异常中心</ActionButton>
+        {itemIssues.length > 0 && onOpenIssueCenterForTask ? (
+          <ActionButton onClick={() => onOpenIssueCenterForTask(item)}>查看异常中心</ActionButton>
+        ) : null}
       </div>
     </Sheet>
   );

@@ -105,6 +105,9 @@ type JobService interface {
 	PauseJob(ctx context.Context, id string) (jobdto.MutationResponse, error)
 	ResumeJob(ctx context.Context, id string) (jobdto.MutationResponse, error)
 	CancelJob(ctx context.Context, id string) (jobdto.MutationResponse, error)
+	PauseJobItem(ctx context.Context, id string) (jobdto.ItemMutationResponse, error)
+	ResumeJobItem(ctx context.Context, id string) (jobdto.ItemMutationResponse, error)
+	CancelJobItem(ctx context.Context, id string) (jobdto.ItemMutationResponse, error)
 	RetryJob(ctx context.Context, id string) (jobdto.MutationResponse, error)
 	UpdatePriority(ctx context.Context, id string, priority string) (jobdto.MutationResponse, error)
 	Subscribe(jobID string) (<-chan jobdto.StreamEvent, func())
@@ -776,6 +779,33 @@ func NewRouter(deps Dependencies) http.Handler {
 
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", func(w http.ResponseWriter, r *http.Request) {
 		payload, err := deps.Jobs.CancelJob(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("POST /api/job-items/{id}/pause", func(w http.ResponseWriter, r *http.Request) {
+		payload, err := deps.Jobs.PauseJobItem(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("POST /api/job-items/{id}/resume", func(w http.ResponseWriter, r *http.Request) {
+		payload, err := deps.Jobs.ResumeJobItem(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("POST /api/job-items/{id}/cancel", func(w http.ResponseWriter, r *http.Request) {
+		payload, err := deps.Jobs.CancelJobItem(r.Context(), r.PathValue("id"))
 		if err != nil {
 			writeError(deps.Logger, w, err)
 			return

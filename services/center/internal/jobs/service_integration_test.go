@@ -205,6 +205,136 @@ func TestServiceRetryFailedJob(t *testing.T) {
 	}
 }
 
+func TestServicePauseAndResumeRunningItem(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	defer pool.Close()
+	resetSchema(t, ctx, pool)
+
+	migrator := db.NewMigrator()
+	if _, err := migrator.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	service := jobs.NewService(pool)
+	firstItemRelease := make(chan struct{})
+	service.RegisterExecutor(jobs.JobIntentScanDirectory, func(ctx context.Context, execution jobs.ExecutionContext) error {
+		if execution.Item.ItemKey != "mount:first" {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-firstItemRelease:
+			return nil
+		}
+	})
+	service.Start(ctx)
+
+	result, err := service.CreateJob(ctx, jobs.CreateJobInput{
+		JobFamily:     jobs.JobFamilyMaintenance,
+		JobIntent:     jobs.JobIntentScanDirectory,
+		Title:         "扫描目录：/",
+		Summary:       "子任务暂停恢复测试",
+		SourceDomain:  jobs.SourceDomainFileCenter,
+		Priority:      jobs.PriorityNormal,
+		CreatedByType: jobs.CreatedByUser,
+		Items: []jobs.CreateItemInput{
+			{ItemKey: "mount:first", ItemType: jobs.ItemTypeDirectoryScan, Title: "扫描 first", Summary: "扫描 first"},
+			{ItemKey: "mount:second", ItemType: jobs.ItemTypeDirectoryScan, Title: "扫描 second", Summary: "扫描 second"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	runningDetail := waitForItemStatus(t, ctx, service, result.JobID, "mount:first", jobs.ItemStatusRunning)
+	firstItemID := findItemID(t, runningDetail.Items, "mount:first")
+
+	if _, err := service.PauseJobItem(ctx, firstItemID); err != nil {
+		t.Fatalf("pause item: %v", err)
+	}
+
+	pausedDetail := waitForJobStatus(t, ctx, service, result.JobID, jobs.StatusPaused)
+	assertItemStatus(t, pausedDetail.Items, "mount:first", jobs.ItemStatusPaused)
+	assertItemStatus(t, pausedDetail.Items, "mount:second", jobs.ItemStatusPending)
+
+	if _, err := service.ResumeJobItem(ctx, firstItemID); err != nil {
+		t.Fatalf("resume item: %v", err)
+	}
+
+	close(firstItemRelease)
+	final := waitForJobStatus(t, ctx, service, result.JobID, jobs.StatusCompleted)
+	if final.Job.SuccessItems != 2 {
+		t.Fatalf("expected resumed item flow to complete, got %+v", final.Job)
+	}
+}
+
+func TestServiceCancelRunningItemKeepsRemainingItemsExecutable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	defer pool.Close()
+	resetSchema(t, ctx, pool)
+
+	migrator := db.NewMigrator()
+	if _, err := migrator.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	service := jobs.NewService(pool)
+	service.RegisterExecutor(jobs.JobIntentScanDirectory, func(ctx context.Context, execution jobs.ExecutionContext) error {
+		if execution.Item.ItemKey != "mount:first" {
+			return nil
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	service.Start(ctx)
+
+	result, err := service.CreateJob(ctx, jobs.CreateJobInput{
+		JobFamily:     jobs.JobFamilyMaintenance,
+		JobIntent:     jobs.JobIntentScanDirectory,
+		Title:         "扫描目录：/",
+		Summary:       "子任务取消测试",
+		SourceDomain:  jobs.SourceDomainFileCenter,
+		Priority:      jobs.PriorityNormal,
+		CreatedByType: jobs.CreatedByUser,
+		Items: []jobs.CreateItemInput{
+			{ItemKey: "mount:first", ItemType: jobs.ItemTypeDirectoryScan, Title: "扫描 first", Summary: "扫描 first"},
+			{ItemKey: "mount:second", ItemType: jobs.ItemTypeDirectoryScan, Title: "扫描 second", Summary: "扫描 second"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	runningDetail := waitForItemStatus(t, ctx, service, result.JobID, "mount:first", jobs.ItemStatusRunning)
+	firstItemID := findItemID(t, runningDetail.Items, "mount:first")
+
+	if _, err := service.CancelJobItem(ctx, firstItemID); err != nil {
+		t.Fatalf("cancel item: %v", err)
+	}
+
+	final := waitForJobStatus(t, ctx, service, result.JobID, jobs.StatusCompleted)
+	assertItemStatus(t, final.Items, "mount:first", jobs.ItemStatusCanceled)
+	assertItemStatus(t, final.Items, "mount:second", jobs.ItemStatusCompleted)
+	if final.Job.SuccessItems != 1 {
+		t.Fatalf("expected second item to succeed after cancel, got %+v", final.Job)
+	}
+}
+
 func waitForJobStatus(t *testing.T, ctx context.Context, service *jobs.Service, jobID string, expected string) jobdto.Detail {
 	t.Helper()
 
@@ -225,7 +355,7 @@ func waitForJobStatus(t *testing.T, ctx context.Context, service *jobs.Service, 
 	return jobdto.Detail{}
 }
 
-func waitForItemStatus(t *testing.T, ctx context.Context, service *jobs.Service, jobID string, itemKey string, expected string) {
+func waitForItemStatus(t *testing.T, ctx context.Context, service *jobs.Service, jobID string, itemKey string, expected string) jobdto.Detail {
 	t.Helper()
 
 	deadline := time.Now().Add(10 * time.Second)
@@ -234,13 +364,40 @@ func waitForItemStatus(t *testing.T, ctx context.Context, service *jobs.Service,
 		if err == nil {
 			for _, item := range detail.Items {
 				if item.ItemKey == itemKey && item.Status == expected {
-					return
+					return detail
 				}
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("expected item %s status %s", itemKey, expected)
+	return jobdto.Detail{}
+}
+
+func findItemID(t *testing.T, items []jobdto.ItemRecord, itemKey string) string {
+	t.Helper()
+
+	for _, item := range items {
+		if item.ItemKey == itemKey {
+			return item.ID
+		}
+	}
+	t.Fatalf("expected item %s", itemKey)
+	return ""
+}
+
+func assertItemStatus(t *testing.T, items []jobdto.ItemRecord, itemKey string, expected string) {
+	t.Helper()
+
+	for _, item := range items {
+		if item.ItemKey == itemKey {
+			if item.Status != expected {
+				t.Fatalf("expected item %s status %s, got %s", itemKey, expected, item.Status)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected item %s", itemKey)
 }
 
 func openTestPool(t *testing.T, ctx context.Context) *pgxpool.Pool {

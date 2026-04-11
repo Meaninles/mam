@@ -363,6 +363,18 @@ func (fakeJobService) CancelJob(context.Context, string) (jobdto.MutationRespons
 	return jobdto.MutationResponse{Message: "作业已取消", Job: fakeCreateJobResponse("").Job}, nil
 }
 
+func (fakeJobService) PauseJobItem(context.Context, string) (jobdto.ItemMutationResponse, error) {
+	return fakeItemMutationResponse("子任务已暂停"), nil
+}
+
+func (fakeJobService) ResumeJobItem(context.Context, string) (jobdto.ItemMutationResponse, error) {
+	return fakeItemMutationResponse("子任务已恢复"), nil
+}
+
+func (fakeJobService) CancelJobItem(context.Context, string) (jobdto.ItemMutationResponse, error) {
+	return fakeItemMutationResponse("子任务已取消"), nil
+}
+
 func (fakeJobService) RetryJob(context.Context, string) (jobdto.MutationResponse, error) {
 	return jobdto.MutationResponse{Message: "作业已进入重试队列", Job: fakeCreateJobResponse("").Job}, nil
 }
@@ -399,6 +411,28 @@ func fakeCreateJobResponse(message string) jobdto.CreateResponse {
 			CreatedByType:   jobs.CreatedByUser,
 			CreatedAt:       "2026-04-11T12:00:00Z",
 			UpdatedAt:       "2026-04-11T12:00:00Z",
+		},
+	}
+}
+
+func fakeItemMutationResponse(message string) jobdto.ItemMutationResponse {
+	job := fakeCreateJobResponse("").Job
+	return jobdto.ItemMutationResponse{
+		Message: message,
+		Job:     job,
+		Item: jobdto.ItemRecord{
+			ID:              "job-item-1",
+			JobID:           job.ID,
+			ItemKey:         "mount-1",
+			ItemType:        jobs.ItemTypeDirectoryScan,
+			Status:          jobs.ItemStatusPaused,
+			Title:           "扫描挂载 1",
+			Summary:         "正在执行",
+			ProgressPercent: 50,
+			AttemptCount:    1,
+			IssueCount:      0,
+			UpdatedAt:       "2026-04-11T12:00:01Z",
+			CreatedAt:       "2026-04-11T12:00:00Z",
 		},
 	}
 }

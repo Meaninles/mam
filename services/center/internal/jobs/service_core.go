@@ -15,22 +15,25 @@ import (
 )
 
 type Service struct {
-	pool          *pgxpool.Pool
-	now           func() time.Time
-	broker        *Broker
-	executors     map[string]ItemExecutor
-	wakeCh        chan struct{}
-	startOnce     sync.Once
-	backgroundCtx context.Context
+	pool           *pgxpool.Pool
+	now            func() time.Time
+	broker         *Broker
+	executors      map[string]ItemExecutor
+	runningItems   map[string]context.CancelFunc
+	runningItemsMu sync.Mutex
+	wakeCh         chan struct{}
+	startOnce      sync.Once
+	backgroundCtx  context.Context
 }
 
 func NewService(pool *pgxpool.Pool) *Service {
 	return &Service{
-		pool:      pool,
-		now:       time.Now,
-		broker:    NewBroker(),
-		executors: make(map[string]ItemExecutor),
-		wakeCh:    make(chan struct{}, 1),
+		pool:         pool,
+		now:          time.Now,
+		broker:       NewBroker(),
+		executors:    make(map[string]ItemExecutor),
+		runningItems: make(map[string]context.CancelFunc),
+		wakeCh:       make(chan struct{}, 1),
 	}
 }
 
@@ -51,6 +54,31 @@ func (s *Service) Subscribe(jobID string) (<-chan jobdto.StreamEvent, func()) {
 
 func (s *Service) RegisterExecutor(jobIntent string, executor ItemExecutor) {
 	s.executors[jobIntent] = executor
+}
+
+func (s *Service) registerRunningItem(itemID string, cancel context.CancelFunc) {
+	s.runningItemsMu.Lock()
+	defer s.runningItemsMu.Unlock()
+	s.runningItems[itemID] = cancel
+}
+
+func (s *Service) clearRunningItem(itemID string) {
+	s.runningItemsMu.Lock()
+	defer s.runningItemsMu.Unlock()
+	delete(s.runningItems, itemID)
+}
+
+func (s *Service) interruptRunningItem(itemID string) bool {
+	s.runningItemsMu.Lock()
+	cancel, ok := s.runningItems[itemID]
+	if ok {
+		delete(s.runningItems, itemID)
+	}
+	s.runningItemsMu.Unlock()
+	if ok {
+		cancel()
+	}
+	return ok
 }
 
 func (s *Service) wake() {

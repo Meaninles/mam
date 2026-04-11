@@ -111,6 +111,12 @@ type MutationResponse struct {
 	Job     Record `json:"job"`
 }
 
+type ItemMutationResponse struct {
+	Message string     `json:"message"`
+	Job     Record     `json:"job"`
+	Item    ItemRecord `json:"item"`
+}
+
 type CreateResponse struct {
 	Message string `json:"message"`
 	JobID   string `json:"jobId"`

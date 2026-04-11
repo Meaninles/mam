@@ -118,6 +118,12 @@ export type JobStreamEvent = {
   createdAt: string;
 };
 
+export type JobItemMutationResponse = {
+  message: string;
+  job: JobRecord;
+  item: JobItemRecord;
+};
+
 export const jobsApi = {
   async list(params: {
     page?: number;
@@ -161,6 +167,18 @@ export const jobsApi = {
     return fetchJobsData<{ message: string; job: JobRecord }>(`/api/jobs/${id}/cancel`, { method: 'POST' });
   },
 
+  async pauseItem(id: string) {
+    return fetchJobsData<JobItemMutationResponse>(`/api/job-items/${id}/pause`, { method: 'POST' });
+  },
+
+  async resumeItem(id: string) {
+    return fetchJobsData<JobItemMutationResponse>(`/api/job-items/${id}/resume`, { method: 'POST' });
+  },
+
+  async cancelItem(id: string) {
+    return fetchJobsData<JobItemMutationResponse>(`/api/job-items/${id}/cancel`, { method: 'POST' });
+  },
+
   async retry(id: string) {
     return fetchJobsData<{ message: string; job: JobRecord }>(`/api/jobs/${id}/retry`, { method: 'POST' });
   },
@@ -188,12 +206,27 @@ export const jobsApi = {
     };
 
     source.onmessage = handleMessage;
-    source.addEventListener('JOB_CREATED', handleMessage as EventListener);
-    source.addEventListener('JOB_STARTED', handleMessage as EventListener);
-    source.addEventListener('JOB_ITEM_STARTED', handleMessage as EventListener);
-    source.addEventListener('JOB_ITEM_COMPLETED', handleMessage as EventListener);
-    source.addEventListener('JOB_COMPLETED', handleMessage as EventListener);
-    source.addEventListener('JOB_FAILED', handleMessage as EventListener);
+    [
+      'JOB_CREATED',
+      'JOB_QUEUED',
+      'JOB_STARTED',
+      'JOB_PAUSED',
+      'JOB_RESUMED',
+      'JOB_CANCELED',
+      'JOB_RETRIED',
+      'JOB_COMPLETED',
+      'JOB_FAILED',
+      'JOB_PARTIAL_SUCCESS',
+      'JOB_PRIORITY_CHANGED',
+      'JOB_ITEM_STARTED',
+      'JOB_ITEM_PAUSED',
+      'JOB_ITEM_RESUMED',
+      'JOB_ITEM_COMPLETED',
+      'JOB_ITEM_FAILED',
+      'JOB_ITEM_CANCELED',
+    ].forEach((eventType) => {
+      source.addEventListener(eventType, handleMessage as EventListener);
+    });
 
     return () => {
       source.close();
