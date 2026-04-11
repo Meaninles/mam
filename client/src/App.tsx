@@ -25,7 +25,7 @@ import type {
   TaskRecord,
   TaskTab,
 } from './data';
-import { navigationItems } from './data';
+import { navigationItems as baseNavigationItems } from './data';
 import {
   cloneSettingsRecord,
   resolveDefaultLibraryId,
@@ -71,7 +71,7 @@ import {
   type FileCenterTagSuggestion,
 } from './lib/fileCenterApi';
 import { issuesApi } from './lib/issuesApi';
-import { jobsApi, type JobStreamEvent } from './lib/jobsApi';
+import { jobsApi, type JobStatus, type JobStreamEvent } from './lib/jobsApi';
 import { notificationsApi } from './lib/notificationsApi';
 import {
   storageNodesApi,
@@ -475,6 +475,30 @@ function isBlockingTransferTaskStatus(status: string) {
 }
 void isBlockingTransferTaskStatus;
 
+const ACTIVE_TASK_BADGE_STATUSES = new Set<JobStatus>(['RUNNING', 'PAUSED', 'WAITING_CONFIRMATION']);
+
+function shouldShowTaskCenterBadge(status: JobStatus) {
+  return ACTIVE_TASK_BADGE_STATUSES.has(status);
+}
+
+function shouldShowIssueCenterBadge(status: IssueRecord['status']) {
+  return status === '待处理';
+}
+
+async function loadAllTaskBadgeJobs() {
+  const items: Array<{ status: JobStatus }> = [];
+  let page = 1;
+
+  while (true) {
+    const result = await jobsApi.list({ page, pageSize: 100 });
+    items.push(...result.items);
+    if (items.length >= result.total || result.items.length === 0) {
+      return items;
+    }
+    page += 1;
+  }
+}
+
 function resolveIssueActionFeedback(action: 'retry' | 'confirm' | 'postpone' | 'ignore' | 'refresh' | 'archive', count: number): FeedbackState {
   const quantity = count > 1 ? `${count} 条异常` : '当前异常';
 
@@ -532,6 +556,7 @@ export default function App() {
   const issueRefreshTimeoutRef = useRef<number | null>(null);
   const issueRefreshInFlightRef = useRef(false);
   const issueRefreshDirtyRef = useRef(true);
+  const taskBadgeRefreshTimeoutRef = useRef<number | null>(null);
   const lastIssueSignatureRef = useRef('');
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [runtimeLightState, setRuntimeLightState] = useState<RuntimeLightState>(null);
@@ -560,6 +585,7 @@ export default function App() {
   const [folderDraft, setFolderDraft] = useState<string | null>(null);
   const [pendingFileCenterJump, setPendingFileCenterJump] = useState<PendingFileCenterJump>(null);
   const [pendingTaskSelection, setPendingTaskSelection] = useState<PendingTaskFocus>(null);
+  const [activeTaskBadgeCount, setActiveTaskBadgeCount] = useState(0);
   const [workspaceRefreshTokens, setWorkspaceRefreshTokens] = useState<Record<WorkspaceView, number>>({
     'file-center': 0,
     'import-center': 0,
@@ -570,6 +596,45 @@ export default function App() {
   });
 
   const shouldKeepIssuesFresh = true;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const refreshTaskBadgeCount = async () => {
+      try {
+        const items = await loadAllTaskBadgeJobs();
+        if (cancelled) {
+          return;
+        }
+        setActiveTaskBadgeCount(items.filter((item) => shouldShowTaskCenterBadge(item.status)).length);
+      } catch (error) {
+        if (!cancelled) {
+          console.error('load task badge count failed', error);
+          setActiveTaskBadgeCount(0);
+        }
+      }
+    };
+
+    void refreshTaskBadgeCount();
+
+    const unsubscribe = jobsApi.subscribe(() => {
+      if (taskBadgeRefreshTimeoutRef.current !== null) {
+        window.clearTimeout(taskBadgeRefreshTimeoutRef.current);
+      }
+      taskBadgeRefreshTimeoutRef.current = window.setTimeout(() => {
+        taskBadgeRefreshTimeoutRef.current = null;
+        void refreshTaskBadgeCount();
+      }, 180);
+    });
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+      if (taskBadgeRefreshTimeoutRef.current !== null) {
+        window.clearTimeout(taskBadgeRefreshTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const computeIssueSignature = (items: IssueRecord[]) =>
     items.map((item) => `${item.id}:${item.status}:${item.updatedAt}:${item.histories.length}`).join('|');
@@ -706,6 +771,22 @@ export default function App() {
   const workspaceContainersRef = useRef<Partial<Record<WorkspaceView, HTMLDivElement>>>({});
   const activeView: MainView = activeWorkspaceView;
   const unreadNotificationCount = useMemo(() => getUnconsumedNoticeCount(noticeRecords), [noticeRecords]);
+  const navigationItems = useMemo(() => {
+    const pendingIssueCount = issueRecords.filter((issue) => shouldShowIssueCenterBadge(issue.status)).length;
+
+    return baseNavigationItems.map((item) => {
+      if (item.id === 'task-center') {
+        return { ...item, badge: activeTaskBadgeCount > 0 ? String(activeTaskBadgeCount) : undefined };
+      }
+      if (item.id === 'issues') {
+        return { ...item, badge: pendingIssueCount > 0 ? String(pendingIssueCount) : undefined };
+      }
+      if (item.id === 'storage-nodes') {
+        return { ...item, badge: undefined };
+      }
+      return { ...item, badge: undefined };
+    });
+  }, [activeTaskBadgeCount, issueRecords]);
   const importEntrySignal = useMemo(() => resolveImportEntrySignal(persisted.importDeviceSessions), [persisted.importDeviceSessions]);
   const workspaceLabels = useMemo(
     () => ({
