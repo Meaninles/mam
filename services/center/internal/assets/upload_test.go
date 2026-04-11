@@ -1,8 +1,10 @@
 package assets
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/url"
 	"testing"
 	"time"
@@ -31,11 +33,46 @@ func (f *fakeUploadExecutor) WriteFile(_ context.Context, input pathExecutionCon
 	return nil
 }
 
+func (f *fakeUploadExecutor) WriteStream(_ context.Context, input pathExecutionContext, reader io.Reader) error {
+	if f.writes == nil {
+		f.writes = map[string][]byte{}
+	}
+	content, err := io.ReadAll(reader)
+	if err != nil {
+		return err
+	}
+	f.writes[input.PhysicalPath] = content
+	return nil
+}
+
 func (f *fakeUploadExecutor) DeleteFile(context.Context, pathExecutionContext) error {
 	return nil
 }
 
 func (f *fakeUploadExecutor) DeleteDirectory(context.Context, pathExecutionContext) error {
+	return nil
+}
+
+func (f *fakeUploadExecutor) StreamFile(_ context.Context, input pathExecutionContext, consume func(reader io.Reader) error) error {
+	content := []byte(nil)
+	if f.writes != nil {
+		content = append(content, f.writes[input.PhysicalPath]...)
+	}
+	return consume(bytes.NewReader(content))
+}
+
+func (f *fakeUploadExecutor) StatFile(_ context.Context, input pathExecutionContext) (fileMetadata, error) {
+	content := []byte(nil)
+	if f.writes != nil {
+		content = append(content, f.writes[input.PhysicalPath]...)
+	}
+	return fileMetadata{
+		SizeBytes:  int64(len(content)),
+		ModifiedAt: time.Now().UTC(),
+	}, nil
+}
+
+func (f *fakeUploadExecutor) SetFileModifiedTime(context.Context, pathExecutionContext, time.Time) error {
 	return nil
 }
 

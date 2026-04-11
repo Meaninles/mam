@@ -443,6 +443,10 @@ func (s *Service) buildAssetEntry(ctx context.Context, library libraryModel, ass
 	if err != nil {
 		return assetdto.EntryRecord{}, err
 	}
+	lastTaskText, lastTaskTone, err := s.loadLatestTaskStatusForAsset(ctx, asset.ID)
+	if err != nil {
+		return assetdto.EntryRecord{}, err
+	}
 	return assetdto.EntryRecord{
 		ID:             asset.ID,
 		LibraryID:      asset.LibraryID,
@@ -457,8 +461,8 @@ func (s *Service) buildAssetEntry(ctx context.Context, library libraryModel, ass
 		Size:           formatBytes(asset.SizeBytes),
 		Path:           buildDisplayPath(library.Name, asset.RelativePath),
 		SourceLabel:    "统一资产",
-		LastTaskText:   "暂无任务",
-		LastTaskTone:   "info",
+		LastTaskText:   lastTaskText,
+		LastTaskTone:   lastTaskTone,
 		Rating:         int(asset.Rating),
 		ColorLabel:     mapColorLabel(asset.ColorLabel),
 		Badges:         []string{},
@@ -666,6 +670,10 @@ func (s *Service) loadAssetEndpoints(ctx context.Context, assetID string, librar
 	if err != nil {
 		return nil, err
 	}
+	pendingMounts, err := s.loadPendingEndpointOperations(ctx, assetID)
+	if err != nil {
+		return nil, err
+	}
 
 	type replica struct {
 		state    string
@@ -700,6 +708,9 @@ func (s *Service) loadAssetEndpoints(ctx context.Context, assetID string, librar
 		state := "未同步"
 		if replica.state == "AVAILABLE" {
 			state = "已同步"
+		}
+		if _, ok := pendingMounts[mount.ID]; ok {
+			state = "同步中"
 		}
 		results = append(results, assetdto.EntryEndpoint{
 			MountID:      mount.ID,

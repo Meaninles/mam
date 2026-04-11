@@ -312,6 +312,25 @@ func (fakeJobService) CreateDirectoryScanJob(context.Context, assets.DirectorySc
 	return fakeCreateJobResponse("目录扫描任务已创建"), nil
 }
 
+func (fakeJobService) CreateReplicateJob(context.Context, assets.ReplicatePlan) (jobdto.CreateResponse, error) {
+	response := fakeCreateJobResponse("已创建同步作业")
+	response.Job.JobFamily = jobs.JobFamilyTransfer
+	response.Job.JobIntent = jobs.JobIntentReplicate
+	return response, nil
+}
+
+func (fakeJobService) CreateDeleteReplicaJob(context.Context, assets.DeleteReplicaPlan) (jobdto.CreateResponse, error) {
+	response := fakeCreateJobResponse("已创建副本删除作业")
+	response.Job.JobIntent = jobs.JobIntentDeleteReplica
+	return response, nil
+}
+
+func (fakeJobService) CreateDeleteAssetJob(context.Context, assets.DeleteAssetPlan) (jobdto.CreateResponse, error) {
+	response := fakeCreateJobResponse("已创建资产删除作业")
+	response.Job.JobIntent = jobs.JobIntentDeleteAsset
+	return response, nil
+}
+
 func (fakeJobService) ListJobs(context.Context, jobs.ListQuery) (jobdto.ListResponse, error) {
 	return jobdto.ListResponse{
 		Items: []jobdto.Record{
@@ -437,6 +456,10 @@ func fakeItemMutationResponse(message string) jobdto.ItemMutationResponse {
 	}
 }
 
+func ptrString(value string) *string {
+	return &value
+}
+
 func (fakeAssetService) CreateDirectory(_ context.Context, libraryID string, request assetdto.CreateDirectoryRequest) (assetdto.CreateDirectoryResponse, error) {
 	return assetdto.CreateDirectoryResponse{
 		Message: "目录已创建",
@@ -479,6 +502,70 @@ func (fakeAssetService) UpdateAnnotations(_ context.Context, _ string, request a
 
 func (fakeAssetService) DeleteEntry(context.Context, string) (assetdto.DeleteEntryResponse, error) {
 	return assetdto.DeleteEntryResponse{Message: "条目已删除"}, nil
+}
+
+func (fakeAssetService) PrepareReplicatePlan(_ context.Context, request assetdto.CreateReplicateJobRequest) (assets.ReplicatePlan, error) {
+	return assets.ReplicatePlan{
+		LibraryID:      "photo",
+		LibraryName:    "商业摄影资产库",
+		EndpointName:   request.EndpointName,
+		TargetMountID:  "mount-target",
+		RequestedCount: len(request.EntryIDs),
+		Items: []assets.ReplicatePlanItem{
+			{
+				AssetID:             "asset-1",
+				AssetName:           "cover.jpg",
+				RelativePath:        "/cover.jpg",
+				SourceReplicaID:     "replica-source",
+				SourceMountID:       "mount-source",
+				SourceMountName:     "本地 NVMe",
+				SourceStorageNodeID: "storage-source",
+				SourcePhysicalPath:  "D:\\Mare\\Assets\\cover.jpg",
+				TargetMountID:       "mount-target",
+				TargetMountName:     request.EndpointName,
+				TargetStorageNodeID: "storage-target",
+				TargetPhysicalPath:  "E:\\Archive\\cover.jpg",
+			},
+		},
+	}, nil
+}
+
+func (fakeAssetService) PrepareDeleteReplicaPlan(_ context.Context, request assetdto.CreateDeleteReplicaJobRequest) (assets.DeleteReplicaPlan, error) {
+	return assets.DeleteReplicaPlan{
+		LibraryID:      "photo",
+		LibraryName:    "商业摄影资产库",
+		EndpointName:   request.EndpointName,
+		TargetMountID:  "mount-target",
+		RequestedCount: len(request.EntryIDs),
+		Items: []assets.DeleteReplicaPlanItem{
+			{
+				AssetID:             "asset-1",
+				AssetName:           "cover.jpg",
+				RelativePath:        "/cover.jpg",
+				ReplicaID:           "replica-source",
+				TargetMountID:       "mount-target",
+				TargetMountName:     request.EndpointName,
+				TargetStorageNodeID: "storage-target",
+				TargetPhysicalPath:  "E:\\Archive\\cover.jpg",
+			},
+		},
+	}, nil
+}
+
+func (fakeAssetService) PrepareDeleteAssetPlan(_ context.Context, request assetdto.CreateDeleteAssetJobRequest) (assets.DeleteAssetPlan, error) {
+	return assets.DeleteAssetPlan{
+		LibraryID:      "photo",
+		LibraryName:    "商业摄影资产库",
+		RequestedCount: len(request.EntryIDs),
+		Items: []assets.DeleteAssetPlanItem{
+			{
+				AssetID:      ptrString("asset-1"),
+				EntryName:    "cover.jpg",
+				RelativePath: "/cover.jpg",
+				ReplicaCount: 1,
+			},
+		},
+	}, nil
 }
 
 func (fakeAssetService) BrowseLibrary(_ context.Context, libraryID string, _ assetdto.BrowseQuery) (assetdto.BrowseLibraryResponse, error) {
@@ -1171,6 +1258,104 @@ func TestDeleteEntryRouteReturnsSuccess(t *testing.T) {
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+}
+
+func TestCreateReplicateJobRouteAcceptsValidPayload(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(Dependencies{
+		Runtime:      fakeRuntimeService{},
+		Agents:       fakeAgentService{},
+		LocalNodes:   fakeLocalNodeService{},
+		NasNodes:     fakeNASNodeService{},
+		LocalFolders: fakeLocalFolderService{},
+		Assets:       fakeAssetService{},
+		Jobs:         fakeJobService{},
+	})
+
+	body, err := json.Marshal(assetdto.CreateReplicateJobRequest{
+		EntryIDs:     []string{"asset-1", "asset-2"},
+		EndpointName: "影像 NAS",
+	})
+	if err != nil {
+		t.Fatalf("marshal replicate payload: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/file-entries/replicate", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", recorder.Code)
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte(`"jobIntent":"REPLICATE"`)) {
+		t.Fatalf("expected replicate job payload, got %s", recorder.Body.String())
+	}
+}
+
+func TestCreateDeleteReplicaJobRouteAcceptsValidPayload(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(Dependencies{
+		Runtime:      fakeRuntimeService{},
+		Agents:       fakeAgentService{},
+		LocalNodes:   fakeLocalNodeService{},
+		NasNodes:     fakeNASNodeService{},
+		LocalFolders: fakeLocalFolderService{},
+		Assets:       fakeAssetService{},
+		Jobs:         fakeJobService{},
+	})
+
+	body, err := json.Marshal(assetdto.CreateDeleteReplicaJobRequest{
+		EntryIDs:     []string{"asset-1"},
+		EndpointName: "商业摄影原片库",
+	})
+	if err != nil {
+		t.Fatalf("marshal delete replica payload: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/file-entries/delete-replicas", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", recorder.Code)
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte(`"jobIntent":"DELETE_REPLICA"`)) {
+		t.Fatalf("expected delete replica job payload, got %s", recorder.Body.String())
+	}
+}
+
+func TestCreateDeleteAssetJobRouteAcceptsValidPayload(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(Dependencies{
+		Runtime:      fakeRuntimeService{},
+		Agents:       fakeAgentService{},
+		LocalNodes:   fakeLocalNodeService{},
+		NasNodes:     fakeNASNodeService{},
+		LocalFolders: fakeLocalFolderService{},
+		Assets:       fakeAssetService{},
+		Jobs:         fakeJobService{},
+	})
+
+	body, err := json.Marshal(assetdto.CreateDeleteAssetJobRequest{
+		EntryIDs: []string{"asset-1", "asset-2"},
+	})
+	if err != nil {
+		t.Fatalf("marshal delete asset payload: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/file-entries/delete-assets", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", recorder.Code)
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte(`"jobIntent":"DELETE_ASSET"`)) {
+		t.Fatalf("expected delete asset job payload, got %s", recorder.Body.String())
 	}
 }
 

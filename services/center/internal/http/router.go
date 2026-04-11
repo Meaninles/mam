@@ -77,6 +77,9 @@ type AssetService interface {
 	UploadSelection(ctx context.Context, libraryID string, request assetdto.UploadSelectionRequest) (assetdto.UploadSelectionResponse, error)
 	UpdateAnnotations(ctx context.Context, id string, request assetdto.UpdateAnnotationsRequest) (assetdto.UpdateAnnotationsResponse, error)
 	DeleteEntry(ctx context.Context, id string) (assetdto.DeleteEntryResponse, error)
+	PrepareReplicatePlan(ctx context.Context, request assetdto.CreateReplicateJobRequest) (assets.ReplicatePlan, error)
+	PrepareDeleteReplicaPlan(ctx context.Context, request assetdto.CreateDeleteReplicaJobRequest) (assets.DeleteReplicaPlan, error)
+	PrepareDeleteAssetPlan(ctx context.Context, request assetdto.CreateDeleteAssetJobRequest) (assets.DeleteAssetPlan, error)
 	BrowseLibrary(ctx context.Context, libraryID string, query assetdto.BrowseQuery) (assetdto.BrowseLibraryResponse, error)
 	LoadEntry(ctx context.Context, id string) (*assetdto.EntryRecord, error)
 	ScanDirectory(ctx context.Context, libraryID string, request assetdto.ScanDirectoryRequest) (assetdto.ScanDirectoryResponse, error)
@@ -99,6 +102,9 @@ type TagService interface {
 type JobService interface {
 	CreateMountScanJob(ctx context.Context, plan storage.MountScanPlan) (jobdto.CreateResponse, error)
 	CreateDirectoryScanJob(ctx context.Context, plan assets.DirectoryScanPlan) (jobdto.CreateResponse, error)
+	CreateReplicateJob(ctx context.Context, plan assets.ReplicatePlan) (jobdto.CreateResponse, error)
+	CreateDeleteReplicaJob(ctx context.Context, plan assets.DeleteReplicaPlan) (jobdto.CreateResponse, error)
+	CreateDeleteAssetJob(ctx context.Context, plan assets.DeleteAssetPlan) (jobdto.CreateResponse, error)
 	ListJobs(ctx context.Context, query jobs.ListQuery) (jobdto.ListResponse, error)
 	LoadJobDetail(ctx context.Context, id string) (jobdto.Detail, error)
 	ListJobEvents(ctx context.Context, id string) (jobdto.EventListResponse, error)
@@ -513,6 +519,66 @@ func NewRouter(deps Dependencies) http.Handler {
 			return
 		}
 		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("POST /api/file-entries/replicate", func(w http.ResponseWriter, r *http.Request) {
+		var payload assetdto.CreateReplicateJobRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("同步请求格式无效"))
+			return
+		}
+
+		plan, err := deps.Assets.PrepareReplicatePlan(r.Context(), payload)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		result, err := deps.Jobs.CreateReplicateJob(r.Context(), plan)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusAccepted, result)
+	})
+
+	mux.HandleFunc("POST /api/file-entries/delete-replicas", func(w http.ResponseWriter, r *http.Request) {
+		var payload assetdto.CreateDeleteReplicaJobRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("副本删除请求格式无效"))
+			return
+		}
+
+		plan, err := deps.Assets.PrepareDeleteReplicaPlan(r.Context(), payload)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		result, err := deps.Jobs.CreateDeleteReplicaJob(r.Context(), plan)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusAccepted, result)
+	})
+
+	mux.HandleFunc("POST /api/file-entries/delete-assets", func(w http.ResponseWriter, r *http.Request) {
+		var payload assetdto.CreateDeleteAssetJobRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("资产删除请求格式无效"))
+			return
+		}
+
+		plan, err := deps.Assets.PrepareDeleteAssetPlan(r.Context(), payload)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		result, err := deps.Jobs.CreateDeleteAssetJob(r.Context(), plan)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusAccepted, result)
 	})
 
 	mux.HandleFunc("GET /api/tags/management", func(w http.ResponseWriter, r *http.Request) {

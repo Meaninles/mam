@@ -3,6 +3,7 @@ package assets
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	pathpkg "path"
@@ -19,11 +20,20 @@ type pathExecutionContext struct {
 	FileContent      []byte
 }
 
+type fileMetadata struct {
+	SizeBytes  int64
+	ModifiedAt time.Time
+}
+
 type mountPathExecutor interface {
 	EnsureDirectory(ctx context.Context, input pathExecutionContext) error
 	WriteFile(ctx context.Context, input pathExecutionContext) error
+	WriteStream(ctx context.Context, input pathExecutionContext, reader io.Reader) error
 	DeleteFile(ctx context.Context, input pathExecutionContext) error
 	DeleteDirectory(ctx context.Context, input pathExecutionContext) error
+	StreamFile(ctx context.Context, input pathExecutionContext, consume func(reader io.Reader) error) error
+	StatFile(ctx context.Context, input pathExecutionContext) (fileMetadata, error)
+	SetFileModifiedTime(ctx context.Context, input pathExecutionContext, modifiedAt time.Time) error
 }
 
 type localPathExecutor struct{}
@@ -38,6 +48,11 @@ func (localPathExecutor) WriteFile(ctx context.Context, input pathExecutionConte
 	return writeLocalFile(input.PhysicalPath, input.FileContent)
 }
 
+func (localPathExecutor) WriteStream(ctx context.Context, input pathExecutionContext, reader io.Reader) error {
+	_ = ctx
+	return writeLocalStream(input.PhysicalPath, reader)
+}
+
 func (localPathExecutor) DeleteFile(ctx context.Context, input pathExecutionContext) error {
 	_ = ctx
 	return deleteLocalFile(input.PhysicalPath)
@@ -46,6 +61,21 @@ func (localPathExecutor) DeleteFile(ctx context.Context, input pathExecutionCont
 func (localPathExecutor) DeleteDirectory(ctx context.Context, input pathExecutionContext) error {
 	_ = ctx
 	return deleteLocalDirectory(input.PhysicalPath)
+}
+
+func (localPathExecutor) StreamFile(ctx context.Context, input pathExecutionContext, consume func(reader io.Reader) error) error {
+	_ = ctx
+	return streamLocalFile(input.PhysicalPath, consume)
+}
+
+func (localPathExecutor) StatFile(ctx context.Context, input pathExecutionContext) (fileMetadata, error) {
+	_ = ctx
+	return statLocalFile(input.PhysicalPath)
+}
+
+func (localPathExecutor) SetFileModifiedTime(ctx context.Context, input pathExecutionContext, modifiedAt time.Time) error {
+	_ = ctx
+	return setLocalFileModifiedTime(input.PhysicalPath, modifiedAt)
 }
 
 type nasPathExecutor struct {
@@ -90,6 +120,27 @@ func (n nasPathExecutor) WriteFile(ctx context.Context, input pathExecutionConte
 	})
 }
 
+func (n nasPathExecutor) WriteStream(ctx context.Context, input pathExecutionContext, reader io.Reader) error {
+	return n.withShare(ctx, input, func(share *smb2.Share, relativePath string) error {
+		if relativePath == "" {
+			return fmt.Errorf("missing SMB relative path")
+		}
+		parent := pathpkg.Dir(relativePath)
+		if parent != "." && parent != "" {
+			if err := share.MkdirAll(parent, 0o755); err != nil {
+				return err
+			}
+		}
+		file, err := share.OpenFile(relativePath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		_, err = io.Copy(file, reader)
+		return err
+	})
+}
+
 func (n nasPathExecutor) DeleteFile(ctx context.Context, input pathExecutionContext) error {
 	return n.withShare(ctx, input, func(share *smb2.Share, relativePath string) error {
 		if relativePath == "" {
@@ -105,6 +156,48 @@ func (n nasPathExecutor) DeleteDirectory(ctx context.Context, input pathExecutio
 			return fmt.Errorf("missing SMB relative path")
 		}
 		return share.RemoveAll(relativePath)
+	})
+}
+
+func (n nasPathExecutor) StreamFile(ctx context.Context, input pathExecutionContext, consume func(reader io.Reader) error) error {
+	return n.withShare(ctx, input, func(share *smb2.Share, relativePath string) error {
+		if relativePath == "" {
+			return fmt.Errorf("missing SMB relative path")
+		}
+		file, err := share.Open(relativePath)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		return consume(file)
+	})
+}
+
+func (n nasPathExecutor) StatFile(ctx context.Context, input pathExecutionContext) (fileMetadata, error) {
+	var metadata fileMetadata
+	err := n.withShare(ctx, input, func(share *smb2.Share, relativePath string) error {
+		if relativePath == "" {
+			return fmt.Errorf("missing SMB relative path")
+		}
+		info, err := share.Stat(relativePath)
+		if err != nil {
+			return err
+		}
+		metadata = fileMetadata{
+			SizeBytes:  info.Size(),
+			ModifiedAt: info.ModTime().UTC(),
+		}
+		return nil
+	})
+	return metadata, err
+}
+
+func (n nasPathExecutor) SetFileModifiedTime(ctx context.Context, input pathExecutionContext, modifiedAt time.Time) error {
+	return n.withShare(ctx, input, func(share *smb2.Share, relativePath string) error {
+		if relativePath == "" {
+			return fmt.Errorf("missing SMB relative path")
+		}
+		return share.Chtimes(relativePath, modifiedAt, modifiedAt)
 	})
 }
 

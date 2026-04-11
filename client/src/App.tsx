@@ -30,7 +30,6 @@ import {
   cloneSettingsRecord,
   resolveDefaultLibraryId,
   resolveStartupWorkspace,
-  collectNodeIds,
   createId,
   getDefaultPageSize,
   loadPersistedState,
@@ -238,12 +237,15 @@ function applyTaskStatusChange(task: TaskRecord, action: 'pause' | 'resume' | 'r
   };
 }
 
+void applyTaskStatusChange;
+
 function resolveSyncLinkTypeFromTarget(target?: string) {
   if (!target) {
     return 'COPY' as const;
   }
   return target.includes('115') || target.includes('云') ? ('UPLOAD' as const) : ('COPY' as const);
 }
+void resolveSyncLinkTypeFromTarget;
 
 function resolveTaskItemStatusTone(status: string): Severity {
   if (['失败', '已取消'].includes(status)) return 'critical';
@@ -462,47 +464,12 @@ function markTransferTasksForFullSizeRecompute(current: PersistedState, taskIds:
 }
 
 void markTransferTasksForFullSizeRecompute;
+void scheduleTransferTaskSizeAdjustment;
 
 function isBlockingTransferTaskStatus(status: string) {
   return !['已完成', '已取消', '失败', '部分成功'].includes(status);
 }
-
-function cancelTransferTasks(current: PersistedState, taskIds: string[]): PersistedState {
-  if (taskIds.length === 0) {
-    return current;
-  }
-
-  const nextState = {
-    ...current,
-    taskRecords: current.taskRecords.map((task) =>
-      taskIds.includes(task.id) ? applyTaskStatusChange(task, 'cancel') : task,
-    ),
-    taskItemRecords: current.taskItemRecords.map((item) =>
-      taskIds.includes(item.taskId) ? applyTaskItemStatusChange(item, 'cancel') : item,
-    ),
-  };
-
-  return scheduleTransferTaskSizeAdjustment(current, nextState, taskIds, []);
-}
-
-function resolveBlockingTransferTasksForEntries(current: PersistedState, entryIds: string[]) {
-  const relatedEntryIds = new Set(collectNodeIds(current.fileNodes, entryIds));
-  return current.taskRecords.filter((task) => {
-    if (task.kind !== 'transfer' || !isBlockingTransferTaskStatus(task.status)) {
-      return false;
-    }
-
-    const taskEntryIds = new Set([
-      ...(task.fileNodeIds ?? []),
-      ...current.taskItemRecords
-        .filter((item) => item.taskId === task.id)
-        .map((item) => item.fileNodeId)
-        .filter((id): id is string => Boolean(id)),
-    ]);
-
-    return Array.from(taskEntryIds).some((id) => relatedEntryIds.has(id));
-  });
-}
+void isBlockingTransferTaskStatus;
 
 function resolveFileCenterJumpForTask(
   fileNodes: PersistedState['fileNodes'],
@@ -1829,125 +1796,6 @@ export default function App() {
     }
   };
 
-  const createDeleteTasks = (
-    current: PersistedState,
-    items: FileCenterEntry[],
-    mode: 'asset' | 'endpoint',
-    endpointName?: string,
-  ): PersistedState => {
-    return current;
-
-    const newTasks = items.map((item) => ({
-      id: createId('task'),
-      kind: 'other' as const,
-      title: mode === 'asset' ? `删除资产：${item.name}` : `端点删除：${item.name} @ ${endpointName}`,
-      type: 'DELETE',
-      status: mode === 'asset' ? '等待清理' : '已提交',
-      statusTone: 'info' as Severity,
-      libraryId: item.libraryId,
-      source: mode === 'asset' ? '资产视图' : endpointName,
-      target: mode === 'asset' ? 'ASSET_CLEANUP' : '指定端点',
-      progress: 0,
-      speed: '—',
-      eta: mode === 'asset' ? '等待后台清理' : '等待删除执行',
-      fileCount: 1,
-      multiFile: false,
-      updatedAt: '刚刚',
-    }));
-
-    return {
-      ...current,
-      taskRecords: [...newTasks, ...current.taskRecords],
-    };
-  };
-
-  const createSyncTasks = (
-    current: PersistedState,
-    items: FileCenterEntry[],
-    endpointName: string,
-  ): PersistedState => {
-    return current;
-
-    const nextTaskRecords: TaskRecord[] = [];
-    const nextTaskItems: PersistedState['taskItemRecords'] = [];
-
-    items.forEach((item) => {
-      const taskId = createId('task');
-      const descendantIds = item.type === 'folder' ? collectNodeIds(current.fileNodes, [item.id]) : [item.id];
-      const descendantFiles = current.fileNodes.filter(
-        (node) => descendantIds.includes(node.id) && node.type === 'file',
-      );
-
-      const fallbackItems =
-        descendantFiles.length > 0
-          ? descendantFiles
-          : [
-              {
-                id: item.id,
-                name: item.name,
-                path: item.path,
-                size: item.size,
-              },
-            ];
-      const totalSizeBytes = fallbackItems.reduce((sum, file) => sum + parseTaskSizeLabel(file.size), 0);
-      const totalSizeLabel = totalSizeBytes > 0 ? formatTaskSizeLabel(totalSizeBytes) : item.size;
-
-      nextTaskRecords.push({
-        id: taskId,
-        kind: 'transfer',
-        title: item.name,
-        type: 'SYNC',
-        businessType: 'SYNC',
-        syncLinkType: resolveSyncLinkTypeFromTarget(endpointName),
-        status: '等待确认',
-        statusTone: resolveTaskStatusTone('等待确认'),
-        libraryId: item.libraryId,
-        source: '统一资产',
-        target: endpointName,
-        fileNodeIds: [item.id],
-        sourcePath: item.path,
-        targetPath: `${endpointName} / ${item.name}`,
-        progress: 0,
-        speed: '—',
-        eta: '等待执行器接管',
-        fileCount: fallbackItems.length,
-        folderCount: item.type === 'folder' ? 1 : 0,
-        totalSize: totalSizeLabel,
-        totalSizeBytes: totalSizeBytes > 0 ? totalSizeBytes : parseTaskSizeLabel(item.size),
-        multiFile: fallbackItems.length > 1,
-        priority: '普通优先级',
-        issueIds: [],
-        creator: '文件中心',
-        createdAt: '刚刚',
-        updatedAt: '刚刚',
-      });
-
-      fallbackItems.forEach((file) => {
-        nextTaskItems.push({
-          id: createId('task-item'),
-          taskId,
-          fileNodeId: file.id,
-          parentId: null,
-          kind: 'file',
-          depth: 1,
-          phase: '待执行',
-          status: '待执行',
-          statusTone: 'info',
-          priority: '普通优先级',
-          progress: 0,
-          speed: '—',
-          targetPath: `${endpointName} / ${file.name}`,
-        });
-      });
-    });
-
-    return {
-      ...current,
-      taskRecords: [...nextTaskRecords, ...current.taskRecords],
-      taskItemRecords: [...nextTaskItems, ...current.taskItemRecords],
-    };
-  };
-
   const getManagedReplicaCount = (item: FileCenterEntry, excludingEndpointName?: string) =>
     item.endpoints.filter(
       (endpoint) =>
@@ -2004,32 +1852,21 @@ export default function App() {
       setFeedback({ message: '请先选择要删除的资产', tone: 'info' });
       return;
     }
-    const blockingTasks = resolveBlockingTransferTasksForEntries(
-      persisted,
-      targets.map((item) => item.id),
-    );
-    if (blockingTasks.length > 0) {
-      setPendingAction({
-        kind: 'delete-conflict',
-        mode: 'asset',
-        items: targets,
-        totalSelected: targets.length,
-        blockingTaskIds: blockingTasks.map((task) => task.id),
-        blockingTaskTitles: blockingTasks.map((task) => task.title),
-      });
-      return;
-    }
     setPendingAction({ kind: 'delete-asset', items: targets });
   };
 
   const performDeleteAssets = async (items: FileCenterEntry[], cancelTaskIds: string[] = []) => {
+    void cancelTaskIds;
     const result = await fileCenterApi.deleteAssets(items.map((item) => item.id));
-    commitState((current) => createDeleteTasks(cancelTransferTasks(current, cancelTaskIds), items, 'asset'), {
-      message: result.message,
-      tone: 'warning',
-    });
+    const shouldRefreshDetail = items.some((item) => item.id === fileDetail?.id);
+    const updatedItem = shouldRefreshDetail && fileDetail ? await fileCenterApi.loadEntryDetail(fileDetail.id) : null;
+    setFeedback({ message: result.message, tone: 'info' });
     setSelectedFileIds([]);
-    setFileDetail(null);
+    if (updatedItem) {
+      setFileDetail(updatedItem);
+    } else if (shouldRefreshDetail) {
+      setFileDetail(null);
+    }
     setFileCenterVersion((current) => current + 1);
   };
 
@@ -2049,24 +1886,6 @@ export default function App() {
       return;
     }
 
-    const blockingTasks = resolveBlockingTransferTasksForEntries(
-      persisted,
-      eligibleItems.map((item) => item.id),
-    );
-    if (blockingTasks.length > 0) {
-      setPendingAction({
-        kind: 'delete-conflict',
-        mode: 'endpoint',
-        endpointName,
-        items: eligibleItems,
-        totalSelected: sourceItems.length,
-        willDeleteAssetCount: eligibleItems.filter((item) => getManagedReplicaCount(item, endpointName) === 0).length,
-        blockingTaskIds: blockingTasks.map((task) => task.id),
-        blockingTaskTitles: blockingTasks.map((task) => task.title),
-      });
-      return;
-    }
-
     setPendingAction({
       kind: 'delete-endpoint',
       endpointName,
@@ -2081,25 +1900,15 @@ export default function App() {
     endpointName: string,
     cancelTaskIds: string[] = [],
   ) => {
+    void cancelTaskIds;
     const shouldRefreshDetail = items.some((item) => item.id === fileDetail?.id);
-    const results = await Promise.all(items.map((item) => fileCenterApi.deleteFromEndpoint(item.id, endpointName)));
-    const deletedCount = results.filter((result) => result.deleted).length;
-    const deletedIds = items.filter((_, index) => results[index]?.deleted).map((item) => item.id);
-    const updatedItem = shouldRefreshDetail && fileDetail ? await fileCenterApi.loadEntryDetail(fileDetail.id) : null;
-    commitState((current) => createDeleteTasks(cancelTransferTasks(current, cancelTaskIds), items, 'endpoint', endpointName), {
-      message:
-        deletedCount === 0
-          ? items.length === 1
-            ? '已提交端点删除请求'
-            : `已提交 ${items.length} 项资产的端点删除请求`
-          : deletedCount === items.length
-            ? items.length === 1
-              ? '资产已因无剩余副本自动删除'
-              : `${items.length} 项资产已因无剩余副本自动删除`
-            : `已提交端点删除请求，其中 ${deletedCount} 项资产因无剩余副本自动删除`,
-      tone: 'info',
+    const result = await fileCenterApi.deleteFromEndpoint({
+      entryIds: items.map((item) => item.id),
+      endpointName,
     });
-    setSelectedFileIds((current) => current.filter((id) => !deletedIds.includes(id)));
+    const updatedItem = shouldRefreshDetail && fileDetail ? await fileCenterApi.loadEntryDetail(fileDetail.id) : null;
+    setFeedback({ message: result.message, tone: 'info' });
+    setSelectedFileIds([]);
     if (updatedItem) {
       setFileDetail(updatedItem);
     } else if (shouldRefreshDetail) {
@@ -2129,12 +1938,12 @@ export default function App() {
 
   const performSyncToEndpoint = async (items: FileCenterEntry[], endpointName: string) => {
     const shouldRefreshDetail = items.some((item) => item.id === fileDetail?.id);
-    await Promise.all(items.map((item) => fileCenterApi.syncToEndpoint(item.id, endpointName)));
-    const updatedItem = shouldRefreshDetail && fileDetail ? await fileCenterApi.loadEntryDetail(fileDetail.id) : null;
-    commitState((current) => createSyncTasks(current, items, endpointName), {
-      message: items.length === 1 ? `已创建同步任务到 ${endpointName}` : `已为 ${items.length} 项资产创建同步任务到 ${endpointName}`,
-      tone: 'info',
+    const result = await fileCenterApi.syncToEndpoint({
+      entryIds: items.map((item) => item.id),
+      endpointName,
     });
+    const updatedItem = shouldRefreshDetail && fileDetail ? await fileCenterApi.loadEntryDetail(fileDetail.id) : null;
+    setFeedback({ message: result.message, tone: 'info' });
     if (updatedItem) {
       setFileDetail(updatedItem);
     }

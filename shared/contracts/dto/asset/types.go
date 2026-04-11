@@ -33,6 +33,20 @@ type DeleteEntryResponse struct {
 	Message string `json:"message"`
 }
 
+type CreateReplicateJobRequest struct {
+	EntryIDs     []string `json:"entryIds"`
+	EndpointName string   `json:"endpointName"`
+}
+
+type CreateDeleteReplicaJobRequest struct {
+	EntryIDs     []string `json:"entryIds"`
+	EndpointName string   `json:"endpointName"`
+}
+
+type CreateDeleteAssetJobRequest struct {
+	EntryIDs []string `json:"entryIds"`
+}
+
 type Breadcrumb struct {
 	ID    *string `json:"id"`
 	Label string  `json:"label"`

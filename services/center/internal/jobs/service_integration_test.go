@@ -4,15 +4,22 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"mare/services/center/internal/assets"
 	"mare/services/center/internal/db"
 	"mare/services/center/internal/jobs"
+	"mare/services/center/internal/storage"
+	assetdto "mare/shared/contracts/dto/asset"
 	jobdto "mare/shared/contracts/dto/job"
+	storagedto "mare/shared/contracts/dto/storage"
 )
 
 const developmentDatabaseURL = "postgres://mare:mare@localhost:5432/mare_dev?sslmode=disable"
@@ -332,6 +339,163 @@ func TestServiceCancelRunningItemKeepsRemainingItemsExecutable(t *testing.T) {
 	assertItemStatus(t, final.Items, "mount:second", jobs.ItemStatusCompleted)
 	if final.Job.SuccessItems != 1 {
 		t.Fatalf("expected second item to succeed after cancel, got %+v", final.Job)
+	}
+}
+
+func TestServiceExecutesReplicateJobAgainstRealAssets(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	defer pool.Close()
+	resetSchema(t, ctx, pool)
+
+	migrator := db.NewMigrator()
+	if _, err := migrator.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	sourceRoot := t.TempDir()
+	targetRoot := t.TempDir()
+	localFolders := storage.NewLocalFolderService(pool)
+
+	sourceNode, err := localFolders.SaveLocalNode(ctx, storagedto.SaveLocalNodeRequest{
+		Name:     "源节点",
+		RootPath: sourceRoot,
+		Notes:    "",
+	})
+	if err != nil {
+		t.Fatalf("save source node: %v", err)
+	}
+	targetNode, err := localFolders.SaveLocalNode(ctx, storagedto.SaveLocalNodeRequest{
+		Name:     "目标节点",
+		RootPath: targetRoot,
+		Notes:    "",
+	})
+	if err != nil {
+		t.Fatalf("save target node: %v", err)
+	}
+
+	sourceMount, err := localFolders.SaveLocalFolder(ctx, storagedto.SaveLocalFolderRequest{
+		Name:            "源挂载",
+		LibraryID:       "photo",
+		LibraryName:     "商业摄影资产库",
+		NodeID:          sourceNode.Record.ID,
+		MountMode:       "可写",
+		HeartbeatPolicy: "从不",
+		RelativePath:    "source",
+		Notes:           "",
+	})
+	if err != nil {
+		t.Fatalf("save source mount: %v", err)
+	}
+	targetMount, err := localFolders.SaveLocalFolder(ctx, storagedto.SaveLocalFolderRequest{
+		Name:            "目标挂载",
+		LibraryID:       "photo",
+		LibraryName:     "商业摄影资产库",
+		NodeID:          targetNode.Record.ID,
+		MountMode:       "可写",
+		HeartbeatPolicy: "从不",
+		RelativePath:    "target",
+		Notes:           "",
+	})
+	if err != nil {
+		t.Fatalf("save target mount: %v", err)
+	}
+
+	sourceDir := filepath.Join(sourceRoot, "source")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("mkdir source dir: %v", err)
+	}
+	sourceFile := filepath.Join(sourceDir, "cover.jpg")
+	if err := os.WriteFile(sourceFile, []byte("cover-image"), 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	expectedModifiedAt := time.Date(2024, 7, 1, 8, 30, 0, 0, time.UTC)
+	if err := os.Chtimes(sourceFile, expectedModifiedAt, expectedModifiedAt); err != nil {
+		t.Fatalf("set source mtime: %v", err)
+	}
+
+	if _, err := localFolders.RunLocalFolderScan(ctx, []string{sourceMount.Record.ID}); err != nil {
+		t.Fatalf("run source scan: %v", err)
+	}
+
+	assetService := assets.NewService(pool)
+	root, err := assetService.BrowseLibrary(ctx, "photo", assetdto.BrowseQuery{
+		Page:          1,
+		PageSize:      20,
+		FileType:      "全部",
+		StatusFilter:  "全部",
+		SortValue:     "名称",
+		SortDirection: "asc",
+	})
+	if err != nil {
+		t.Fatalf("browse library: %v", err)
+	}
+	if len(root.Items) != 1 {
+		t.Fatalf("expected one asset, got %#v", root.Items)
+	}
+	assetID := root.Items[0].ID
+
+	plan, err := assetService.PrepareReplicatePlan(ctx, assetdto.CreateReplicateJobRequest{
+		EntryIDs:     []string{assetID},
+		EndpointName: targetMount.Record.Name,
+	})
+	if err != nil {
+		t.Fatalf("prepare replicate plan: %v", err)
+	}
+
+	service := jobs.NewService(pool)
+	service.RegisterExecutor(jobs.JobIntentReplicate, func(ctx context.Context, execution jobs.ExecutionContext) error {
+		var sourceReplicaID string
+		var targetMountID string
+		for _, link := range execution.ItemLinks {
+			if link.AssetReplicaID != nil {
+				sourceReplicaID = *link.AssetReplicaID
+			}
+			if link.MountID != nil && link.LinkRole == jobs.LinkRoleTargetMount {
+				targetMountID = *link.MountID
+			}
+		}
+		return assetService.ExecuteReplicaSync(ctx, sourceReplicaID, targetMountID)
+	})
+	service.Start(ctx)
+
+	result, err := service.CreateReplicateJob(ctx, plan)
+	if err != nil {
+		t.Fatalf("create replicate job: %v", err)
+	}
+
+	detail := waitForJobStatus(t, ctx, service, result.JobID, jobs.StatusCompleted)
+	if detail.Job.JobIntent != jobs.JobIntentReplicate {
+		t.Fatalf("expected replicate intent, got %#v", detail.Job)
+	}
+	if detail.Job.SuccessItems != 1 {
+		t.Fatalf("expected one successful item, got %#v", detail.Job)
+	}
+
+	targetFile := filepath.Join(targetRoot, "target", "cover.jpg")
+	if content, err := os.ReadFile(targetFile); err != nil {
+		t.Fatalf("read target file: %v", err)
+	} else if string(content) != "cover-image" {
+		t.Fatalf("unexpected target file content: %q", string(content))
+	}
+	if info, err := os.Stat(targetFile); err != nil {
+		t.Fatalf("stat target file: %v", err)
+	} else if !info.ModTime().UTC().Equal(expectedModifiedAt) {
+		t.Fatalf("expected target mtime %s, got %s", expectedModifiedAt.Format(time.RFC3339), info.ModTime().UTC().Format(time.RFC3339))
+	}
+
+	entry, err := assetService.LoadEntry(ctx, assetID)
+	if err != nil {
+		t.Fatalf("load entry after job: %v", err)
+	}
+	if entry.LastTaskText == "暂无任务" || !strings.Contains(entry.LastTaskText, "同步到") {
+		t.Fatalf("expected task linkage in file center entry, got %#v", entry.LastTaskText)
 	}
 }
 

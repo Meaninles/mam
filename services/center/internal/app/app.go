@@ -74,6 +74,32 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 		}
 		return assetService.ExecuteDirectoryScanTarget(ctx, *target)
 	})
+	jobService.RegisterExecutor(jobs.JobIntentReplicate, func(ctx context.Context, execution jobs.ExecutionContext) error {
+		sourceReplicaID := findReplicaLinkID(execution.ItemLinks)
+		targetMountID := findTargetMountLinkID(execution.ItemLinks)
+		if sourceReplicaID == nil || targetMountID == nil {
+			return errors.New("同步作业缺少源副本或目标挂载关联")
+		}
+		return assetService.ExecuteReplicaSync(ctx, *sourceReplicaID, *targetMountID)
+	})
+	jobService.RegisterExecutor(jobs.JobIntentDeleteReplica, func(ctx context.Context, execution jobs.ExecutionContext) error {
+		replicaID := findReplicaLinkID(execution.ItemLinks)
+		if replicaID == nil {
+			return errors.New("副本删除作业缺少副本关联")
+		}
+		return assetService.ExecuteReplicaDeletion(ctx, *replicaID)
+	})
+	jobService.RegisterExecutor(jobs.JobIntentDeleteAsset, func(ctx context.Context, execution jobs.ExecutionContext) error {
+		assetID := findAssetLinkID(execution.ItemLinks)
+		if assetID != nil {
+			return assetService.ExecuteAssetDeletion(ctx, *assetID)
+		}
+		directoryID := findDirectoryLinkID(execution.ItemLinks)
+		if directoryID != nil {
+			return assetService.ExecuteDirectoryDeletion(ctx, *directoryID)
+		}
+		return errors.New("资产删除作业缺少资产或目录关联")
+	})
 	runtimeService := runtime.NewService(
 		cfg.ServiceName,
 		cfg.ServiceVersion,
@@ -156,6 +182,42 @@ func findMountLinkID(links []jobdto.ObjectLinkRecord) *string {
 	for _, link := range links {
 		if link.ObjectType == jobs.ObjectTypeMount && link.MountID != nil {
 			return link.MountID
+		}
+	}
+	return nil
+}
+
+func findTargetMountLinkID(links []jobdto.ObjectLinkRecord) *string {
+	for _, link := range links {
+		if link.ObjectType == jobs.ObjectTypeMount && link.LinkRole == jobs.LinkRoleTargetMount && link.MountID != nil {
+			return link.MountID
+		}
+	}
+	return nil
+}
+
+func findReplicaLinkID(links []jobdto.ObjectLinkRecord) *string {
+	for _, link := range links {
+		if link.ObjectType == jobs.ObjectTypeAssetReplica && link.AssetReplicaID != nil {
+			return link.AssetReplicaID
+		}
+	}
+	return nil
+}
+
+func findAssetLinkID(links []jobdto.ObjectLinkRecord) *string {
+	for _, link := range links {
+		if link.ObjectType == jobs.ObjectTypeAsset && link.AssetID != nil {
+			return link.AssetID
+		}
+	}
+	return nil
+}
+
+func findDirectoryLinkID(links []jobdto.ObjectLinkRecord) *string {
+	for _, link := range links {
+		if link.ObjectType == jobs.ObjectTypeDirectory && link.DirectoryID != nil {
+			return link.DirectoryID
 		}
 	}
 	return nil

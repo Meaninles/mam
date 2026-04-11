@@ -167,7 +167,6 @@ const FILE_CENTER_DB_KEY = 'mare-file-center-sqlite-v4';
 let sqlModulePromise: Promise<SqlJsModule> | null = null;
 let databasePromise: Promise<SqlDatabase> | null = null;
 const fileCenterListeners = new Set<() => void>();
-const pendingSyncTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const libraryEndpointNamesCache = new Map<string, string[]>();
 const fileNameCollator = new Intl.Collator('zh-CN-u-co-pinyin', { numeric: true, sensitivity: 'base' });
 
@@ -306,65 +305,57 @@ export const fileCenterApi = {
     );
   },
 
-  async deleteAssets(ids: string[]): Promise<{ message: string }> {
+  async deleteAssets(ids: string[]): Promise<{ message: string; jobId?: string }> {
     if (ids.length === 0) {
       return { message: '未找到需要删除的条目' };
     }
-    const results = await Promise.all(
-      ids.map((id) =>
-        fetchFileCenterData<{ message: string }>(`/api/file-entries/${id}`, {
-          method: 'DELETE',
-        }),
-      ),
-    );
-    return { message: results.at(-1)?.message ?? '条目已删除' };
+    return fetchFileCenterData<{ message: string; jobId?: string }>(`/api/file-entries/delete-assets`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        entryIds: ids,
+      }),
+    });
   },
 
-  async deleteFromEndpoint(id: string, endpointName: string): Promise<{ message: string; deleted: boolean; deletedCount: number }> {
-    const db = await getDatabase();
-    const targetIds = collectEndpointActionableFileIds(db, id, endpointName, 'delete');
-    if (targetIds.length === 0) {
-      return { message: '当前目录下没有可删除副本', deleted: false, deletedCount: 0 };
+  async deleteFromEndpoint(input: {
+    entryIds: string[];
+    endpointName: string;
+  }): Promise<{ message: string; jobId?: string }> {
+    if (input.entryIds.length === 0) {
+      return { message: '当前没有可删除副本' };
     }
-
-    let deletedCount = 0;
-    targetIds.forEach((targetId) => {
-      if (deleteFileFromEndpoint(db, targetId, endpointName)) {
-        deletedCount += 1;
-      }
+    return fetchFileCenterData<{ message: string; jobId?: string }>(`/api/file-entries/delete-replicas`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        entryIds: input.entryIds,
+        endpointName: input.endpointName,
+      }),
     });
-    persistDatabase(db);
-    return {
-      message: deletedCount > 0 && deletedCount === targetIds.length ? '资产已因无剩余副本自动删除' : '已提交端点删除请求',
-      deleted: deletedCount > 0,
-      deletedCount,
-    };
   },
 
-  async syncToEndpoint(id: string, endpointName: string): Promise<{ message: string }> {
-    const db = await getDatabase();
-    const targetIds = collectEndpointActionableFileIds(db, id, endpointName, 'sync');
-    if (targetIds.length === 0) {
-      return { message: '当前目录下没有可同步内容' };
+  async syncToEndpoint(input: {
+    entryIds: string[];
+    endpointName: string;
+  }): Promise<{ message: string; jobId?: string }> {
+    if (input.entryIds.length === 0) {
+      return { message: '当前没有可同步内容' };
     }
-
-    targetIds.forEach((targetId) => {
-      db.run(
-        `UPDATE entry_endpoints
-         SET state = '同步中', tone = 'warning', last_sync_at = '刚刚'
-         WHERE entry_id = $id AND name = $endpointName`,
-        { $id: targetId, $endpointName: endpointName },
-      );
-      db.run(
-        `UPDATE entries
-         SET last_task_text = $lastTaskText, last_task_tone = 'warning'
-         WHERE id = $id`,
-        { $id: targetId, $lastTaskText: `已创建同步任务到 ${endpointName}` },
-      );
+    return fetchFileCenterData<{ message: string; jobId?: string }>(`/api/file-entries/replicate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        entryIds: input.entryIds,
+        endpointName: input.endpointName,
+      }),
     });
-    persistDatabase(db);
-    targetIds.forEach((targetId) => scheduleMockSyncCompletion(targetId, endpointName));
-    return { message: `已创建同步任务到 ${endpointName}` };
   },
 
   async loadTagManagementSnapshot(searchText = ''): Promise<TagManagementSnapshot> {
@@ -561,8 +552,6 @@ export const fileCenterApi = {
 };
 
 export async function resetFileCenterMock() {
-  pendingSyncTimers.forEach((timer) => clearTimeout(timer));
-  pendingSyncTimers.clear();
   databasePromise = null;
   libraryEndpointNamesCache.clear();
   if (typeof window !== 'undefined') {
@@ -1004,161 +993,6 @@ function migrateFileCenterDatabase(db: SqlDatabase) {
   });
 
   return changed;
-}
-
-function scheduleMockSyncCompletion(id: string, endpointName: string) {
-  const timerKey = `${id}:${endpointName}`;
-  const existingTimer = pendingSyncTimers.get(timerKey);
-  if (existingTimer) {
-    clearTimeout(existingTimer);
-  }
-
-  const timer = setTimeout(() => {
-    void finalizeMockSync(id, endpointName);
-  }, 5000);
-
-  pendingSyncTimers.set(timerKey, timer);
-}
-
-function clearPendingSyncTimersForEntries(ids: string[]) {
-  ids.forEach((id) => {
-    Array.from(pendingSyncTimers.keys())
-      .filter((key) => key.startsWith(`${id}:`))
-      .forEach((key) => {
-        const timer = pendingSyncTimers.get(key);
-        if (timer) {
-          clearTimeout(timer);
-        }
-        pendingSyncTimers.delete(key);
-      });
-  });
-}
-
-function deleteEntriesPermanently(db: SqlDatabase, ids: string[]) {
-  const allIds = collectEntryIds(db, ids);
-  if (allIds.length === 0) {
-    return;
-  }
-
-  clearPendingSyncTimersForEntries(allIds);
-  const placeholders = createPlaceholders(allIds, 'deleteId');
-  db.run(`DELETE FROM entry_endpoints WHERE entry_id IN (${placeholders.sql})`, placeholders.parameters);
-  db.run(`DELETE FROM entry_metadata WHERE entry_id IN (${placeholders.sql})`, placeholders.parameters);
-  db.run(`DELETE FROM entry_tags WHERE entry_id IN (${placeholders.sql})`, placeholders.parameters);
-  db.run(`DELETE FROM entries WHERE id IN (${placeholders.sql})`, placeholders.parameters);
-}
-
-function collectEndpointActionableFileIds(
-  db: SqlDatabase,
-  id: string,
-  endpointName: string,
-  action: 'sync' | 'delete',
-) {
-  const target = querySingle<{ id: string; type: 'folder' | 'file' }>(
-    db,
-    'SELECT id, type FROM entries WHERE id = $id',
-    { $id: id },
-  );
-  if (!target) {
-    return [];
-  }
-
-  const descendantIds =
-    target.type === 'folder'
-      ? collectEntryIds(db, [id]).filter((entryId) => entryId !== id)
-      : [id];
-
-  const fileRows = queryAll<{ id: string }>(
-    db,
-    descendantIds.length > 0
-      ? `SELECT id
-         FROM entries
-         WHERE id IN (${createPlaceholders(descendantIds, 'actionEntry').sql}) AND type = 'file'`
-      : 'SELECT id FROM entries WHERE 1 = 0',
-    descendantIds.length > 0 ? createPlaceholders(descendantIds, 'actionEntry').parameters : {},
-  );
-
-  return fileRows
-    .map((row) => row.id)
-    .filter((entryId) => {
-      const endpoint = querySingle<{ state: string }>(
-        db,
-        'SELECT state FROM entry_endpoints WHERE entry_id = $id AND name = $endpointName',
-        { $id: entryId, $endpointName: endpointName },
-      );
-      if (!endpoint) {
-        return false;
-      }
-      return action === 'sync'
-        ? canSyncFileCenterEndpoint(endpoint.state)
-        : canDeleteFileCenterEndpoint(endpoint.state);
-    });
-}
-
-function deleteFileFromEndpoint(db: SqlDatabase, id: string, endpointName: string) {
-  db.run(
-    `UPDATE entry_endpoints
-     SET state = '未同步', tone = 'critical', last_sync_at = '刚刚'
-     WHERE entry_id = $id AND name = $endpointName`,
-    { $id: id, $endpointName: endpointName },
-  );
-
-  const remaining = querySingle<{ total: number }>(
-    db,
-    "SELECT COUNT(*) AS total FROM entry_endpoints WHERE entry_id = $id AND state = '已同步'",
-    { $id: id },
-  )?.total ?? 0;
-
-  if (remaining === 0) {
-    deleteEntriesPermanently(db, [id]);
-    return true;
-  }
-
-  db.run(
-    `UPDATE entries
-     SET lifecycle_state = 'ACTIVE', last_task_text = $lastTaskText, last_task_tone = 'info'
-     WHERE id = $id`,
-    {
-      $id: id,
-      $lastTaskText: '已提交端点删除请求',
-    },
-  );
-  syncLifecycleMetadata(db, [id], 'ACTIVE');
-  return false;
-}
-
-async function finalizeMockSync(id: string, endpointName: string) {
-  const timerKey = `${id}:${endpointName}`;
-  pendingSyncTimers.delete(timerKey);
-
-  const db = await getDatabase();
-  db.run(
-    `UPDATE entry_endpoints
-     SET state = '已同步', tone = 'success', last_sync_at = '刚刚'
-     WHERE entry_id = $id AND name = $endpointName`,
-    { $id: id, $endpointName: endpointName },
-  );
-
-  const remainingPendingCount =
-    querySingle<{ total: number }>(
-      db,
-      "SELECT COUNT(*) AS total FROM entry_endpoints WHERE entry_id = $id AND state IN ('未同步', '同步中')",
-      { $id: id },
-    )?.total ?? 0;
-
-  db.run(
-    `UPDATE entries
-     SET last_task_text = $lastTaskText, last_task_tone = $lastTaskTone
-     WHERE id = $id`,
-    {
-      $id: id,
-      $lastTaskText: remainingPendingCount === 0 ? '已同步到全部端点' : `已同步到 ${endpointName}`,
-      $lastTaskTone: remainingPendingCount === 0 ? 'success' : 'info',
-    },
-  );
-
-  persistDatabase(db);
-  emitFileCenterUpdate();
 }
 
 function createEntryRow(input: {

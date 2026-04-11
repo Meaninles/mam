@@ -330,25 +330,138 @@ describe('fileCenterApi', () => {
     expect(requestUrl).toContain('partialSyncEndpointName=%E5%BD%B1%E5%83%8F+NAS');
   });
 
-  it('删除条目走中心服务接口', async () => {
+  it('删除资产走中心服务作业接口', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
         data: {
-          message: '条目已删除',
+          message: '已创建资产删除作业',
+          jobId: 'job-delete-asset-legacy',
         },
       }),
     });
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(fileCenterApi.deleteAssets(['dir-new'])).resolves.toEqual({
-      message: '条目已删除',
+      message: '已创建资产删除作业',
+      jobId: 'job-delete-asset-legacy',
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://127.0.0.1:8080/api/file-entries/dir-new',
+      'http://127.0.0.1:8080/api/file-entries/delete-assets',
       expect.objectContaining({
-        method: 'DELETE',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          entryIds: ['dir-new'],
+        }),
+      }),
+    );
+  });
+
+  it('同步到端点会创建真实作业', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: {
+          message: '已创建同步作业',
+          jobId: 'job-sync-1',
+        },
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      fileCenterApi.syncToEndpoint({
+        entryIds: ['asset-cover', 'asset-final'],
+        endpointName: '影像 NAS',
+      }),
+    ).resolves.toEqual({
+      message: '已创建同步作业',
+      jobId: 'job-sync-1',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8080/api/file-entries/replicate',
+      expect.objectContaining({
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          entryIds: ['asset-cover', 'asset-final'],
+          endpointName: '影像 NAS',
+        }),
+      }),
+    );
+  });
+
+  it('删除端点副本会创建真实作业', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: {
+          message: '已创建副本删除作业',
+          jobId: 'job-delete-replica-1',
+        },
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      fileCenterApi.deleteFromEndpoint({
+        entryIds: ['asset-cover'],
+        endpointName: '商业摄影原片库',
+      }),
+    ).resolves.toEqual({
+      message: '已创建副本删除作业',
+      jobId: 'job-delete-replica-1',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8080/api/file-entries/delete-replicas',
+      expect.objectContaining({
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          entryIds: ['asset-cover'],
+          endpointName: '商业摄影原片库',
+        }),
+      }),
+    );
+  });
+
+  it('删除资产会创建真实作业', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: {
+          message: '已创建资产删除作业',
+          jobId: 'job-delete-asset-1',
+        },
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fileCenterApi.deleteAssets(['asset-cover', 'asset-final'])).resolves.toEqual({
+      message: '已创建资产删除作业',
+      jobId: 'job-delete-asset-1',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8080/api/file-entries/delete-assets',
+      expect.objectContaining({
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          entryIds: ['asset-cover', 'asset-final'],
+        }),
       }),
     );
   });
