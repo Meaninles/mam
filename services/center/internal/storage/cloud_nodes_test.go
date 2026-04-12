@@ -10,10 +10,100 @@ import (
 	"time"
 
 	"mare/services/center/internal/db"
+	"mare/services/center/internal/integration"
 	storagedto "mare/shared/contracts/dto/storage"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
+
+type fakeCloudProviderDriver struct {
+	lastToken     string
+	lastOpenToken integration.OpenOAuthToken
+}
+
+func (f *fakeCloudProviderDriver) Vendor() string { return "115" }
+
+func (f *fakeCloudProviderDriver) AuthenticateToken(_ context.Context, token string) (integration.ProviderAuthResult, error) {
+	f.lastToken = token
+	return integration.ProviderAuthResult{
+		ProviderVendor: "115",
+		DisplayName:    "115 云归档",
+		Payload: integration.CloudProviderPayload{
+			CloudName:     "115",
+			CloudUserName: "mare-user",
+			CloudPath:     "/115open(123)/MareArchive",
+		},
+	}, nil
+}
+
+func (f *fakeCloudProviderDriver) AuthenticateOpenToken(_ context.Context, token integration.OpenOAuthToken) (integration.ProviderAuthResult, error) {
+	f.lastOpenToken = token
+	return integration.ProviderAuthResult{
+		ProviderVendor: "115",
+		DisplayName:    "115 云归档",
+		Payload: integration.CloudProviderPayload{
+			CloudName:     "115",
+			CloudUserName: "mare-user",
+			CloudPath:     "/115open(123)/MareArchive",
+		},
+	}, nil
+}
+
+func (f *fakeCloudProviderDriver) CreateQRCodeSession(context.Context, string) (integration.QRCodeSession, error) {
+	return integration.QRCodeSession{}, nil
+}
+
+func (f *fakeCloudProviderDriver) GetQRCodeSession(context.Context, string) (integration.QRCodeSession, error) {
+	return integration.QRCodeSession{}, nil
+}
+
+func (f *fakeCloudProviderDriver) ConsumeQRCodeSession(context.Context, string) (integration.ProviderAuthResult, error) {
+	return integration.ProviderAuthResult{}, nil
+}
+
+func (f *fakeCloudProviderDriver) EnsureRemoteRoot(context.Context, integration.CloudProviderPayload, string) error {
+	return nil
+}
+
+func (f *fakeCloudProviderDriver) StartUpload(context.Context, integration.CloudProviderPayload, string, string, integration.UploadSource) (string, string, error) {
+	return "", "", nil
+}
+
+func (f *fakeCloudProviderDriver) AttachUpload(context.Context, string, string, integration.UploadSource) error {
+	return nil
+}
+
+func (f *fakeCloudProviderDriver) WaitUpload(context.Context, string, string, func(integration.TransferProgress)) error {
+	return nil
+}
+
+func (f *fakeCloudProviderDriver) PauseUpload(context.Context, string) error {
+	return nil
+}
+
+func (f *fakeCloudProviderDriver) ResumeUpload(context.Context, string) error {
+	return nil
+}
+
+func (f *fakeCloudProviderDriver) CancelUpload(context.Context, string) error {
+	return nil
+}
+
+func (f *fakeCloudProviderDriver) ResolveDownloadSource(context.Context, integration.CloudProviderPayload, string, string) (integration.DownloadSource, error) {
+	return integration.DownloadSource{}, nil
+}
+
+func (f *fakeCloudProviderDriver) DeleteFile(context.Context, integration.CloudProviderPayload, string, string) error {
+	return nil
+}
+
+type fakeCloudIntegration struct {
+	driver *fakeCloudProviderDriver
+}
+
+func (f fakeCloudIntegration) Provider(string) (integration.CloudProviderDriver, error) {
+	return f.driver, nil
+}
 
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
@@ -86,6 +176,7 @@ func TestCloudNodeServiceSaveQRCodeNodePersistsValidatedCookie(t *testing.T) {
 			Sign:    "sign-1",
 			QRCode:  "https://115.com/scan/mock",
 			Channel: "微信小程序",
+			CodeVerifier: "code-verifier-1",
 		},
 	})
 	if err != nil {
@@ -109,6 +200,76 @@ func TestCloudNodeServiceSaveQRCodeNodePersistsValidatedCookie(t *testing.T) {
 	}
 	if authStatus != "AUTHORIZED" || healthStatus != "ONLINE" {
 		t.Fatalf("unexpected runtime status: auth=%s health=%s", authStatus, healthStatus)
+	}
+}
+
+func TestCloudNodeServiceSaveQRCodeNodeViaCD2WrapperReturnsSavedToken(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	pool := openStorageTestPool(t, ctx)
+	defer pool.Close()
+	resetStorageSchema(t, ctx, pool)
+
+	migrator := db.NewMigrator()
+	if _, err := migrator.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	driver := &fakeCloudProviderDriver{}
+	service := NewCloudNodeService(pool, fakeCloudIntegration{driver: driver})
+	service.cipher = fakeCredentialCipher{}
+	service.client = &http.Client{
+		Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			switch {
+			case request.Method == http.MethodPost && strings.Contains(request.URL.Host, "passportapi.115.com") && strings.Contains(request.URL.Path, "/open/deviceCodeToToken"):
+				return jsonHTTPResponse(`{"state":true,"code":0,"data":{"access_token":"access-1","refresh_token":"refresh-1","expires_in":7200}}`), nil
+			default:
+				t.Fatalf("unexpected request: %s %s", request.Method, request.URL.String())
+				return nil, nil
+			}
+		}),
+	}
+
+	result, err := service.SaveCloudNode(ctx, storagedto.SaveCloudNodeRequest{
+		Name:         "115 云归档",
+		Vendor:       "115",
+		AccessMethod: "扫码登录获取 Token",
+		QRChannel:    "微信小程序",
+		MountPath:    "/MareArchive",
+		QRSession: &storagedto.CloudQRCodeSession{
+			UID:     "uid-1",
+			Time:    123,
+			Sign:    "sign-1",
+			QRCode:  "https://115.com/scan/mock",
+			Channel: "微信小程序",
+			CodeVerifier: "code-verifier-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("save cloud node: %v", err)
+	}
+
+	if driver.lastOpenToken.RefreshToken != "refresh-1" {
+		t.Fatalf("expected CD2 wrapper to receive refresh token, got %+v", driver.lastOpenToken)
+	}
+
+	items, err := service.ListCloudNodes(ctx)
+	if err != nil {
+		t.Fatalf("list cloud nodes: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 cloud node, got %d", len(items))
+	}
+	if items[0].Token != "refresh-1" {
+		t.Fatalf("expected saved token to be returned, got %q", items[0].Token)
+	}
+	if items[0].ID != result.Record.ID {
+		t.Fatalf("expected saved record id %q, got %q", result.Record.ID, items[0].ID)
 	}
 }
 

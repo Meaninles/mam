@@ -76,6 +76,7 @@ export type CloudRecord = {
   qrChannel?: StorageCloudQrChannel;
   mountDirectory: string;
   tokenStatus: string;
+  token?: string;
   lastTestAt?: string;
   status: string;
   tone: StorageTone;
@@ -94,6 +95,7 @@ export type CloudQRCodeSession = {
   sign: string;
   qrcode: string;
   channel: StorageCloudQrChannel;
+  codeVerifier?: string;
 };
 
 export type CloudQRCodeStatusResponse = {
@@ -208,6 +210,7 @@ export const storageNodesApi = {
         ? cloudNodesResult.value.map((item) => ({
             ...item,
             mountDirectory: item.mountDirectory ?? item.mountPath ?? '',
+            token: item.token,
           }))
         : fallback.cloudNodes;
 
@@ -604,6 +607,7 @@ function saveCloudNodeInBrowser(db: StorageBrowserDb, draft: CloudDraft) {
     qrChannel: draft.accessMethod === '扫码登录获取 Token' ? draft.qrChannel : undefined,
     mountDirectory: draft.mountDirectory,
     tokenStatus: draft.token ? '已配置' : '未配置',
+    token: draft.token || (draft.id ? db.cloudNodes.find((item) => item.id === draft.id)?.token : '') || '',
     lastTestAt: draft.id ? db.cloudNodes.find((item) => item.id === draft.id)?.lastTestAt : undefined,
     status: draft.token ? '鉴权正常' : '待鉴权',
     tone: draft.token ? 'success' : 'warning',

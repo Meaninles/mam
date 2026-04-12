@@ -1,6 +1,9 @@
 package storage
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"context"
 	"encoding/json"
 	"errors"
@@ -36,6 +39,12 @@ type cloudCredentialProbeResult struct {
 	Message       string
 }
 
+type openOAuthAuthenticator interface {
+	AuthenticateOpenToken(ctx context.Context, token integration.OpenOAuthToken) (integration.ProviderAuthResult, error)
+}
+
+const default115OpenAppID = "100195125"
+
 func NewCloudNodeService(pool *pgxpool.Pool, integrations ...interface {
 	Provider(vendor string) (integration.CloudProviderDriver, error)
 }) *CloudNodeService {
@@ -64,6 +73,7 @@ func (s *CloudNodeService) ListCloudNodes(ctx context.Context) ([]storagedto.Clo
 			COALESCE(snc.secret_ref, ''),
 			COALESCE(cp.remote_root_path, COALESCE(sn.address, '')),
 			COALESCE(snc.token_status, 'UNKNOWN'),
+			COALESCE(snc.secret_ciphertext, ''),
 			snr.last_check_at,
 			COALESCE(snr.auth_status, 'UNKNOWN'),
 			COALESCE(snr.health_status, 'UNKNOWN'),
@@ -78,7 +88,7 @@ func (s *CloudNodeService) ListCloudNodes(ctx context.Context) ([]storagedto.Clo
 		  AND sn.deleted_at IS NULL
 		GROUP BY
 			sn.id, sn.name, cp.provider_vendor, cp.auth_method, snc.secret_ref,
-			cp.remote_root_path, snc.token_status, snr.last_check_at,
+			cp.remote_root_path, snc.token_status, snc.secret_ciphertext, snr.last_check_at,
 			snr.auth_status, snr.health_status, sn.description
 		ORDER BY sn.created_at DESC
 	`)
@@ -97,14 +107,22 @@ func (s *CloudNodeService) ListCloudNodes(ctx context.Context) ([]storagedto.Clo
 			qrChannel    string
 			mountPath    string
 			tokenStatus  string
+			ciphertext   string
 			lastCheckAt  *time.Time
 			authStatus   string
 			healthStatus string
 			notes        string
 			mountCount   int
 		)
-		if err := rows.Scan(&id, &name, &vendor, &accessMode, &qrChannel, &mountPath, &tokenStatus, &lastCheckAt, &authStatus, &healthStatus, &notes, &mountCount); err != nil {
+		if err := rows.Scan(&id, &name, &vendor, &accessMode, &qrChannel, &mountPath, &tokenStatus, &ciphertext, &lastCheckAt, &authStatus, &healthStatus, &notes, &mountCount); err != nil {
 			return nil, err
+		}
+		savedToken := ""
+		if strings.TrimSpace(ciphertext) != "" {
+			plaintext, decryptErr := s.cipher.Decrypt(ciphertext)
+			if decryptErr == nil {
+				savedToken = strings.TrimSpace(plaintext)
+			}
 		}
 
 		items = append(items, storagedto.CloudNodeRecord{
@@ -115,6 +133,7 @@ func (s *CloudNodeService) ListCloudNodes(ctx context.Context) ([]storagedto.Clo
 			QRChannel:    qrChannel,
 			MountPath:    mountPath,
 			TokenStatus:  uiCloudTokenStatus(tokenStatus),
+			Token:        savedToken,
 			LastTestAt:   uiNodeLastCheckAt(lastCheckAt),
 			Status:       uiCloudStatus(authStatus, healthStatus, tokenStatus),
 			Tone:         uiCloudTone(authStatus, healthStatus, tokenStatus),
@@ -169,21 +188,67 @@ func (s *CloudNodeService) SaveCloudNode(ctx context.Context, request storagedto
 		return storagedto.SaveCloudNodeResponse{}, err
 	}
 
+	existingCiphertext := ""
+	existingSecretRef := ""
+	existingTokenStatus := "UNKNOWN"
+	existingPlainCredential := ""
+	if request.ID != "" {
+		existingCiphertext, existingSecretRef, existingTokenStatus, err = s.loadCloudCredentialEnvelope(ctx, request.ID)
+		if err != nil && !isStorageNotFound(err) {
+			return storagedto.SaveCloudNodeResponse{}, err
+		}
+		if err == nil && strings.TrimSpace(existingCiphertext) != "" {
+			if plaintext, decryptErr := s.cipher.Decrypt(existingCiphertext); decryptErr == nil {
+				existingPlainCredential = strings.TrimSpace(plaintext)
+			}
+		}
+	}
+
 	var (
-		authResult integration.ProviderAuthResult
-		hasAuthResult bool
+		authResult      integration.ProviderAuthResult
+		plainCredential string
+		hasAuthResult   bool
 	)
 	if strings.TrimSpace(request.Token) != "" {
-		authResult, err = driver.AuthenticateToken(ctx, request.Token)
-		if err != nil {
-			return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest(err.Error())
+		plainCredential = strings.TrimSpace(request.Token)
+		if request.ID != "" && existingPlainCredential != "" && plainCredential == existingPlainCredential {
+			plainCredential = existingPlainCredential
+		} else {
+			if isCloudOAuthToken(plainCredential) {
+				oauthDriver, ok := driver.(openOAuthAuthenticator)
+				if !ok {
+					return storagedto.SaveCloudNodeResponse{}, apperrors.Internal("当前 CD2 驱动不支持 115open Token 鉴权")
+				}
+				openToken, tokenErr := exchange115OpenRefreshToken(ctx, s.client, plainCredential)
+				if tokenErr != nil {
+					return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest(tokenErr.Error())
+				}
+				authResult, err = oauthDriver.AuthenticateOpenToken(ctx, openToken)
+				if err != nil {
+					return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest(err.Error())
+				}
+			} else {
+				authResult, err = driver.AuthenticateToken(ctx, plainCredential)
+				if err != nil {
+					return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest(err.Error())
+				}
+			}
+			hasAuthResult = true
 		}
-		hasAuthResult = true
 	} else if request.QRSession != nil {
-		authResult, err = driver.ConsumeQRCodeSession(ctx, request.QRSession.UID)
+		openToken, tokenErr := exchangeQRCodeSessionToOpenToken(ctx, s.client, *request.QRSession)
+		if tokenErr != nil {
+			return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest(tokenErr.Error())
+		}
+		oauthDriver, ok := driver.(openOAuthAuthenticator)
+		if !ok {
+			return storagedto.SaveCloudNodeResponse{}, apperrors.Internal("当前 CD2 驱动不支持 115open Token 鉴权")
+		}
+		authResult, err = oauthDriver.AuthenticateOpenToken(ctx, openToken)
 		if err != nil {
 			return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest(err.Error())
 		}
+		plainCredential = openToken.RefreshToken
 		hasAuthResult = true
 	}
 
@@ -195,8 +260,9 @@ func (s *CloudNodeService) SaveCloudNode(ctx context.Context, request storagedto
 	defer tx.Rollback(ctx)
 
 	accessMode := dbCloudAccessMode(request.AccessMethod)
-	tokenStatus := "CONFIGURED"
-	ciphertext := ""
+	tokenStatus := existingTokenStatus
+	ciphertext := existingCiphertext
+	secretRef := ""
 	authStatus := "UNKNOWN"
 	healthStatus := "UNKNOWN"
 	if request.AccessMethod == "QR" && request.QRSession == nil && request.ID == "" {
@@ -210,6 +276,7 @@ func (s *CloudNodeService) SaveCloudNode(ctx context.Context, request storagedto
 	if profileErr != nil && request.ID != "" {
 		return storagedto.SaveCloudNodeResponse{}, profileErr
 	}
+	secretRef = existingSecretRef
 	if !hasAuthResult {
 		authResult = integration.ProviderAuthResult{
 			ProviderVendor: request.Vendor,
@@ -221,6 +288,18 @@ func (s *CloudNodeService) SaveCloudNode(ctx context.Context, request storagedto
 	}
 	if request.AccessMethod == "TOKEN" && !hasAuthResult && request.ID == "" {
 		return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest("Token 无效")
+	}
+	if strings.TrimSpace(plainCredential) != "" {
+		ciphertext, err = s.cipher.Encrypt(plainCredential)
+		if err != nil {
+			return storagedto.SaveCloudNodeResponse{}, err
+		}
+		tokenStatus = "CONFIGURED"
+	}
+	if request.AccessMethod == "QR" {
+		secretRef = request.QRChannel
+	} else {
+		secretRef = ""
 	}
 	if err := driver.EnsureRemoteRoot(ctx, authResult.Payload, request.MountPath); err != nil {
 		return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest(err.Error())
@@ -243,7 +322,7 @@ func (s *CloudNodeService) SaveCloudNode(ctx context.Context, request storagedto
 			INSERT INTO storage_node_credentials (
 				id, storage_node_id, credential_kind, secret_ciphertext, secret_ref, token_status, updated_at, created_at
 			) VALUES ($1, $2, 'TOKEN', NULLIF($3, ''), NULLIF($4, ''), $5, $6, $6)
-		`, buildCode("cloud-node-credential", now), nodeID, ciphertext, request.QRChannel, tokenStatus, now)
+		`, buildCode("cloud-node-credential", now), nodeID, ciphertext, secretRef, tokenStatus, now)
 		if err != nil {
 			return storagedto.SaveCloudNodeResponse{}, err
 		}
@@ -289,7 +368,7 @@ func (s *CloudNodeService) SaveCloudNode(ctx context.Context, request storagedto
 				secret_ref = EXCLUDED.secret_ref,
 				token_status = EXCLUDED.token_status,
 				updated_at = EXCLUDED.updated_at
-		`, buildCode("cloud-node-credential", now), request.ID, ciphertext, request.QRChannel, tokenStatus, now)
+		`, buildCode("cloud-node-credential", now), request.ID, ciphertext, secretRef, tokenStatus, now)
 		if err != nil {
 			return storagedto.SaveCloudNodeResponse{}, err
 		}
@@ -641,96 +720,15 @@ func uiCloudSuggestion(tone string, accessMethod string) string {
 }
 
 func (s *CloudNodeService) CreateCloudQRCodeSession(ctx context.Context, channel string) (storagedto.CloudQRCodeSession, error) {
-	if s.integration == nil {
-		return s.createCloudQRCodeSessionLegacy(ctx, channel)
-	}
-	channel = normalizeCloudQRChannel(channel)
-	if !isSupportedCloudQRChannel(channel) {
-		return storagedto.CloudQRCodeSession{}, apperrors.BadRequest("扫码登录类型无效")
-	}
-	driver, err := s.integration.Provider("115")
-	if err != nil {
-		return storagedto.CloudQRCodeSession{}, err
-	}
-	session, err := driver.CreateQRCodeSession(ctx, channel)
-	if err != nil {
-		return storagedto.CloudQRCodeSession{}, err
-	}
-	return storagedto.CloudQRCodeSession{
-		UID:     session.ID,
-		Time:    time.Now().Unix(),
-		Sign:    buildCode("cloud-qr-sign", s.now().UTC()),
-		QRCode:  session.ImageURL,
-		Channel: channel,
-	}, nil
-	}
+	return s.createCloudQRCodeSessionLegacy(ctx, channel)
+}
 
 func (s *CloudNodeService) GetCloudQRCodeStatus(ctx context.Context, session storagedto.CloudQRCodeSession) (storagedto.CloudQRCodeStatusResponse, error) {
-	if s.integration == nil {
-		return s.getCloudQRCodeStatusLegacy(ctx, session)
-	}
-	if session.UID == "" {
-		return storagedto.CloudQRCodeStatusResponse{}, apperrors.BadRequest("二维码会话无效")
-	}
-	driver, err := s.integration.Provider("115")
-	if err != nil {
-		return storagedto.CloudQRCodeStatusResponse{}, err
-	}
-	qrSession, err := driver.GetQRCodeSession(ctx, session.UID)
-	if err != nil {
-		return storagedto.CloudQRCodeStatusResponse{}, err
-	}
-	status := "WAITING"
-	switch qrSession.Status {
-	case "COMPLETED":
-		status = "CONFIRMED"
-	case "FAILED":
-		status = "EXPIRED"
-	case "PENDING_SCAN", "SCANNED":
-		status = "SCANNED"
-	}
-	return storagedto.CloudQRCodeStatusResponse{
-		Status:  status,
-		Message: qrSession.Message,
-	}, nil
-	}
+	return s.getCloudQRCodeStatusLegacy(ctx, session)
+}
 
 func (s *CloudNodeService) FetchCloudQRCodeImage(ctx context.Context, session storagedto.CloudQRCodeSession) ([]byte, string, error) {
-	if s.integration == nil {
-		return s.fetchCloudQRCodeImageLegacy(ctx, session)
-	}
-	driver, err := s.integration.Provider("115")
-	if err != nil {
-		return nil, "", err
-	}
-	qrSession, err := driver.GetQRCodeSession(ctx, session.UID)
-	if err != nil {
-		return nil, "", err
-	}
-	if len(qrSession.ImageData) > 0 {
-		return qrSession.ImageData, "image/png", nil
-	}
-	if strings.TrimSpace(qrSession.ImageURL) == "" {
-		return nil, "", apperrors.BadRequest("二维码图片尚未生成")
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, normalizeCloudQRCodeURL(qrSession.ImageURL), nil)
-	if err != nil {
-		return nil, "", err
-	}
-	response, err := s.client.Do(request)
-	if err != nil {
-		return nil, "", err
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return nil, "", err
-	}
-	contentType := response.Header.Get("Content-Type")
-	if strings.TrimSpace(contentType) == "" {
-		contentType = "image/png"
-	}
-	return body, contentType, nil
+	return s.fetchCloudQRCodeImageLegacy(ctx, session)
 }
 
 func (s *CloudNodeService) saveCloudNodeLegacy(ctx context.Context, request storagedto.SaveCloudNodeRequest) (storagedto.SaveCloudNodeResponse, error) {
@@ -964,10 +962,21 @@ func (s *CloudNodeService) createCloudQRCodeSessionLegacy(ctx context.Context, c
 	if !isSupportedCloudQRChannel(channel) {
 		return storagedto.CloudQRCodeSession{}, apperrors.BadRequest("扫码登录类型无效")
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://qrcodeapi.115.com/api/1.0/web/1.0/token/", nil)
+	codeVerifier, codeChallenge, err := generate115OpenCodeVerifier()
 	if err != nil {
 		return storagedto.CloudQRCodeSession{}, err
 	}
+	form := url.Values{}
+	form.Set("client_id", default115OpenAppID)
+	form.Set("code_challenge", codeChallenge)
+	form.Set("code_challenge_method", "sha256")
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://passportapi.115.com/open/authDeviceCode", strings.NewReader(form.Encode()))
+	if err != nil {
+		return storagedto.CloudQRCodeSession{}, err
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("User-Agent", "Mozilla/5.0")
+	request.Header.Set("Accept", "application/json,text/plain,*/*")
 	response, err := s.client.Do(request)
 	if err != nil {
 		return storagedto.CloudQRCodeSession{}, err
@@ -990,6 +999,7 @@ func (s *CloudNodeService) createCloudQRCodeSessionLegacy(ctx context.Context, c
 		Sign:    payload.Data.Sign,
 		QRCode:  payload.Data.QRCode,
 		Channel: channel,
+		CodeVerifier: codeVerifier,
 	}, nil
 }
 
@@ -1106,12 +1116,8 @@ func (s *CloudNodeService) consumeQRCodeSession(ctx context.Context, session sto
 }
 
 func (s *CloudNodeService) loadCloudCredential(ctx context.Context, id string) (string, error) {
-	var ciphertext string
-	if err := s.pool.QueryRow(ctx, `
-		SELECT COALESCE(secret_ciphertext, '')
-		FROM storage_node_credentials
-		WHERE storage_node_id = $1
-	`, id).Scan(&ciphertext); err != nil {
+	ciphertext, _, _, err := s.loadCloudCredentialEnvelope(ctx, id)
+	if err != nil {
 		return "", err
 	}
 	if strings.TrimSpace(ciphertext) == "" {
@@ -1127,6 +1133,30 @@ func (s *CloudNodeService) loadCloudCredential(ctx context.Context, id string) (
 		return "", fmt.Errorf("已保存凭据为空")
 	}
 	return plaintext, nil
+}
+
+func (s *CloudNodeService) loadCloudCredentialEnvelope(ctx context.Context, id string) (string, string, string, error) {
+	var (
+		ciphertext string
+		secretRef string
+		tokenStatus string
+	)
+	if err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE(secret_ciphertext, ''), COALESCE(secret_ref, ''), COALESCE(token_status, 'UNKNOWN')
+		FROM storage_node_credentials
+		WHERE storage_node_id = $1
+	`, id).Scan(&ciphertext, &secretRef, &tokenStatus); err != nil {
+		if err == pgx.ErrNoRows {
+			return "", "", "", apperrors.NotFound("网盘凭据不存在")
+		}
+		return "", "", "", err
+	}
+	return ciphertext, secretRef, tokenStatus, nil
+}
+
+func isStorageNotFound(err error) bool {
+	appErr, ok := err.(*apperrors.AppError)
+	return ok && appErr.Code == "not_found"
 }
 
 func (s *CloudNodeService) probeCloudCredential(ctx context.Context, cookie string) (cloudCredentialProbeResult, error) {
@@ -1509,4 +1539,134 @@ func normalizeCloudQRCodeURL(value string) string {
 	default:
 		return "https://qrcodeapi.115.com/" + strings.TrimPrefix(raw, "./")
 	}
+}
+
+func isCloudOAuthToken(value string) bool {
+	token := strings.TrimSpace(value)
+	return token != "" && !strings.Contains(token, "=") && !strings.Contains(token, ";")
+}
+
+func exchangeQRCodeSessionToOpenToken(ctx context.Context, client *http.Client, session storagedto.CloudQRCodeSession) (integration.OpenOAuthToken, error) {
+	if strings.TrimSpace(session.UID) == "" {
+		return integration.OpenOAuthToken{}, fmt.Errorf("二维码会话无效")
+	}
+	codeVerifier := strings.TrimSpace(session.CodeVerifier)
+	if codeVerifier == "" {
+		return integration.OpenOAuthToken{}, fmt.Errorf("二维码会话缺少 code verifier")
+	}
+
+	form := url.Values{}
+	form.Set("uid", session.UID)
+	form.Set("code_verifier", codeVerifier)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://passportapi.115.com/open/deviceCodeToToken", strings.NewReader(form.Encode()))
+	if err != nil {
+		return integration.OpenOAuthToken{}, err
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("User-Agent", "Mozilla/5.0")
+	request.Header.Set("Accept", "application/json,text/plain,*/*")
+
+	response, err := client.Do(request)
+	if err != nil {
+		if isCloudQRCodeTimeout(err) {
+			return integration.OpenOAuthToken{}, fmt.Errorf("115open 换取 Token 超时，请稍后重试")
+		}
+		return integration.OpenOAuthToken{}, err
+	}
+	defer response.Body.Close()
+
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return integration.OpenOAuthToken{}, err
+	}
+
+	return parse115OpenTokenResponse(body)
+}
+
+func exchange115OpenRefreshToken(ctx context.Context, client *http.Client, refreshToken string) (integration.OpenOAuthToken, error) {
+	form := url.Values{}
+	form.Set("refresh_token", strings.TrimSpace(refreshToken))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://passportapi.115.com/open/refreshToken", strings.NewReader(form.Encode()))
+	if err != nil {
+		return integration.OpenOAuthToken{}, err
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("User-Agent", "Mozilla/5.0")
+	request.Header.Set("Accept", "application/json,text/plain,*/*")
+
+	response, err := client.Do(request)
+	if err != nil {
+		if isCloudQRCodeTimeout(err) {
+			return integration.OpenOAuthToken{}, fmt.Errorf("115open 刷新 Token 超时，请稍后重试")
+		}
+		return integration.OpenOAuthToken{}, err
+	}
+	defer response.Body.Close()
+
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return integration.OpenOAuthToken{}, err
+	}
+
+	return parse115OpenTokenResponse(body)
+}
+
+func parse115OpenTokenResponse(body []byte) (integration.OpenOAuthToken, error) {
+	var payload struct {
+		State   any    `json:"state"`
+		Code    any    `json:"code"`
+		ErrNo   any    `json:"errno"`
+		Error   string `json:"error"`
+		Message string `json:"message"`
+		Data    struct {
+			AccessToken  string `json:"access_token"`
+			RefreshToken string `json:"refresh_token"`
+			ExpiresIn    uint64 `json:"expires_in"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return integration.OpenOAuthToken{}, err
+	}
+	if code := numericJSONValue(payload.Code); code != 0 {
+		return integration.OpenOAuthToken{}, fmt.Errorf("%s", fallbackCloudProbeMessage(map[string]any{
+			"message": payload.Message,
+			"error":   payload.Error,
+			"code":    payload.Code,
+			"errno":   payload.ErrNo,
+		}))
+	}
+	if errno := numericJSONValue(payload.ErrNo); errno != 0 {
+		return integration.OpenOAuthToken{}, fmt.Errorf("%s", fallbackCloudProbeMessage(map[string]any{
+			"message": payload.Message,
+			"error":   payload.Error,
+			"code":    payload.Code,
+			"errno":   payload.ErrNo,
+		}))
+	}
+	if payload.Data.RefreshToken == "" || payload.Data.AccessToken == "" {
+		message := strings.TrimSpace(payload.Message)
+		if message == "" {
+			message = strings.TrimSpace(payload.Error)
+		}
+		if message == "" {
+			message = "115open 未返回有效 Token"
+		}
+		return integration.OpenOAuthToken{}, fmt.Errorf("%s", message)
+	}
+	return integration.OpenOAuthToken{
+		RefreshToken: payload.Data.RefreshToken,
+		AccessToken:  payload.Data.AccessToken,
+		ExpiresIn:    payload.Data.ExpiresIn,
+	}, nil
+}
+
+func generate115OpenCodeVerifier() (string, string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", "", err
+	}
+	verifier := base64.StdEncoding.EncodeToString(raw)
+	sum := sha256.Sum256([]byte(verifier))
+	challenge := base64.StdEncoding.EncodeToString(sum[:])
+	return verifier, challenge, nil
 }

@@ -56,32 +56,14 @@ export function WorkspaceSettingsPanel({
 }
 
 export function ImportArchiveSettingsPanel({
-  cd2Gateway,
-  cd2Runtime,
   deviceSessions,
-  onChangeCD2Gateway,
-  onSaveCD2Gateway,
   reports,
   sections,
-  onTestCD2Gateway,
   onChangeSetting,
 }: {
-  cd2Gateway: {
-    baseUrl: string;
-    enabled: boolean;
-    password: string;
-    runtimeStatus: string;
-    saving: boolean;
-    testing: boolean;
-    username: string;
-  };
-  cd2Runtime: RuntimeComponentRecord | null;
   deviceSessions: ImportDeviceSessionRecord[];
-  onChangeCD2Gateway: (field: 'baseUrl' | 'username' | 'password' | 'enabled', value: string | boolean) => void;
-  onSaveCD2Gateway: () => void;
   reports: ImportReportSnapshot[];
   sections: SettingSection[];
-  onTestCD2Gateway: () => void;
   onChangeSetting: SectionChangeHandler;
 }) {
   const activeSessions = deviceSessions.filter((session) => session.sessionStatus !== '已拔出');
@@ -99,77 +81,6 @@ export function ImportArchiveSettingsPanel({
               <p className="muted-paragraph">展示当前真实导入会话与导入报告，帮助确认默认策略对预检、目标编排和结果摘要的影响。</p>
             </div>
           </header>
-          <article className="settings-preview-item">
-            <div className="settings-preview-head">
-              <strong>CloudDrive2 集成</strong>
-              <TonePill tone={resolveGatewayTone(cd2Runtime?.status ?? cd2Gateway.runtimeStatus)}>
-                {renderGatewayStatus(cd2Runtime?.status ?? cd2Gateway.runtimeStatus)}
-              </TonePill>
-            </div>
-            <div className="setting-list">
-              <div className="setting-row editable">
-                <div className="setting-copy">
-                  <span>服务地址</span>
-                </div>
-                <input
-                  aria-label="CloudDrive2 服务地址"
-                  className="setting-input"
-                  type="text"
-                  value={cd2Gateway.baseUrl}
-                  onChange={(event) => onChangeCD2Gateway('baseUrl', event.target.value)}
-                />
-              </div>
-              <div className="setting-row editable">
-                <div className="setting-copy">
-                  <span>账号</span>
-                </div>
-                <input
-                  aria-label="CloudDrive2 账号"
-                  className="setting-input"
-                  type="text"
-                  value={cd2Gateway.username}
-                  onChange={(event) => onChangeCD2Gateway('username', event.target.value)}
-                />
-              </div>
-              <div className="setting-row editable">
-                <div className="setting-copy">
-                  <span>密码</span>
-                </div>
-                <input
-                  aria-label="CloudDrive2 密码"
-                  className="setting-input"
-                  type="password"
-                  value={cd2Gateway.password}
-                  onChange={(event) => onChangeCD2Gateway('password', event.target.value)}
-                />
-              </div>
-              <div className="setting-row editable">
-                <div className="setting-copy">
-                  <span>启用集成</span>
-                </div>
-                <button
-                  aria-label="CloudDrive2 启用状态"
-                  className={`toggle-button${cd2Gateway.enabled ? ' active' : ''}`}
-                  type="button"
-                  onClick={() => onChangeCD2Gateway('enabled', !cd2Gateway.enabled)}
-                >
-                  {cd2Gateway.enabled ? '开启' : '关闭'}
-                </button>
-              </div>
-            </div>
-            <div className="toolbar-group wrap">
-              <ActionButton disabled={cd2Gateway.testing} onClick={onTestCD2Gateway}>
-                {cd2Gateway.testing ? '测试中…' : '连接测试'}
-              </ActionButton>
-              <ActionButton disabled={cd2Gateway.saving} tone="primary" onClick={onSaveCD2Gateway}>
-                {cd2Gateway.saving ? '保存中…' : '保存 CloudDrive2'}
-              </ActionButton>
-            </div>
-            <div className="page-stack" style={{ marginTop: 12 }}>
-              <DenseRow label="运行状态" value={cd2Runtime?.message ?? '尚未检测'} />
-              {cd2Runtime?.lastCheckedAt ? <DenseRow label="最近检测" value={cd2Runtime.lastCheckedAt} /> : null}
-            </div>
-          </article>
           <div className="settings-preview-list">
             {activeSessions.slice(0, 3).map((session) => (
               <article className="settings-preview-item" key={session.id}>
@@ -204,6 +115,200 @@ export function ImportArchiveSettingsPanel({
   );
 }
 
+type DependencyIndicatorTone = 'success' | 'warning' | 'critical';
+
+export function DependencyServicesSettingsPanel({
+  aria2Runtime,
+  cd2Gateway,
+  cd2Runtime,
+  onChangeCD2Gateway,
+  onSaveCD2Gateway,
+  onTestCD2Gateway,
+}: {
+  aria2Runtime: RuntimeComponentRecord | null;
+  cd2Gateway: {
+    baseUrl: string;
+    hasPassword: boolean;
+    password: string;
+    runtimeStatus: string;
+    saving: boolean;
+    testing: boolean;
+    username: string;
+  };
+  cd2Runtime: RuntimeComponentRecord | null;
+  onChangeCD2Gateway: (field: 'baseUrl' | 'username' | 'password', value: string) => void;
+  onSaveCD2Gateway: () => void;
+  onTestCD2Gateway: () => void;
+}) {
+  const cd2Indicator = resolveDependencyIndicator({
+    message: cd2Runtime?.message,
+    serviceName: 'CloudDrive2',
+    status: cd2Runtime?.status ?? cd2Gateway.runtimeStatus,
+  });
+  const aria2Indicator = resolveDependencyIndicator({
+    message: aria2Runtime?.message,
+    serviceName: 'aria2',
+    status: aria2Runtime?.status,
+  });
+
+  const onlineCount = [cd2Indicator, aria2Indicator].filter((item) => item.tone === 'success').length;
+  const abnormalCount = [cd2Indicator, aria2Indicator].filter((item) => item.tone === 'critical').length;
+  void onlineCount;
+  void abnormalCount;
+
+  return (
+    <section className="page-stack settings-strategy-page dependency-services-page">
+      <div className="settings-strategy-layout">
+        <div className="page-stack dependency-services-stack">
+          <section className="content-card dependency-service-card">
+            <header className="section-header dependency-service-card-header">
+              <div className="dependency-service-title">
+                <div
+                  aria-label={`CloudDrive2 状态：${cd2Indicator.label}`}
+                  className={`system-runtime-indicator has-status-tooltip ${cd2Indicator.tone}`}
+                  data-testid="dependency-service-indicator-CloudDrive2"
+                  data-tooltip={`CloudDrive2：${cd2Indicator.tooltip}`}
+                />
+                <div>
+                  <strong>CloudDrive2</strong>
+                  <p className="muted-paragraph">负责 115 网盘鉴权、目录校验和远程上传编排。</p>
+                </div>
+              </div>
+              <TonePill tone={resolveGatewayTone(cd2Runtime?.status ?? cd2Gateway.runtimeStatus)}>
+                {renderGatewayStatus(cd2Runtime?.status ?? cd2Gateway.runtimeStatus)}
+              </TonePill>
+            </header>
+
+            <div className="setting-list">
+              <div className="setting-row editable">
+                <div className="setting-copy">
+                  <span>服务地址</span>
+                  <small>中心服务通过此地址访问 CloudDrive2。</small>
+                </div>
+                <input
+                  aria-label="CloudDrive2 服务地址"
+                  className="setting-input"
+                  type="text"
+                  value={cd2Gateway.baseUrl}
+                  onChange={(event) => onChangeCD2Gateway('baseUrl', event.target.value)}
+                />
+              </div>
+              <div className="setting-row editable">
+                <div className="setting-copy">
+                  <span>账号</span>
+                </div>
+                <input
+                  aria-label="CloudDrive2 账号"
+                  className="setting-input"
+                  type="text"
+                  value={cd2Gateway.username}
+                  onChange={(event) => onChangeCD2Gateway('username', event.target.value)}
+                />
+              </div>
+              <div className="setting-row editable">
+                <div className="setting-copy">
+                  <span>密码</span>
+                  <small>如已保存凭据，可留空以保持现有密码。</small>
+                </div>
+                <input
+                  aria-label="CloudDrive2 密码"
+                  className="setting-input"
+                  type="password"
+                  value={cd2Gateway.password}
+                  onChange={(event) => onChangeCD2Gateway('password', event.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="toolbar-group wrap">
+              <ActionButton disabled={cd2Gateway.testing} onClick={onTestCD2Gateway}>
+                {cd2Gateway.testing ? '测试中…' : '连接测试'}
+              </ActionButton>
+              <ActionButton disabled={cd2Gateway.saving} tone="primary" onClick={onSaveCD2Gateway}>
+                {cd2Gateway.saving ? '保存中…' : '保存 CloudDrive2'}
+              </ActionButton>
+            </div>
+
+            <div className="page-stack dependency-service-meta">
+              <DenseRow label="凭据状态" value={cd2Gateway.hasPassword ? '已保存凭据' : '尚未保存'} />
+              {cd2Runtime?.lastCheckedAt ? <DenseRow label="最近检测" value={formatSettingsTimeLabel(cd2Runtime.lastCheckedAt)} /> : null}
+              {cd2Runtime?.lastErrorMessage ? <DenseRow label="最近错误" tone="critical" value={cd2Runtime.lastErrorMessage} /> : null}
+            </div>
+          </section>
+
+          <section className="content-card dependency-service-card">
+            <header className="section-header dependency-service-card-header">
+              <div className="dependency-service-title">
+                <div
+                  aria-label={`aria2 状态：${aria2Indicator.label}`}
+                  className={`system-runtime-indicator has-status-tooltip ${aria2Indicator.tone}`}
+                  data-testid="dependency-service-indicator-aria2"
+                  data-tooltip={`aria2：${aria2Indicator.tooltip}`}
+                />
+                <div>
+                  <strong>aria2</strong>
+                  <p className="muted-paragraph">负责从 115 下行到本地或 NAS 的下载执行。</p>
+                </div>
+              </div>
+              <TonePill tone={resolveGatewayTone(aria2Runtime?.status ?? 'UNKNOWN')}>
+                {renderGatewayStatus(aria2Runtime?.status ?? 'UNKNOWN')}
+              </TonePill>
+            </header>
+
+            <div className="page-stack dependency-service-meta">
+              <DenseRow label="配置方式" value="由中心服务托管" />
+              {aria2Runtime?.lastCheckedAt ? <DenseRow label="最近检测" value={formatSettingsTimeLabel(aria2Runtime.lastCheckedAt)} /> : null}
+              {aria2Runtime?.lastErrorMessage ? <DenseRow label="最近错误" tone="critical" value={aria2Runtime.lastErrorMessage} /> : null}
+            </div>
+          </section>
+        </div>
+
+        <section className="workspace-card settings-preview-card dependency-service-summary-card">
+          <header className="section-header">
+            <div>
+              <strong>依赖服务状态</strong>
+            </div>
+          </header>
+          <div className="settings-preview-list">
+            {[{
+              indicator: cd2Indicator,
+              name: 'CloudDrive2',
+              runtime: cd2Runtime,
+            }, {
+              indicator: aria2Indicator,
+              name: 'aria2',
+              runtime: aria2Runtime,
+            }].map((service) => (
+              <article className="settings-preview-item dependency-service-summary-item" key={service.name}>
+                <div className="settings-preview-head dependency-service-summary-head">
+                  <div className="dependency-service-title">
+                    <div
+                      aria-label={`${service.name} 状态：${service.indicator.label}`}
+                      className={`system-runtime-indicator has-status-tooltip ${service.indicator.tone}`}
+                      data-tooltip={`${service.name}：${service.indicator.tooltip}`}
+                    />
+                    <strong>{service.name}</strong>
+                  </div>
+                  <TonePill tone={resolveGatewayTone(service.runtime?.status ?? 'UNKNOWN')}>
+                    {renderGatewayStatus(service.runtime?.status ?? 'UNKNOWN')}
+                  </TonePill>
+                </div>
+                <p>{service.runtime?.message ?? `${service.name} 尚未检测`}</p>
+                {service.runtime?.lastCheckedAt ? (
+                  <div className="endpoint-row">
+                    <span>最近检测</span>
+                    <span>{formatSettingsTimeLabel(service.runtime.lastCheckedAt)}</span>
+                  </div>
+                ) : null}
+              </article>
+            ))}
+          </div>
+        </section>
+      </div>
+    </section>
+  );
+}
+
 function renderGatewayStatus(status: string) {
   if (status === 'ONLINE') return '在线';
   if (status === 'ERROR') return '异常';
@@ -216,7 +321,59 @@ function resolveGatewayTone(status: string) {
   if (status === 'ONLINE') return 'success' as const;
   if (status === 'DISABLED') return 'info' as const;
   if (status === 'DEGRADED') return 'warning' as const;
-  return 'critical' as const;
+  if (status === 'ERROR') return 'critical' as const;
+  return 'warning' as const;
+}
+
+function resolveDependencyIndicator({
+  message,
+  serviceName,
+  status,
+}: {
+  message?: string;
+  serviceName: string;
+  status?: string;
+}): { label: string; tone: DependencyIndicatorTone; tooltip: string } {
+  const normalizedMessage = message?.trim();
+  const tooltip =
+    normalizedMessage && normalizedMessage.startsWith(`${serviceName} `)
+      ? normalizedMessage.slice(serviceName.length + 1)
+      : normalizedMessage || `${serviceName} 尚未检测`;
+  if (status === 'ONLINE') {
+    return { label: '在线', tone: 'success', tooltip };
+  }
+  if (status === 'ERROR') {
+    return { label: '异常', tone: 'critical', tooltip };
+  }
+  if (status === 'DISABLED') {
+    return { label: '已禁用', tone: 'warning', tooltip };
+  }
+  if (status === 'DEGRADED') {
+    return { label: '降级', tone: 'warning', tooltip };
+  }
+  return { label: '未检测', tone: 'warning', tooltip };
+}
+
+function formatSettingsTimeLabel(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const targetStart = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const diffDays = Math.round((todayStart.getTime() - targetStart.getTime()) / (24 * 60 * 60 * 1000));
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+
+  if (diffDays === 0) {
+    return `今天 ${hh}:${mm}`;
+  }
+  if (diffDays === 1) {
+    return `昨天 ${hh}:${mm}`;
+  }
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${hh}:${mm}`;
 }
 
 export function NotificationSettingsPanel({

@@ -1998,7 +1998,7 @@ function cloudRecordToDraft(item: CloudRecord): CloudDraft {
     accessMethod: item.accessMethod,
     qrChannel: item.qrChannel ?? '微信小程序',
     mountDirectory: item.mountDirectory,
-    token: '',
+    token: item.token ?? '',
     notes: item.notes,
   };
 }

@@ -14,6 +14,7 @@ export type SettingsTab =
   | 'file-overview'
   | 'tag-management'
   | 'import-archive'
+  | 'dependency-services'
   | 'notifications'
   | 'issue-governance'
   | 'verification'
@@ -2541,6 +2542,7 @@ export const settingsTabs: Array<{ id: SettingsTab; label: string }> = [
   { id: 'file-overview', label: '文件总览' },
   { id: 'tag-management', label: '标签管理' },
   { id: 'import-archive', label: '导入与归档' },
+  { id: 'dependency-services', label: '依赖服务' },
   { id: 'notifications', label: '通知与提醒' },
   { id: 'issue-governance', label: '异常治理' },
   { id: 'verification', label: '校验恢复' },
@@ -2761,6 +2763,7 @@ export const settingsContent: Record<SettingsTab, SettingSection[]> = {
       ],
     },
   ],
+  'dependency-services': [],
   notifications: [
     {
       id: 'notice-thresholds',
@@ -3016,6 +3019,7 @@ export function cloneSettingsContent(): Record<SettingsTab, SettingSection[]> {
     'file-overview': settingsContent['file-overview'].map(cloneSection),
     'tag-management': settingsContent['tag-management'].map(cloneSection),
     'import-archive': settingsContent['import-archive'].map(cloneSection),
+    'dependency-services': settingsContent['dependency-services'].map(cloneSection),
     notifications: settingsContent.notifications.map(cloneSection),
     'issue-governance': settingsContent['issue-governance'].map(cloneSection),
     verification: settingsContent.verification.map(cloneSection),

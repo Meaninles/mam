@@ -2,10 +2,6 @@ package storage
 
 import (
 	"context"
-	"io"
-	"net/http"
-	"net/url"
-	"strings"
 	"testing"
 	"time"
 
@@ -49,47 +45,19 @@ func TestLocalFolderServiceSaveMountSupportsCloudNode(t *testing.T) {
 	`, "cipher::UID=uid-1; CID=cid-1", now); err != nil {
 		t.Fatalf("insert cloud credential: %v", err)
 	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO cloud_node_profiles (
+			id, storage_node_id, provider_vendor, auth_method, remote_root_path, provider_payload, last_auth_at, updated_at, created_at
+		) VALUES (
+			'cloud-profile-1', 'cloud-node-1', '115', 'QR', '/MareArchive', '{"cloudName":"115","cloudUserName":"mare-user","cloudPath":"/115open(123)/MareArchive"}'::jsonb, $1, $1, $1
+		)
+	`, now); err != nil {
+		t.Fatalf("insert cloud profile: %v", err)
+	}
 
 	mountService := NewLocalFolderService(pool)
 	mountService.cipher = fakeCredentialCipher{}
-	mountService.cloud = &http.Client{
-		Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-			if request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/files") {
-				query := request.URL.Query()
-				switch query.Get("cid") {
-				case "0":
-					return jsonHTTPResponse(`{"state":true,"data":[]}`), nil
-				case "100":
-					return jsonHTTPResponse(`{"state":true,"data":[]}`), nil
-				case "101":
-					return jsonHTTPResponse(`{"state":true,"data":[]}`), nil
-				default:
-					t.Fatalf("unexpected list cid: %s", query.Get("cid"))
-					return nil, nil
-				}
-			}
-			if request.Method == http.MethodPost && strings.Contains(request.URL.Path, "/files/add") {
-				body, _ := io.ReadAll(request.Body)
-				values, err := url.ParseQuery(string(body))
-				if err != nil {
-					t.Fatalf("parse create folder body: %v", err)
-				}
-				switch values.Get("cname") {
-				case "MareArchive":
-					return jsonHTTPResponse(`{"state":true,"cid":"100"}`), nil
-				case "Projects":
-					return jsonHTTPResponse(`{"state":true,"cid":"101"}`), nil
-				case "Shanghai":
-					return jsonHTTPResponse(`{"state":true,"cid":"102"}`), nil
-				default:
-					t.Fatalf("unexpected create folder name: %s", values.Get("cname"))
-					return nil, nil
-				}
-			}
-			t.Fatalf("unexpected cloud request: %s %s", request.Method, request.URL.String())
-			return nil, nil
-		}),
-	}
+	mountService.SetIntegrationService(fakeCloudIntegration{driver: &fakeCloudProviderDriver{}})
 
 	result, err := mountService.SaveLocalFolder(ctx, storagedto.SaveLocalFolderRequest{
 		Name:            "云盘挂载",
@@ -214,6 +182,15 @@ func TestLocalFolderServiceConnectionTestSupportsCloudMount(t *testing.T) {
 		t.Fatalf("insert cloud credential: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
+		INSERT INTO cloud_node_profiles (
+			id, storage_node_id, provider_vendor, auth_method, remote_root_path, provider_payload, last_auth_at, updated_at, created_at
+		) VALUES (
+			'cloud-profile-1', 'cloud-node-1', '115', 'QR', '/MareArchive', '{"cloudName":"115","cloudUserName":"mare-user","cloudPath":"/115open(123)/MareArchive"}'::jsonb, $1, $1, $1
+		)
+	`, now); err != nil {
+		t.Fatalf("insert cloud profile: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
 		INSERT INTO mounts (
 			id, code, library_id, library_name, storage_node_id, name, mount_source_type, mount_mode,
 			source_path, relative_root_path, heartbeat_policy, scan_policy, enabled, sort_order, created_at, updated_at
@@ -236,31 +213,7 @@ func TestLocalFolderServiceConnectionTestSupportsCloudMount(t *testing.T) {
 
 	mountService := NewLocalFolderService(pool)
 	mountService.cipher = fakeCredentialCipher{}
-	mountService.cloud = &http.Client{
-		Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-			if request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/login_devices") {
-				return jsonHTTPResponse(`{"state":true,"code":0,"data":{"devices":[]}}`), nil
-			}
-			if request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/files") {
-				query := request.URL.Query()
-				switch query.Get("cid") {
-				case "0":
-					return jsonHTTPResponse(`{"state":true,"data":[{"cid":"100","n":"MareArchive"}]}`), nil
-				case "100":
-					return jsonHTTPResponse(`{"state":true,"data":[{"cid":"101","n":"Projects"}]}`), nil
-				case "101":
-					return jsonHTTPResponse(`{"state":true,"data":[{"cid":"102","n":"Shanghai"}]}`), nil
-				case "102":
-					return jsonHTTPResponse(`{"state":true,"data":[]}`), nil
-				default:
-					t.Fatalf("unexpected cid: %s", query.Get("cid"))
-					return nil, nil
-				}
-			}
-			t.Fatalf("unexpected cloud request: %s %s", request.Method, request.URL.String())
-			return nil, nil
-		}),
-	}
+	mountService.SetIntegrationService(fakeCloudIntegration{driver: &fakeCloudProviderDriver{}})
 
 	response, err := mountService.RunLocalFolderConnectionTest(ctx, []string{"mount-cloud-1"})
 	if err != nil {

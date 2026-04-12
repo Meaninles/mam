@@ -1442,6 +1442,48 @@ button {
   gap: 12px;
 }
 
+.dependency-services-stack {
+  gap: 16px;
+}
+
+.dependency-service-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.dependency-service-card-header,
+.dependency-service-summary-head {
+  align-items: center;
+}
+
+.dependency-service-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.dependency-service-title > div:last-child {
+  min-width: 0;
+}
+
+.dependency-service-title .muted-paragraph {
+  margin: 4px 0 0;
+}
+
+.dependency-service-meta {
+  gap: 10px;
+}
+
+.dependency-service-summary-card {
+  gap: 14px;
+}
+
+.dependency-service-summary-item {
+  gap: 10px;
+}
+
 .setting-list {
   display: flex;
   flex-direction: column;

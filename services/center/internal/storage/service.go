@@ -249,14 +249,19 @@ func (s *LocalFolderService) SaveLocalFolder(ctx context.Context, request storag
 			return storagedto.SaveLocalFolderResponse{}, apperrors.BadRequest(fmt.Sprintf("NAS 挂载目录创建失败：%s", ensureErr.Error()))
 		}
 	} else if node.NodeType == "CLOUD" {
-		cookie, decryptErr := s.cipher.Decrypt(node.SecretCiphertext)
-		if decryptErr != nil {
-			return storagedto.SaveLocalFolderResponse{}, apperrors.BadRequest("网盘凭据无法读取，请重新保存网盘节点")
+		if s.integration == nil {
+			return storagedto.SaveLocalFolderResponse{}, apperrors.BadRequest("云端集成服务尚未启用")
 		}
 		cloudService := NewCloudNodeService(s.pool, s.integration)
-		cloudService.cipher = s.cipher
-		cloudService.client = s.cloud
-		if ensureErr := cloudService.ensureCloudMountDirectory(ctx, cookie, sourcePath); ensureErr != nil {
+		profile, profileErr := cloudService.loadCloudProfile(ctx, request.NodeID)
+		if profileErr != nil {
+			return storagedto.SaveLocalFolderResponse{}, apperrors.BadRequest(fmt.Sprintf("网盘挂载目录创建失败：%s", profileErr.Error()))
+		}
+		driver, driverErr := s.integration.Provider(profile.ProviderVendor)
+		if driverErr != nil {
+			return storagedto.SaveLocalFolderResponse{}, apperrors.BadRequest(fmt.Sprintf("网盘挂载目录创建失败：%s", driverErr.Error()))
+		}
+		if ensureErr := driver.EnsureRemoteRoot(ctx, profile.Payload, sourcePath); ensureErr != nil {
 			return storagedto.SaveLocalFolderResponse{}, apperrors.BadRequest(fmt.Sprintf("网盘挂载目录创建失败：%s", ensureErr.Error()))
 		}
 	}
@@ -497,64 +502,62 @@ func (s *LocalFolderService) RunLocalFolderConnectionTest(ctx context.Context, i
 			lastErrorCode = probe.LastErrorCode
 			lastErrorMessage = probe.LastErrorMessage
 		case "CLOUD":
-			cookie, decryptErr := s.cipher.Decrypt(mount.SecretCiphertext)
-			if decryptErr != nil {
+			if s.integration == nil {
 				tone = "critical"
-				summary = "网盘凭据无法读取，请重新保存网盘节点。"
+				summary = "云端集成服务尚未启用。"
 				checks = []storagedto.ConnectionCheck{
-					{Label: "凭据读取", Status: "critical", Detail: decryptErr.Error()},
+					{Label: "集成服务", Status: "critical", Detail: "未找到云端集成 Provider"},
 				}
 				healthStatus = "ERROR"
 				authStatus = "FAILED"
-				lastErrorCode = "credential_unreadable"
-				lastErrorMessage = decryptErr.Error()
+				lastErrorCode = "integration_unavailable"
+				lastErrorMessage = "云端集成服务尚未启用"
 				break
 			}
 			cloudService := NewCloudNodeService(s.pool, s.integration)
-			cloudService.cipher = s.cipher
-			cloudService.client = s.cloud
-			probe, probeErr := cloudService.probeCloudCredential(ctx, cookie)
-			if probeErr != nil {
+			profile, profileErr := cloudService.loadCloudProfile(ctx, mount.NodeID)
+			if profileErr != nil {
 				tone = "critical"
-				summary = "网盘登录态校验失败。"
+				summary = "网盘配置读取失败。"
 				checks = []storagedto.ConnectionCheck{
-					{Label: "登录态校验", Status: "critical", Detail: probeErr.Error()},
+					{Label: "云端配置读取", Status: "critical", Detail: profileErr.Error()},
 				}
 				healthStatus = "ERROR"
 				authStatus = "FAILED"
-				lastErrorCode = "credential_probe_failed"
-				lastErrorMessage = probeErr.Error()
+				lastErrorCode = "cloud_profile_unavailable"
+				lastErrorMessage = profileErr.Error()
 				break
 			}
-			if !probe.Authenticated {
+			driver, driverErr := s.integration.Provider(profile.ProviderVendor)
+			if driverErr != nil {
 				tone = "critical"
-				summary = "网盘凭据已失效，请重新扫码登录。"
+				summary = "云端驱动不可用。"
 				checks = []storagedto.ConnectionCheck{
-					{Label: "登录态校验", Status: "critical", Detail: probe.Message},
+					{Label: "云端驱动", Status: "critical", Detail: driverErr.Error()},
 				}
 				healthStatus = "ERROR"
 				authStatus = "FAILED"
-				lastErrorCode = "credential_invalid"
-				lastErrorMessage = probe.Message
+				lastErrorCode = "cloud_driver_unavailable"
+				lastErrorMessage = driverErr.Error()
 				break
 			}
-			if _, resolveErr := cloudService.resolveCloudMountDirectory(ctx, cookie, mount.SourcePath); resolveErr != nil {
+			if ensureErr := driver.EnsureRemoteRoot(ctx, profile.Payload, mount.SourcePath); ensureErr != nil {
 				tone = "critical"
 				summary = "挂载目录访问失败。"
 				checks = []storagedto.ConnectionCheck{
-					{Label: "登录态校验", Status: "success", Detail: probe.Message},
-					{Label: "挂载目录访问", Status: "critical", Detail: resolveErr.Error()},
+					{Label: "CD2 鉴权", Status: "success", Detail: "已使用保存的网盘节点配置接入 CloudDrive2"},
+					{Label: "挂载目录访问", Status: "critical", Detail: ensureErr.Error()},
 				}
 				healthStatus = "ERROR"
 				authStatus = "AUTHORIZED"
 				lastErrorCode = "mount_path_unavailable"
-				lastErrorMessage = resolveErr.Error()
+				lastErrorMessage = ensureErr.Error()
 				break
 			}
 			tone = "success"
 			summary = "网盘挂载目录可访问，当前配置可继续使用。"
 			checks = []storagedto.ConnectionCheck{
-				{Label: "登录态校验", Status: "success", Detail: probe.Message},
+				{Label: "CD2 鉴权", Status: "success", Detail: "已使用保存的网盘节点配置接入 CloudDrive2"},
 				{Label: "挂载目录访问", Status: "success", Detail: "目录存在且可访问。"},
 			}
 			healthStatus = "ONLINE"
@@ -753,6 +756,7 @@ func (s *LocalFolderService) loadMountExecutionConfig(ctx context.Context, id st
 		SELECT
 			m.id,
 			m.name,
+			m.storage_node_id,
 			sn.node_type,
 			m.source_path,
 			COALESCE(snc.username, ''),
@@ -763,7 +767,7 @@ func (s *LocalFolderService) loadMountExecutionConfig(ctx context.Context, id st
 		WHERE m.id = $1
 		  AND m.deleted_at IS NULL
 		  AND sn.deleted_at IS NULL
-	`, id).Scan(&mount.ID, &mount.Name, &mount.NodeType, &mount.SourcePath, &mount.Username, &mount.SecretCiphertext)
+	`, id).Scan(&mount.ID, &mount.Name, &mount.NodeID, &mount.NodeType, &mount.SourcePath, &mount.Username, &mount.SecretCiphertext)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return mountExecutionConfig{}, apperrors.NotFound("挂载文件夹不存在")
@@ -786,6 +790,7 @@ type storageNodeMountRef struct {
 type mountExecutionConfig struct {
 	ID               string
 	Name             string
+	NodeID           string
 	NodeType         string
 	SourcePath       string
 	Username         string

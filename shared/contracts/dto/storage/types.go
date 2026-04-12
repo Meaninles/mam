@@ -89,6 +89,7 @@ type CloudNodeRecord struct {
 	QRChannel    string `json:"qrChannel,omitempty"`
 	MountPath    string `json:"mountPath"`
 	TokenStatus  string `json:"tokenStatus"`
+	Token        string `json:"token,omitempty"`
 	LastTestAt   string `json:"lastTestAt,omitempty"`
 	Status       string `json:"status"`
 	Tone         string `json:"tone"`
@@ -136,6 +137,7 @@ type CloudQRCodeSession struct {
 	Sign    string `json:"sign"`
 	QRCode  string `json:"qrcode"`
 	Channel string `json:"channel"`
+	CodeVerifier string `json:"codeVerifier,omitempty"`
 }
 
 type CloudQRCodeStatusResponse struct {

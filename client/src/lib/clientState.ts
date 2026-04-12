@@ -129,6 +129,7 @@ export function cloneSettingsRecord(
     'file-overview': structuredClone(settings['file-overview'] ?? fallback['file-overview']),
     'tag-management': structuredClone(settings['tag-management'] ?? fallback['tag-management']),
     'import-archive': structuredClone(settings['import-archive'] ?? fallback['import-archive']),
+    'dependency-services': structuredClone(settings['dependency-services'] ?? fallback['dependency-services']),
     notifications: structuredClone(settings.notifications ?? fallback.notifications),
     'issue-governance': structuredClone(settings['issue-governance'] ?? fallback['issue-governance']),
     verification: structuredClone(settings.verification ?? fallback.verification),

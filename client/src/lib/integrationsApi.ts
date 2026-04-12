@@ -61,13 +61,21 @@ export const integrationsApi = {
 
 async function fetchIntegrationData<T>(path: string, init?: RequestInit): Promise<T> {
   const { centerBaseUrl } = getRuntimeConfig();
-  const response = await fetch(`${centerBaseUrl}${path}`, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${centerBaseUrl}${path}`, {
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(init?.headers ?? {}),
+      },
+    });
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error('无法连接中心服务，请检查中心服务地址或跨域配置');
+    }
+    throw error;
+  }
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as { error?: { message?: string } } | null;
     throw new Error(payload?.error?.message ?? `center service returned status ${response.status}`);

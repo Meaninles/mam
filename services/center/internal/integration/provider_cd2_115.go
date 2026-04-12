@@ -111,6 +111,44 @@ func (d *CD2115Driver) AuthenticateToken(ctx context.Context, token string) (Pro
 	return buildProviderAuthResult("115", api), nil
 }
 
+func (d *CD2115Driver) AuthenticateOpenToken(ctx context.Context, token OpenOAuthToken) (ProviderAuthResult, error) {
+	config, err := d.service.LoadCD2GatewayConfig(ctx)
+	if err != nil {
+		return ProviderAuthResult{}, err
+	}
+	client, err := newCD2Client(ctx, config)
+	if err != nil {
+		return ProviderAuthResult{}, err
+	}
+	defer client.Close()
+
+	before, _ := client.getAllCloudAPIs(ctx)
+	authCtx, err := client.authContext(ctx)
+	if err != nil {
+		return ProviderAuthResult{}, err
+	}
+	result, err := client.client.APILogin115OpenOAuth(authCtx, &cd2pb.Login115OpenOAuthRequest{
+		RefreshToken: token.RefreshToken,
+		AccessToken:  token.AccessToken,
+		ExpiresIn:    token.ExpiresIn,
+	})
+	if err != nil {
+		return ProviderAuthResult{}, fmt.Errorf("通过 CloudDrive2 登录 115open 失败: %w", err)
+	}
+	if !result.GetSuccess() {
+		return ProviderAuthResult{}, fmt.Errorf("%s", strings.TrimSpace(result.GetErrorMessage()))
+	}
+	after, err := client.getAllCloudAPIs(ctx)
+	if err != nil {
+		return ProviderAuthResult{}, err
+	}
+	api, err := resolveCloudAPI(before, after, "115")
+	if err != nil {
+		return ProviderAuthResult{}, err
+	}
+	return buildProviderAuthResult("115", api), nil
+}
+
 func (d *CD2115Driver) CreateQRCodeSession(ctx context.Context, channel string) (QRCodeSession, error) {
 	config, err := d.service.LoadCD2GatewayConfig(ctx)
 	if err != nil {

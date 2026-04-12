@@ -185,15 +185,18 @@ func (s *Service) TestCD2Gateway(ctx context.Context, request integrationdto.Tes
 	testErr := tester.TestGateway(ctx, config)
 	now := s.now().UTC()
 	newStatus := gatewayRuntimeStatus(testErr, config.Enabled)
-	_, _ = s.pool.Exec(ctx, `
+	_, updateErr := s.pool.Exec(ctx, `
 		UPDATE integration_gateways
-		SET runtime_status = $2,
-		    last_test_at = $3,
-		    last_error_code = $4,
-		    last_error_message = $5,
-		    updated_at = $3
+		SET runtime_status = $1,
+		    last_test_at = $2,
+		    last_error_code = $3,
+		    last_error_message = $4,
+		    updated_at = $2
 		WHERE gateway_type = 'CD2'
 	`, newStatus, now, gatewayErrorCode(testErr), gatewayErrorMessage(testErr))
+	if updateErr != nil {
+		return integrationdto.TestCD2GatewayResponse{}, updateErr
+	}
 	record, loadErr := s.loadCD2Gateway(ctx)
 	if loadErr != nil {
 		record = config

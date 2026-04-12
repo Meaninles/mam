@@ -34,7 +34,7 @@ export function SettingsPage({
             </button>
           ))}
         </div>
-        {settingsTab !== 'tag-management' ? (
+        {settingsTab !== 'tag-management' && settingsTab !== 'dependency-services' ? (
           <div className="toolbar-group wrap">
             <ActionButton onClick={onResetSettings}>恢复默认</ActionButton>
             <ActionButton tone="primary" onClick={onSaveSettings}>

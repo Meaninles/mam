@@ -18,6 +18,12 @@ type ProviderAuthResult struct {
 	Payload        CloudProviderPayload
 }
 
+type OpenOAuthToken struct {
+	RefreshToken string
+	AccessToken  string
+	ExpiresIn    uint64
+}
+
 type QRCodeSession struct {
 	ID        string
 	Channel   string

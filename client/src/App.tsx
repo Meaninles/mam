@@ -93,6 +93,7 @@ import { NotificationCenterSheet } from './pages/NotificationCenterSheet';
 import { SettingsPage } from './pages/SettingsPage';
 import {
   BackgroundTaskSettingsPanel,
+  DependencyServicesSettingsPanel,
   ImportArchiveSettingsPanel,
   IssueGovernanceSettingsPanel,
   NotificationSettingsPanel,
@@ -584,11 +585,13 @@ export default function App() {
     username: '',
     password: '',
     enabled: true,
+    hasPassword: false,
     runtimeStatus: 'UNKNOWN',
     saving: false,
     testing: false,
   });
   const [cd2Runtime, setCd2Runtime] = useState<RuntimeComponentRecord | null>(null);
+  const [aria2Runtime, setAria2Runtime] = useState<RuntimeComponentRecord | null>(null);
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
   const [folderHistory, setFolderHistory] = useState<Array<string | null>>([null]);
   const [historyIndex, setHistoryIndex] = useState(0);
@@ -978,9 +981,29 @@ export default function App() {
     if (settingsTab === 'import-archive') {
       return (
         <ImportArchiveSettingsPanel
+          deviceSessions={importDashboard.devices}
+          reports={importDashboard.reports}
+          sections={settingsDraft['import-archive']}
+          onChangeSetting={(sectionId, rowId, value) =>
+            setSettingsDraft((current) => ({
+              ...current,
+              'import-archive': current['import-archive'].map((section) =>
+                section.id === sectionId
+                  ? { ...section, rows: section.rows.map((row) => (row.id === rowId ? { ...row, value } : row)) }
+                  : section,
+              ),
+            }))
+          }
+        />
+      );
+    }
+
+    if (settingsTab === 'dependency-services') {
+      return (
+        <DependencyServicesSettingsPanel
+          aria2Runtime={aria2Runtime}
           cd2Gateway={cd2GatewayDraft}
           cd2Runtime={cd2Runtime}
-          deviceSessions={importDashboard.devices}
           onChangeCD2Gateway={(field, value) =>
             setCd2GatewayDraft((current) => ({
               ...current,
@@ -994,24 +1017,62 @@ export default function App() {
                 baseUrl: cd2GatewayDraft.baseUrl.trim(),
                 username: cd2GatewayDraft.username.trim(),
                 password: cd2GatewayDraft.password,
-                enabled: cd2GatewayDraft.enabled,
+                enabled: true,
               })
-              .then((result) => {
-                setCd2GatewayDraft((current) => ({
-                  ...current,
-                  runtimeStatus: result.record.runtimeStatus,
-                  password: '',
-                  saving: false,
-                }));
-                setFeedback({ message: result.message, tone: 'success' });
+              .then(async (result) => {
+                try {
+                  const verified = await integrationsApi.testCD2Gateway({
+                    baseUrl: cd2GatewayDraft.baseUrl.trim(),
+                    username: cd2GatewayDraft.username.trim(),
+                    password: cd2GatewayDraft.password,
+                    enabled: true,
+                  });
+                  setCd2GatewayDraft((current) => ({
+                    ...current,
+                    runtimeStatus: verified.record.runtimeStatus,
+                    password: '',
+                    hasPassword: verified.record.hasPassword,
+                    saving: false,
+                  }));
+                  setCd2Runtime({
+                    name: 'CloudDrive2',
+                    status: verified.record.runtimeStatus,
+                    message:
+                      verified.record.runtimeStatus === 'ONLINE'
+                        ? 'CloudDrive2 连接正常'
+                        : verified.record.lastErrorMessage || 'CloudDrive2 连接异常',
+                    lastCheckedAt: verified.record.lastTestAt,
+                    lastErrorCode: verified.record.lastErrorCode,
+                    lastErrorMessage: verified.record.lastErrorMessage,
+                  });
+                  setFeedback({ message: `${result.message}，并已确认连接正常`, tone: 'success' });
+                } catch (verifyError) {
+                  setCd2GatewayDraft((current) => ({
+                    ...current,
+                    runtimeStatus: result.record.runtimeStatus,
+                    password: '',
+                    hasPassword: result.record.hasPassword,
+                    saving: false,
+                  }));
+                  setCd2Runtime({
+                    name: 'CloudDrive2',
+                    status: 'ERROR',
+                    message: verifyError instanceof Error ? verifyError.message : 'CloudDrive2 连接异常',
+                    lastCheckedAt: result.record.lastTestAt,
+                    lastErrorCode: result.record.lastErrorCode,
+                    lastErrorMessage: verifyError instanceof Error ? verifyError.message : result.record.lastErrorMessage,
+                  });
+                  setFeedback({
+                    message: verifyError instanceof Error ? `配置已保存，但连接确认失败：${verifyError.message}` : '配置已保存，但连接确认失败',
+                    tone: 'critical',
+                  });
+                }
               })
               .catch((error) => {
                 setCd2GatewayDraft((current) => ({ ...current, saving: false }));
                 setFeedback({ message: error instanceof Error ? error.message : 'CloudDrive2 保存失败', tone: 'critical' });
               });
           }}
-          reports={importDashboard.reports}
-          sections={settingsDraft['import-archive']}
           onTestCD2Gateway={() => {
             setCd2GatewayDraft((current) => ({ ...current, testing: true }));
             void integrationsApi
@@ -1019,14 +1080,26 @@ export default function App() {
                 baseUrl: cd2GatewayDraft.baseUrl.trim(),
                 username: cd2GatewayDraft.username.trim(),
                 password: cd2GatewayDraft.password,
-                enabled: cd2GatewayDraft.enabled,
+                enabled: true,
               })
               .then((result) => {
                 setCd2GatewayDraft((current) => ({
                   ...current,
                   runtimeStatus: result.record.runtimeStatus,
+                  hasPassword: result.record.hasPassword,
                   testing: false,
                 }));
+                setCd2Runtime({
+                  name: 'CloudDrive2',
+                  status: result.record.runtimeStatus,
+                  message:
+                    result.record.runtimeStatus === 'ONLINE'
+                      ? 'CloudDrive2 连接正常'
+                      : result.record.lastErrorMessage || 'CloudDrive2 连接异常',
+                  lastCheckedAt: result.record.lastTestAt,
+                  lastErrorCode: result.record.lastErrorCode,
+                  lastErrorMessage: result.record.lastErrorMessage,
+                });
                 setFeedback({ message: result.message, tone: 'success' });
               })
               .catch((error) => {
@@ -1034,16 +1107,6 @@ export default function App() {
                 setFeedback({ message: error instanceof Error ? error.message : 'CloudDrive2 测试失败', tone: 'critical' });
               });
           }}
-          onChangeSetting={(sectionId, rowId, value) =>
-            setSettingsDraft((current) => ({
-              ...current,
-              'import-archive': current['import-archive'].map((section) =>
-                section.id === sectionId
-                  ? { ...section, rows: section.rows.map((row) => (row.id === rowId ? { ...row, value } : row)) }
-                  : section,
-              ),
-            }))
-          }
         />
       );
     }
@@ -1118,6 +1181,7 @@ export default function App() {
     settingsDraft,
     settingsTab,
     workspaceLabels,
+    aria2Runtime,
     cd2GatewayDraft,
     cd2Runtime,
   ]);
@@ -1127,26 +1191,29 @@ export default function App() {
       return;
     }
     let cancelled = false;
-    const loadCD2 = async () => {
+    const loadDependencyServices = async () => {
       try {
         const [gateways, runtime] = await Promise.all([integrationsApi.loadGateways(), integrationsApi.loadRuntime()]);
         if (cancelled) return;
         const gateway = gateways.find((item) => item.gatewayType === 'CD2');
         const runtimeItem = runtime.find((item) => item.name === 'CloudDrive2') ?? null;
+        const aria2RuntimeItem = runtime.find((item) => item.name.toLowerCase() === 'aria2') ?? null;
         setCd2Runtime(runtimeItem);
+        setAria2Runtime(aria2RuntimeItem);
         if (gateway) {
           setCd2GatewayDraft((current) => ({
             ...current,
             baseUrl: gateway.baseUrl,
             username: gateway.username ?? '',
-            enabled: gateway.enabled,
+            enabled: true,
+            hasPassword: gateway.hasPassword,
             runtimeStatus: gateway.runtimeStatus,
           }));
         }
       } catch {
       }
     };
-    void loadCD2();
+    void loadDependencyServices();
     return () => {
       cancelled = true;
     };
