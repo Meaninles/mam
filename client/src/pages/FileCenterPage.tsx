@@ -26,18 +26,22 @@ import {
 } from 'lucide-react';
 import type { FileTypeFilter, ThemeMode } from '../data';
 import {
-  canDeleteFileCenterEndpoint,
-  canSyncFileCenterEndpoint,
   normalizeFileCenterEndpointState,
+  resolveFileCenterDeleteAvailability,
+  resolveFileCenterSyncAvailability,
   resolveFileCenterEndpointTone,
 } from '../lib/fileCenterApi';
 import type {
+  FileCenterActionAvailability,
   FileCenterColorLabel,
+  FileCenterDeleteExecution,
   FileCenterEndpoint,
   FileCenterEntry,
+  FileCenterIntegrationHealth,
   FileCenterSortDirection,
   FileCenterSortValue,
   FileCenterStatusFilter,
+  FileCenterSyncExecution,
 } from '../lib/fileCenterApi';
 import type { PageSize } from '../App';
 import { ActionButton, EmptyState, IconButton, SelectPill, TonePill } from '../components/Shared';
@@ -69,9 +73,15 @@ type StatusMenuState = {
   submenu: 'partial' | null;
 } | null;
 
+type CloudActionNotice = {
+  tone: 'info' | 'warning' | 'critical';
+  message: string;
+  actions: Array<'settings' | 'storage-nodes'>;
+};
+
 export function FileCenterPage(props: {
-  batchDeleteEndpointActions: Array<{ endpointName: string; enabled: boolean }>;
-  batchSyncEndpointActions: Array<{ endpointName: string; enabled: boolean }>;
+  batchDeleteEndpointActions: Array<{ endpointName: string; enabled: boolean; reason?: string }>;
+  batchSyncEndpointActions: Array<{ endpointName: string; enabled: boolean; reason?: string }>;
   breadcrumbs: Array<{ id: string | null; label: string }>;
   canGoBack: boolean;
   canGoForward: boolean;
@@ -92,6 +102,8 @@ export function FileCenterPage(props: {
   statusFilter: FileCenterStatusFilter;
   theme: ThemeMode;
   total: number;
+  cloudActionNotice?: CloudActionNotice | null;
+  integrationHealth?: FileCenterIntegrationHealth;
   onChangeSort: (value: FileCenterSortValue) => void;
   onClearSelection: () => void;
   onCreateFolder: () => void;
@@ -106,6 +118,8 @@ export function FileCenterPage(props: {
   onOpenItemDetail: (item: FileCenterEntry) => void;
   onOpenTagEditor: (item: FileCenterEntry) => void;
   onRefreshIndex: () => void;
+  onOpenCloudDependencySettings?: () => void;
+  onOpenStorageNodes?: () => void;
   onUploadFiles: (files: File[]) => void;
   onUploadFolder: (files: File[]) => void;
   onRequestBatchDeleteEndpoint: (endpointName: string) => void;
@@ -146,6 +160,12 @@ export function FileCenterPage(props: {
     statusFilter,
     theme,
     total,
+    cloudActionNotice,
+    integrationHealth = {
+      cd2Online: true,
+      aria2Online: true,
+      cloudAuthReady: true,
+    },
     onChangeSort,
     onClearSelection,
     onCreateFolder,
@@ -159,6 +179,8 @@ export function FileCenterPage(props: {
     onOpenBatchTagEditor,
     onOpenItemDetail,
     onOpenTagEditor,
+    onOpenCloudDependencySettings,
+    onOpenStorageNodes,
     onRefreshIndex,
     onUploadFiles,
     onUploadFolder,
@@ -233,6 +255,22 @@ export function FileCenterPage(props: {
 
   return (
     <section className="page-stack file-center-page">
+      {cloudActionNotice ? (
+        <div className={`toolbar-card file-center-cloud-notice ${cloudActionNotice.tone}`} role="status">
+          <div className="file-center-cloud-notice-copy">
+            <strong>云端动作受限</strong>
+            <p className="muted-paragraph">{cloudActionNotice.message}</p>
+          </div>
+          <div className="toolbar-group">
+            {cloudActionNotice.actions.includes('settings') ? (
+              <ActionButton onClick={() => onOpenCloudDependencySettings?.()}>打开设置页</ActionButton>
+            ) : null}
+            {cloudActionNotice.actions.includes('storage-nodes') ? (
+              <ActionButton onClick={() => onOpenStorageNodes?.()}>打开存储节点</ActionButton>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
       <div className="toolbar-card explorer-toolbar file-center-toolbar">
         <div className="toolbar-group">
           <IconButton active={canGoBack} ariaLabel="后退" tooltip="后退" onClick={onGoBack}>
@@ -509,6 +547,7 @@ export function FileCenterPage(props: {
                             : ''
                           : 'is-disabled'
                       }
+                      data-tooltip={action.reason ?? ''}
                       disabled={!action.enabled}
                       type="button"
                       onClick={() => {
@@ -648,16 +687,21 @@ export function FileCenterPage(props: {
                         <div className="file-endpoint-statuses">
                           {item.endpoints.map((endpoint) => {
                             const endpointState = normalizeFileCenterEndpointState(endpoint.state);
-                            const syncAvailable = canSyncFileCenterEndpoint(endpointState);
+                            const syncAvailability = resolveFileCenterSyncAvailability(
+                              item,
+                              endpoint.name,
+                              integrationHealth,
+                            );
                             const toneClass = resolveFileCenterEndpointTone(endpointState);
                             return (
                               <button
                                 key={`${item.id}-${endpoint.name}`}
                                 aria-label={`${endpoint.name} ${endpointState}`}
-                                className={`endpoint-status-button ${toneClass}${syncAvailable ? '' : ' disabled'}`}
-                                disabled={!syncAvailable}
+                                className={`endpoint-status-button ${toneClass}${syncAvailability.enabled ? '' : ' disabled'}`}
+                                data-tooltip={resolveActionTooltip(syncAvailability, endpoint.lastSyncAt)}
+                                disabled={!syncAvailability.enabled}
                                 type="button"
-                                onClick={() => syncAvailable && onRequestSyncEndpoint(item, endpoint.name)}
+                                onClick={() => syncAvailability.enabled && onRequestSyncEndpoint(item, endpoint.name)}
                               >
                                 <EndpointGlyph endpoint={endpoint} />
                                 <span>{endpoint.name}</span>
@@ -745,15 +789,20 @@ export function FileCenterPage(props: {
                                 {menuState.submenu === 'sync' ? (
                                   <div className="context-menu submenu-menu">
                                     {item.endpoints.map((endpoint) => {
-                                      const syncAvailable = canSyncFileCenterEndpoint(endpoint);
+                                      const syncAvailability = resolveFileCenterSyncAvailability(
+                                        item,
+                                        endpoint.name,
+                                        integrationHealth,
+                                      );
                                       return (
                                         <button
                                           key={`${item.id}-sync-${endpoint.name}`}
-                                          className={syncAvailable ? '' : 'is-disabled'}
-                                          disabled={!syncAvailable}
+                                          className={syncAvailability.enabled ? '' : 'is-disabled'}
+                                          data-tooltip={resolveActionTooltip(syncAvailability)}
+                                          disabled={!syncAvailability.enabled}
                                           type="button"
                                           onClick={() => {
-                                            if (!syncAvailable) return;
+                                            if (!syncAvailability.enabled) return;
                                             setMenuState(null);
                                             onRequestSyncEndpoint(item, endpoint.name);
                                           }}
@@ -767,15 +816,20 @@ export function FileCenterPage(props: {
                                 {menuState.submenu === 'delete' ? (
                                   <div className="context-menu submenu-menu">
                                     {item.endpoints.map((endpoint) => {
-                                      const deleteAvailable = canDeleteFileCenterEndpoint(endpoint);
+                                      const deleteAvailability = resolveFileCenterDeleteAvailability(
+                                        item,
+                                        endpoint.name,
+                                        integrationHealth,
+                                      );
                                       return (
                                         <button
                                           key={`${item.id}-delete-${endpoint.name}`}
-                                          className={deleteAvailable ? 'danger-text' : 'is-disabled'}
-                                          disabled={!deleteAvailable}
+                                          className={deleteAvailability.enabled ? 'danger-text' : 'is-disabled'}
+                                          data-tooltip={resolveActionTooltip(deleteAvailability)}
+                                          disabled={!deleteAvailability.enabled}
                                           type="button"
                                           onClick={() => {
-                                            if (!deleteAvailable) return;
+                                            if (!deleteAvailability.enabled) return;
                                             setMenuState(null);
                                             onRequestDeleteEndpoint(item, endpoint.name);
                                           }}
@@ -870,6 +924,15 @@ function FileKindIcon({ item }: { item: FileCenterEntry }) {
     return <FileText size={16} />;
   }
   return <File size={16} />;
+}
+
+function resolveActionTooltip(
+  availability:
+    | FileCenterActionAvailability<FileCenterSyncExecution>
+    | FileCenterActionAvailability<FileCenterDeleteExecution>,
+  fallback?: string,
+) {
+  return availability.reason ?? availability.execution?.summary ?? fallback ?? '';
 }
 
 function EndpointGlyph({ endpoint }: { endpoint: FileCenterEndpoint }) {

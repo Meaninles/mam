@@ -1258,6 +1258,11 @@ export function TaskCenterPage(props: {
                           {progressMeta.display}
                         </span>
                       ) : null}
+                      {task.phaseLabel ? (
+                        <span className="transfer-progress-meta" title={`当前阶段：${task.phaseLabel}`}>
+                          当前阶段：{task.phaseLabel}
+                        </span>
+                      ) : null}
                     </div>
 
                     <div className="transfer-task-side">
@@ -1471,6 +1476,11 @@ function TaskItemDetailSheet({
         <DenseRow label="大小" value={itemSize} />
         <DenseRow label="速度" value={item.speed} />
         <DenseRow label="进度" value={`${item.progress}%`} />
+        <DenseRow label="执行引擎" value={item.executorEngineLabel ?? '—'} />
+        <DenseRow label="外部任务 ID" value={item.externalTaskId ?? '—'} />
+        <DenseRow label="外部状态" value={item.externalTaskStatus ?? '—'} />
+        <DenseRow label="失败位置" value={item.failureLocation ?? '—'} />
+        <DenseRow label="原始错误" value={item.rawErrorMessage ?? item.resultLabel ?? '—'} />
         <DenseRow label="源路径" value={itemSourcePath} />
         <DenseRow label="目标路径" value={itemTargetPath} />
         <DenseRow label="异常数量" value={`${itemIssues.length}`} />
@@ -1549,6 +1559,11 @@ export function TaskDetailSheet({
         <DenseRow label="文件夹数量" value={`${item.folderCount ?? 0}`} />
         <DenseRow label="当前速度" value={item.speed} />
         <DenseRow label="剩余时间" value={item.eta} />
+        <DenseRow label="执行引擎" value={item.executorEngineLabel ?? '—'} />
+        <DenseRow label="外部任务 ID" value={item.externalTaskId ?? '—'} />
+        <DenseRow label="外部状态" value={item.externalTaskStatus ?? '—'} />
+        <DenseRow label="失败位置" value={item.failureLocation ?? '—'} />
+        <DenseRow label="原始错误" value={item.rawErrorMessage ?? item.resultSummary ?? '—'} />
         {!isTransferTask ? <DenseRow label="范围摘要" value={item.scopeLabel ?? '—'} /> : null}
         {!isTransferTask ? <DenseRow label="结果摘要" value={item.resultSummary ?? '—'} /> : null}
         {!isTransferTask ? <DenseRow label="创建时间" value={item.createdAt ?? '—'} /> : null}

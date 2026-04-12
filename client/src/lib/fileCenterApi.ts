@@ -16,6 +16,40 @@ export type FileCenterEndpoint = {
   endpointType: FileCenterEndpointType;
 };
 
+export type FileCenterIntegrationHealth = {
+  cd2Online: boolean;
+  aria2Online: boolean;
+  cloudAuthReady: boolean;
+  cd2Message?: string;
+  aria2Message?: string;
+  cloudAuthMessage?: string;
+};
+
+export type FileCenterSyncRouteType = 'UPLOAD' | 'DOWNLOAD' | 'COPY';
+export type FileCenterSyncEngine = 'CD2_REMOTE_UPLOAD' | 'ARIA2' | 'INTERNAL_COPY';
+
+export type FileCenterSyncExecution = {
+  routeType: FileCenterSyncRouteType;
+  engine: FileCenterSyncEngine;
+  summary: string;
+  sourceEndpointName: string;
+  targetEndpointName: string;
+  supportsResume: boolean;
+  usesCloud: boolean;
+};
+
+export type FileCenterDeleteExecution = {
+  summary: string;
+  targetEndpointName: string;
+  usesCloud: boolean;
+};
+
+export type FileCenterActionAvailability<TExecution> = {
+  enabled: boolean;
+  reason?: string;
+  execution?: TExecution;
+};
+
 type FileCenterMetadataRow = {
   label: string;
   value: string;
@@ -961,6 +995,174 @@ export function canSyncFileCenterEndpoint(endpoint: Pick<FileCenterEndpoint, 'st
 export function canDeleteFileCenterEndpoint(endpoint: Pick<FileCenterEndpoint, 'state'> | string) {
   const state = typeof endpoint === 'string' ? endpoint : endpoint.state;
   return ['已同步', '部分同步'].includes(normalizeFileCenterEndpointState(state));
+}
+
+export function resolveFileCenterSyncExecution(
+  entry: Pick<FileCenterEntry, 'endpoints'>,
+  endpointName: string,
+): FileCenterSyncExecution | null {
+  const targetEndpoint = entry.endpoints.find((endpoint) => endpoint.name === endpointName);
+  if (!targetEndpoint) {
+    return null;
+  }
+
+  const sourceEndpoint = chooseBestSourceEndpoint(entry.endpoints, endpointName);
+  if (!sourceEndpoint) {
+    return null;
+  }
+
+  if (targetEndpoint.endpointType === 'cloud') {
+    return {
+      routeType: 'UPLOAD',
+      engine: 'CD2_REMOTE_UPLOAD',
+      summary: `通过 CloudDrive2 同步到 ${targetEndpoint.name}，支持断点续传`,
+      sourceEndpointName: sourceEndpoint.name,
+      targetEndpointName: targetEndpoint.name,
+      supportsResume: true,
+      usesCloud: true,
+    };
+  }
+
+  if (sourceEndpoint.endpointType === 'cloud') {
+    return {
+      routeType: 'DOWNLOAD',
+      engine: 'ARIA2',
+      summary: `通过 aria2 从 ${sourceEndpoint.name} 同步到 ${targetEndpoint.name}，支持断点续传`,
+      sourceEndpointName: sourceEndpoint.name,
+      targetEndpointName: targetEndpoint.name,
+      supportsResume: true,
+      usesCloud: true,
+    };
+  }
+
+  return {
+    routeType: 'COPY',
+    engine: 'INTERNAL_COPY',
+    summary: `直接同步到 ${targetEndpoint.name}`,
+    sourceEndpointName: sourceEndpoint.name,
+    targetEndpointName: targetEndpoint.name,
+    supportsResume: false,
+    usesCloud: false,
+  };
+}
+
+export function resolveFileCenterSyncAvailability(
+  entry: Pick<FileCenterEntry, 'endpoints'>,
+  endpointName: string,
+  integrationHealth?: FileCenterIntegrationHealth,
+): FileCenterActionAvailability<FileCenterSyncExecution> {
+  const targetEndpoint = entry.endpoints.find((endpoint) => endpoint.name === endpointName);
+  if (!targetEndpoint) {
+    return { enabled: false, reason: '未找到目标端点' };
+  }
+  if (!canSyncFileCenterEndpoint(targetEndpoint)) {
+    return { enabled: false, reason: '当前端点副本已存在或正在同步' };
+  }
+
+  const execution = resolveFileCenterSyncExecution(entry, endpointName);
+  if (!execution) {
+    return { enabled: false, reason: '当前没有可用源副本' };
+  }
+
+  if (execution.routeType === 'UPLOAD') {
+    if (!integrationHealth?.cd2Online) {
+      return { enabled: false, reason: 'CloudDrive2 当前不可用，请先前往设置页处理', execution };
+    }
+    if (!integrationHealth?.cloudAuthReady) {
+      return {
+        enabled: false,
+        reason: integrationHealth?.cloudAuthMessage ?? '115 节点鉴权未就绪，请先前往存储节点页处理',
+        execution,
+      };
+    }
+  }
+
+  if (execution.routeType === 'DOWNLOAD') {
+    if (!integrationHealth?.cd2Online) {
+      return { enabled: false, reason: 'CloudDrive2 当前不可用，请先前往设置页处理', execution };
+    }
+    if (!integrationHealth?.aria2Online) {
+      return { enabled: false, reason: 'aria2 当前不可用，请先前往设置页处理', execution };
+    }
+    if (!integrationHealth?.cloudAuthReady) {
+      return {
+        enabled: false,
+        reason: integrationHealth?.cloudAuthMessage ?? '115 节点鉴权未就绪，请先前往存储节点页处理',
+        execution,
+      };
+    }
+  }
+
+  return { enabled: true, execution };
+}
+
+export function resolveFileCenterDeleteAvailability(
+  entry: Pick<FileCenterEntry, 'endpoints'>,
+  endpointName: string,
+  integrationHealth?: FileCenterIntegrationHealth,
+): FileCenterActionAvailability<FileCenterDeleteExecution> {
+  const targetEndpoint = entry.endpoints.find((endpoint) => endpoint.name === endpointName);
+  if (!targetEndpoint) {
+    return { enabled: false, reason: '未找到目标端点' };
+  }
+
+  const execution: FileCenterDeleteExecution = targetEndpoint.endpointType === 'cloud'
+    ? {
+        summary: `通过 CloudDrive2 从 ${targetEndpoint.name} 删除副本`,
+        targetEndpointName: targetEndpoint.name,
+        usesCloud: true,
+      }
+    : {
+        summary: `从 ${targetEndpoint.name} 删除副本`,
+        targetEndpointName: targetEndpoint.name,
+        usesCloud: false,
+      };
+
+  if (!canDeleteFileCenterEndpoint(targetEndpoint)) {
+    return { enabled: false, reason: '当前端点上没有可删除的副本', execution };
+  }
+
+  if (targetEndpoint.endpointType === 'cloud') {
+    if (!integrationHealth?.cd2Online) {
+      return { enabled: false, reason: 'CloudDrive2 当前不可用，请先前往设置页处理', execution };
+    }
+    if (!integrationHealth?.cloudAuthReady) {
+      return {
+        enabled: false,
+        reason: integrationHealth?.cloudAuthMessage ?? '115 节点鉴权未就绪，请先前往存储节点页处理',
+        execution,
+      };
+    }
+  }
+
+  return { enabled: true, execution };
+}
+
+function chooseBestSourceEndpoint(
+  endpoints: FileCenterEntry['endpoints'],
+  targetEndpointName: string,
+): FileCenterEndpoint | null {
+  const candidates = endpoints
+    .filter(
+      (endpoint) =>
+        endpoint.name !== targetEndpointName &&
+        ['已同步', '部分同步'].includes(normalizeFileCenterEndpointState(endpoint.state)),
+    )
+    .sort((left, right) => endpointSourceWeight(left.endpointType) - endpointSourceWeight(right.endpointType));
+  return candidates[0] ?? null;
+}
+
+function endpointSourceWeight(endpointType: FileCenterEndpointType) {
+  switch (endpointType) {
+    case 'local':
+      return 0;
+    case 'nas':
+      return 1;
+    case 'cloud':
+      return 2;
+    default:
+      return 3;
+  }
 }
 
 function migrateFileCenterDatabase(db: SqlDatabase) {
@@ -2078,6 +2280,9 @@ void FILE_CENTER_LEGACY_QUERY_REFERENCES;
 
 export const __FILE_CENTER_TESTING__ = {
   sortEntryRowsForDisplay,
+  resolveSyncPlan: resolveFileCenterSyncExecution,
+  resolveSyncAvailability: resolveFileCenterSyncAvailability,
+  resolveDeleteAvailability: resolveFileCenterDeleteAvailability,
 };
 
 function replaceEntryDisplayTagsInDatabase(db: SqlDatabase, entryId: string, names: string[]) {

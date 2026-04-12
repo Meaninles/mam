@@ -63,12 +63,14 @@ import {
   type WorkspaceView,
 } from './lib/workspaceTabs';
 import {
-  canSyncFileCenterEndpoint,
   canDeleteFileCenterEndpoint,
   fileCenterApi,
+  resolveFileCenterDeleteAvailability,
+  resolveFileCenterSyncAvailability,
   type FileCenterColorLabel,
   type FileCenterDirectoryResult,
   type FileCenterEntry,
+  type FileCenterIntegrationHealth,
   type FileCenterSortDirection,
   type FileCenterSortValue,
   type FileCenterStatusFilter,
@@ -122,7 +124,7 @@ type PendingTaskFocus = {
   openIssuePopover?: boolean;
 } | null;
 type FileConfirmAction =
-  | { kind: 'sync'; items: FileCenterEntry[]; endpointName: string; totalSelected: number }
+  | { kind: 'sync'; items: FileCenterEntry[]; endpointName: string; totalSelected: number; guidanceNotes?: string[] }
   | { kind: 'delete-asset'; items: FileCenterEntry[] }
   | {
       kind: 'delete-endpoint';
@@ -130,6 +132,7 @@ type FileConfirmAction =
       endpointName: string;
       totalSelected: number;
       willDeleteAssetCount: number;
+      guidanceNotes?: string[];
     }
   | {
       kind: 'delete-conflict';
@@ -153,6 +156,7 @@ type BatchTagState = {
 type BatchEndpointAction = {
   endpointName: string;
   enabled: boolean;
+  reason?: string;
 };
 type RuntimeLightState = {
   ariaLabel: string;
@@ -608,6 +612,7 @@ export default function App() {
   const [managedLibrary, setManagedLibrary] = useState<Library | null>(null);
   const [libraryCreateState, setLibraryCreateState] = useState<LibraryCreateState>(null);
   const [libraryCreateSources, setLibraryCreateSources] = useState<StorageNodesDashboard | null>(null);
+  const [storageNodesDashboard, setStorageNodesDashboard] = useState<StorageNodesDashboard | null>(null);
   const [fileDetail, setFileDetail] = useState<FileCenterEntry | null>(null);
   const [fileCenterState, setFileCenterState] = useState<FileCenterDirectoryResult>({
     breadcrumbs: [],
@@ -1187,7 +1192,7 @@ export default function App() {
   ]);
 
   useEffect(() => {
-    if (!mountedWorkspaceViews.includes('settings')) {
+    if (!mountedWorkspaceViews.includes('settings') && !mountedWorkspaceViews.includes('file-center')) {
       return;
     }
     let cancelled = false;
@@ -1214,6 +1219,25 @@ export default function App() {
       }
     };
     void loadDependencyServices();
+    return () => {
+      cancelled = true;
+    };
+  }, [mountedWorkspaceViews]);
+
+  useEffect(() => {
+    if (!mountedWorkspaceViews.includes('file-center')) {
+      return;
+    }
+    let cancelled = false;
+    void storageNodesApi
+      .loadDashboard()
+      .then((dashboard) => {
+        if (!cancelled) {
+          setStorageNodesDashboard(dashboard);
+        }
+      })
+      .catch(() => {
+      });
     return () => {
       cancelled = true;
     };
@@ -2135,6 +2159,53 @@ export default function App() {
         canDeleteFileCenterEndpoint(endpoint),
     ).length;
 
+  const fileCenterIntegrationHealth = useMemo<FileCenterIntegrationHealth>(() => {
+    const healthyCloudNode = storageNodesDashboard?.cloudNodes.find(
+      (node) => node.vendor === '115' && node.tone === 'success' && node.status === '鉴权正常',
+    );
+    const cloudAuthMessage = storageNodesDashboard
+      ? healthyCloudNode
+        ? undefined
+        : '115 节点鉴权未就绪，请先前往存储节点页处理'
+      : undefined;
+    return {
+      cd2Online: isRuntimeComponentOnline(cd2Runtime),
+      aria2Online: isRuntimeComponentOnline(aria2Runtime),
+      cloudAuthReady: Boolean(healthyCloudNode),
+      cd2Message: cd2Runtime?.message,
+      aria2Message: aria2Runtime?.message,
+      cloudAuthMessage,
+    };
+  }, [aria2Runtime, cd2Runtime, storageNodesDashboard]);
+
+  const fileCenterCloudActionNotice = useMemo(() => {
+    const issues: string[] = [];
+    const actions = new Set<'settings' | 'storage-nodes'>();
+
+    if (!fileCenterIntegrationHealth.cd2Online) {
+      issues.push('CloudDrive2 当前不可用');
+      actions.add('settings');
+    }
+    if (!fileCenterIntegrationHealth.aria2Online) {
+      issues.push('aria2 当前不可用，云端下载会受影响');
+      actions.add('settings');
+    }
+    if (!fileCenterIntegrationHealth.cloudAuthReady) {
+      issues.push(fileCenterIntegrationHealth.cloudAuthMessage ?? '115 节点鉴权未就绪');
+      actions.add('storage-nodes');
+    }
+
+    if (issues.length === 0) {
+      return null;
+    }
+
+    return {
+      tone: 'warning' as const,
+      message: `115 云端动作暂不可用：${issues.join('；')}。上传和删除副本走 CloudDrive2，下载走 aria2，云端传输支持断点续传。`,
+      actions: Array.from(actions),
+    };
+  }, [fileCenterIntegrationHealth]);
+
   const batchEndpointActions = useMemo(() => {
     const sourceItems = selectedFileEntries.length > 0
       ? selectedFileEntries
@@ -2143,29 +2214,33 @@ export default function App() {
       new Set(sourceItems.flatMap((item) => item.endpoints.map((endpoint) => endpoint.name))),
     );
 
-    const syncActions: BatchEndpointAction[] = endpointNames.map((endpointName) => ({
-      endpointName,
-      enabled: sourceItems.some((item) =>
-        item.endpoints.some(
-          (endpoint) => endpoint.name === endpointName && canSyncFileCenterEndpoint(endpoint),
-        ),
-      ),
-    }));
+    const syncActions: BatchEndpointAction[] = endpointNames.map((endpointName) => {
+      const results = sourceItems.map((item) => resolveFileCenterSyncAvailability(item, endpointName, fileCenterIntegrationHealth));
+      const enabled = results.some((result) => result.enabled);
+      return {
+        endpointName,
+        enabled,
+        reason: enabled ? undefined : results.find((result) => result.reason)?.reason,
+      };
+    });
 
-    const deleteActions: BatchEndpointAction[] = endpointNames.map((endpointName) => ({
-      endpointName,
-      enabled: sourceItems.some((item) =>
-        item.endpoints.some(
-          (endpoint) => endpoint.name === endpointName && canDeleteFileCenterEndpoint(endpoint),
-        ),
-      ),
-    }));
+    const deleteActions: BatchEndpointAction[] = endpointNames.map((endpointName) => {
+      const results = sourceItems.map((item) =>
+        resolveFileCenterDeleteAvailability(item, endpointName, fileCenterIntegrationHealth),
+      );
+      const enabled = results.some((result) => result.enabled);
+      return {
+        endpointName,
+        enabled,
+        reason: enabled ? undefined : results.find((result) => result.reason)?.reason,
+      };
+    });
 
     return {
       syncActions,
       deleteActions,
     };
-  }, [fileCenterState.items, selectedFileEntries, selectedFileIds]);
+  }, [fileCenterIntegrationHealth, fileCenterState.items, selectedFileEntries, selectedFileIds]);
 
   const selectedActionItems = useMemo(
     () =>
@@ -2206,16 +2281,30 @@ export default function App() {
   };
 
   const requestBatchDeleteEndpoint = (endpointName: string, sourceItems = selectedActionItems) => {
-    const eligibleItems = sourceItems.filter((item) =>
-      item.endpoints.some(
-        (endpoint) => endpoint.name === endpointName && canDeleteFileCenterEndpoint(endpoint),
-      ),
-    );
+    const deleteEvaluations = sourceItems.map((item) => ({
+      item,
+      availability: resolveFileCenterDeleteAvailability(item, endpointName, fileCenterIntegrationHealth),
+    }));
+    const eligibleItems = deleteEvaluations.filter((entry) => entry.availability.enabled).map((entry) => entry.item);
 
     if (eligibleItems.length === 0) {
-      setFeedback({ message: `当前所选资产在 ${endpointName} 上没有可删除的副本`, tone: 'info' });
+      setFeedback({
+        message:
+          deleteEvaluations.find((entry) => entry.availability.reason)?.availability.reason ??
+          `当前所选资产在 ${endpointName} 上没有可删除的副本`,
+        tone: 'info',
+      });
       return;
     }
+
+    const guidanceNotes = Array.from(
+      new Set(
+        deleteEvaluations
+          .filter((entry) => entry.availability.enabled)
+          .map((entry) => entry.availability.execution?.summary)
+          .filter((value): value is string => Boolean(value)),
+      ),
+    );
 
     setPendingAction({
       kind: 'delete-endpoint',
@@ -2223,6 +2312,7 @@ export default function App() {
       items: eligibleItems,
       totalSelected: sourceItems.length,
       willDeleteAssetCount: eligibleItems.filter((item) => getManagedReplicaCount(item, endpointName) === 0).length,
+      guidanceNotes,
     });
   };
 
@@ -2253,18 +2343,38 @@ export default function App() {
   };
 
   const requestBatchSyncEndpoint = (endpointName: string, sourceItems = selectedActionItems) => {
-    const eligibleItems = sourceItems.filter((item) =>
-      item.endpoints.some(
-        (endpoint) => endpoint.name === endpointName && canSyncFileCenterEndpoint(endpoint),
-      ),
-    );
+    const syncEvaluations = sourceItems.map((item) => ({
+      item,
+      availability: resolveFileCenterSyncAvailability(item, endpointName, fileCenterIntegrationHealth),
+    }));
+    const eligibleItems = syncEvaluations.filter((entry) => entry.availability.enabled).map((entry) => entry.item);
 
     if (eligibleItems.length === 0) {
-      setFeedback({ message: `当前所选资产在 ${endpointName} 上没有可同步的副本`, tone: 'info' });
+      setFeedback({
+        message:
+          syncEvaluations.find((entry) => entry.availability.reason)?.availability.reason ??
+          `当前所选资产在 ${endpointName} 上没有可同步的副本`,
+        tone: 'info',
+      });
       return;
     }
 
-    setPendingAction({ kind: 'sync', items: eligibleItems, endpointName, totalSelected: sourceItems.length });
+    const guidanceNotes = Array.from(
+      new Set(
+        syncEvaluations
+          .filter((entry) => entry.availability.enabled)
+          .map((entry) => entry.availability.execution?.summary)
+          .filter((value): value is string => Boolean(value)),
+      ),
+    );
+
+    setPendingAction({
+      kind: 'sync',
+      items: eligibleItems,
+      endpointName,
+      totalSelected: sourceItems.length,
+      guidanceNotes,
+    });
   };
 
   const performSyncToEndpoint = async (items: FileCenterEntry[], endpointName: string) => {
@@ -2618,6 +2728,8 @@ export default function App() {
             statusFilter={fileStatusFilter}
             theme={theme}
             total={fileCenterState.total}
+            cloudActionNotice={fileCenterCloudActionNotice}
+            integrationHealth={fileCenterIntegrationHealth}
             onChangeSort={setFileSort}
             onToggleSortDirection={() =>
               setFileSortDirection((current) => (current === 'desc' ? 'asc' : 'desc'))
@@ -2641,6 +2753,11 @@ export default function App() {
             onOpenItemDetail={(item) => void openEntryDetail(item)}
             onOpenBatchAnnotationEditor={() => setBatchAnnotationState({ items: selectedActionItems })}
             onOpenBatchTagEditor={() => setBatchTagState({ items: selectedActionItems })}
+            onOpenCloudDependencySettings={() => {
+              setSettingsTab('dependency-services');
+              activateWorkspace('settings');
+            }}
+            onOpenStorageNodes={() => activateWorkspace('storage-nodes')}
             onOpenTagEditor={(item) => setTagEditorState({ item })}
             onDeleteSelected={() => void requestDeleteAssets(selectedFileIds)}
             onRefreshIndex={() => {
@@ -3334,11 +3451,20 @@ function FileActionDialog({
     if (skippedCount > 0) {
       notes.push({ text: `其中 ${skippedCount} 项在该端点上已不可删除，将自动跳过。` });
     }
+    action.guidanceNotes?.forEach((note) => {
+      notes.push({ text: note });
+    });
     if (action.willDeleteAssetCount > 0) {
       notes.push({ text: `其中 ${action.willDeleteAssetCount} 项会移除最后一个受管副本，资产将被删除。`, critical: true });
     } else {
       notes.push({ text: '删除后可在任务中心查看执行状态。' });
     }
+  }
+
+  if (action.kind === 'sync') {
+    action.guidanceNotes?.forEach((note) => {
+      notes.push({ text: note });
+    });
   }
 
   if (isDeleteAsset) {
@@ -3667,6 +3793,13 @@ function resolveBatchColorClass(colorLabel: FileCenterColorLabel) {
   if (colorLabel === '蓝标') return 'blue';
   if (colorLabel === '紫标') return 'purple';
   return 'none';
+}
+
+function isRuntimeComponentOnline(component: RuntimeComponentRecord | null) {
+  if (!component) {
+    return false;
+  }
+  return component.status === 'ONLINE' || component.status === 'READY';
 }
 
 const navIcons: Record<MainView, React.ReactNode> = {

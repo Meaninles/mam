@@ -2,6 +2,7 @@ package jobs_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -136,6 +137,7 @@ func TestServicePauseAndResumeJob(t *testing.T) {
 	close(firstItemRelease)
 
 	paused := waitForJobStatus(t, ctx, service, result.JobID, jobs.StatusPaused)
+	assertItemStatus(t, paused.Items, "mount:first", jobs.ItemStatusPaused)
 	secondPending := false
 	for _, item := range paused.Items {
 		if item.ItemKey == "mount:second" && item.Status == jobs.ItemStatusPending {
@@ -589,6 +591,160 @@ func TestServiceExecutesReplicateJobAgainstRealAssets(t *testing.T) {
 	}
 }
 
+func TestServicePauseAndResumeReplicateJobsAcrossCloudRoutes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	cases := []struct {
+		name              string
+		sourceNodeType    string
+		targetNodeType    string
+		expectedRouteType string
+	}{
+		{name: "cloud_to_local", sourceNodeType: "CLOUD", targetNodeType: "LOCAL", expectedRouteType: "DOWNLOAD"},
+		{name: "cloud_to_nas", sourceNodeType: "CLOUD", targetNodeType: "NAS", expectedRouteType: "DOWNLOAD"},
+		{name: "local_to_cloud", sourceNodeType: "LOCAL", targetNodeType: "CLOUD", expectedRouteType: "UPLOAD"},
+		{name: "nas_to_cloud", sourceNodeType: "NAS", targetNodeType: "CLOUD", expectedRouteType: "UPLOAD"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+
+			pool := openTestPool(t, ctx)
+			defer pool.Close()
+			resetSchema(t, ctx, pool)
+
+			migrator := db.NewMigrator()
+			if _, err := migrator.Apply(ctx, pool); err != nil {
+				t.Fatalf("apply migrations: %v", err)
+			}
+
+			plan := createReplicatePlanForRoute(t, ctx, pool, tc.sourceNodeType, tc.targetNodeType)
+			if len(plan.Items) != 1 {
+				t.Fatalf("expected one plan item, got %#v", plan)
+			}
+			if plan.Items[0].RouteType != tc.expectedRouteType {
+				t.Fatalf("expected item route type %s, got %#v", tc.expectedRouteType, plan.Items[0])
+			}
+
+			service := jobs.NewService(pool)
+			release := make(chan struct{})
+			service.RegisterExecutor(jobs.JobIntentReplicate, func(ctx context.Context, execution jobs.ExecutionContext) error {
+				if execution.Item.RouteType == nil || *execution.Item.RouteType != tc.expectedRouteType {
+					return fmt.Errorf("unexpected route type: %v", execution.Item.RouteType)
+				}
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-release:
+					return nil
+				}
+			})
+			service.Start(ctx)
+
+			result, err := service.CreateReplicateJob(ctx, plan)
+			if err != nil {
+				t.Fatalf("create replicate job: %v", err)
+			}
+
+			runningDetail := waitForJobStatus(t, ctx, service, result.JobID, jobs.StatusRunning)
+			itemKey := runningDetail.Items[0].ItemKey
+			if _, err := service.PauseJob(ctx, result.JobID); err != nil {
+				t.Fatalf("pause route %s job: %v", tc.name, err)
+			}
+
+			pausedDetail := waitForJobStatus(t, ctx, service, result.JobID, jobs.StatusPaused)
+			if pausedDetail.Job.RouteType == nil || *pausedDetail.Job.RouteType != tc.expectedRouteType {
+				t.Fatalf("expected paused job route type %s, got %#v", tc.expectedRouteType, pausedDetail.Job)
+			}
+			assertItemStatus(t, pausedDetail.Items, itemKey, jobs.ItemStatusPaused)
+
+			if _, err := service.ResumeJob(ctx, result.JobID); err != nil {
+				t.Fatalf("resume route %s job: %v", tc.name, err)
+			}
+
+			waitForItemStatus(t, ctx, service, result.JobID, itemKey, jobs.ItemStatusRunning)
+			close(release)
+			final := waitForJobStatus(t, ctx, service, result.JobID, jobs.StatusCompleted)
+			if final.Job.RouteType == nil || *final.Job.RouteType != tc.expectedRouteType {
+				t.Fatalf("expected completed job route type %s, got %#v", tc.expectedRouteType, final.Job)
+			}
+			assertItemStatus(t, final.Items, itemKey, jobs.ItemStatusCompleted)
+		})
+	}
+}
+
+func TestServiceCancelReplicateJobsAcrossCloudRoutes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	cases := []struct {
+		name              string
+		sourceNodeType    string
+		targetNodeType    string
+		expectedRouteType string
+	}{
+		{name: "cloud_to_local", sourceNodeType: "CLOUD", targetNodeType: "LOCAL", expectedRouteType: "DOWNLOAD"},
+		{name: "cloud_to_nas", sourceNodeType: "CLOUD", targetNodeType: "NAS", expectedRouteType: "DOWNLOAD"},
+		{name: "local_to_cloud", sourceNodeType: "LOCAL", targetNodeType: "CLOUD", expectedRouteType: "UPLOAD"},
+		{name: "nas_to_cloud", sourceNodeType: "NAS", targetNodeType: "CLOUD", expectedRouteType: "UPLOAD"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+
+			pool := openTestPool(t, ctx)
+			defer pool.Close()
+			resetSchema(t, ctx, pool)
+
+			migrator := db.NewMigrator()
+			if _, err := migrator.Apply(ctx, pool); err != nil {
+				t.Fatalf("apply migrations: %v", err)
+			}
+
+			plan := createReplicatePlanForRoute(t, ctx, pool, tc.sourceNodeType, tc.targetNodeType)
+			if len(plan.Items) != 1 {
+				t.Fatalf("expected one plan item, got %#v", plan)
+			}
+
+			service := jobs.NewService(pool)
+			service.RegisterExecutor(jobs.JobIntentReplicate, func(ctx context.Context, execution jobs.ExecutionContext) error {
+				if execution.Item.RouteType == nil || *execution.Item.RouteType != tc.expectedRouteType {
+					return fmt.Errorf("unexpected route type: %v", execution.Item.RouteType)
+				}
+				<-ctx.Done()
+				return ctx.Err()
+			})
+			service.Start(ctx)
+
+			result, err := service.CreateReplicateJob(ctx, plan)
+			if err != nil {
+				t.Fatalf("create replicate job: %v", err)
+			}
+
+			runningDetail := waitForJobStatus(t, ctx, service, result.JobID, jobs.StatusRunning)
+			itemKey := runningDetail.Items[0].ItemKey
+
+			if _, err := service.CancelJob(ctx, result.JobID); err != nil {
+				t.Fatalf("cancel route %s job: %v", tc.name, err)
+			}
+
+			waitForItemStatus(t, ctx, service, result.JobID, itemKey, jobs.ItemStatusCanceled)
+			final := waitForJobStatus(t, ctx, service, result.JobID, jobs.StatusCanceled)
+			if final.Job.RouteType == nil || *final.Job.RouteType != tc.expectedRouteType {
+				t.Fatalf("expected canceled job route type %s, got %#v", tc.expectedRouteType, final.Job)
+			}
+			assertItemStatus(t, final.Items, itemKey, jobs.ItemStatusCanceled)
+		})
+	}
+}
+
 func waitForJobStatus(t *testing.T, ctx context.Context, service *jobs.Service, jobID string, expected string) jobdto.Detail {
 	t.Helper()
 
@@ -607,6 +763,215 @@ func waitForJobStatus(t *testing.T, ctx context.Context, service *jobs.Service, 
 	}
 	t.Fatalf("expected job status %s, got %+v", expected, detail.Job)
 	return jobdto.Detail{}
+}
+
+func createReplicatePlanForRoute(
+	t *testing.T,
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	sourceNodeType string,
+	targetNodeType string,
+) assets.ReplicatePlan {
+	t.Helper()
+
+	now := time.Now().UTC()
+	libraryID := fmt.Sprintf("photo_%s_%s", strings.ToLower(sourceNodeType), strings.ToLower(targetNodeType))
+	rootDirID := "dir-root-" + libraryID
+	assetID := "asset-" + libraryID
+	sourceNodeID := "node-source-" + libraryID
+	targetNodeID := "node-target-" + libraryID
+	sourceMountID := "mount-source-" + libraryID
+	targetMountID := "mount-target-" + libraryID
+	sourceReplicaID := "replica-source-" + libraryID
+	relativePath := "cloud-route/clip.mov"
+	sourcePath := filepath.Join(t.TempDir(), "source")
+	targetPath := filepath.Join(t.TempDir(), "target")
+	if sourceNodeType == "CLOUD" {
+		sourcePath = "/MareArchive/" + libraryID + "/source"
+	}
+	if targetNodeType == "CLOUD" {
+		targetPath = "/MareArchive/" + libraryID + "/target"
+	}
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO libraries (id, code, name, root_label, status, created_at, updated_at)
+		VALUES ($1, $2, $3, '/', 'ACTIVE', $4, $4)
+	`, libraryID, "library-"+libraryID, "商业摄影资产库", now); err != nil {
+		t.Fatalf("insert library: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO library_directories (
+			id, library_id, relative_path, name, parent_path, depth, source_kind, status, sort_name, created_at, updated_at
+		) VALUES ($1, $2, '/', '/', NULL, 0, 'MANUAL', 'ACTIVE', '/', $3, $3)
+	`, rootDirID, libraryID, now); err != nil {
+		t.Fatalf("insert root directory: %v", err)
+	}
+
+	insertStorageNodeForRoute(t, ctx, pool, sourceNodeID, sourceNodeType, sourcePath, now)
+	insertStorageNodeForRoute(t, ctx, pool, targetNodeID, targetNodeType, targetPath, now)
+	insertMountForRoute(t, ctx, pool, libraryID, sourceMountID, sourceNodeID, "源端点", sourceNodeType, sourcePath, now)
+	insertMountForRoute(t, ctx, pool, libraryID, targetMountID, targetNodeID, "目标端点", targetNodeType, targetPath, now)
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO assets (
+			id, library_id, directory_id, relative_path, name, extension, size_bytes, mime_type,
+			file_kind, lifecycle_state, rating, color_label, note, canonical_modified_at,
+			content_changed_at, created_at, updated_at
+		) VALUES (
+			$1, $2, $3, $4, 'clip.mov', '.mov', 1048576, 'video/quicktime',
+			'VIDEO', 'ACTIVE', 0, 'NONE', NULL, $5,
+			$5, $5, $5
+		)
+	`, assetID, libraryID, rootDirID, relativePath, now); err != nil {
+		t.Fatalf("insert asset: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO asset_replicas (
+			id, asset_id, mount_id, physical_path, size_bytes, modified_at, replica_state, sync_state,
+			verification_state, last_seen_at, created_at, updated_at
+		) VALUES (
+			$1, $2, $3, $4, 1048576, $5, 'AVAILABLE', 'IN_SYNC',
+			'UNVERIFIED', $5, $5, $5
+		)
+	`, sourceReplicaID, assetID, sourceMountID, buildReplicaPhysicalPath(sourceNodeType, sourcePath, relativePath), now); err != nil {
+		t.Fatalf("insert source replica: %v", err)
+	}
+
+	assetService := assets.NewService(pool)
+	plan, err := assetService.PrepareReplicatePlan(ctx, assetdto.CreateReplicateJobRequest{
+		EntryIDs:     []string{assetID},
+		EndpointName: "目标端点",
+	})
+	if err != nil {
+		t.Fatalf("prepare replicate plan: %v", err)
+	}
+	return plan
+}
+
+func insertStorageNodeForRoute(
+	t *testing.T,
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	nodeID string,
+	nodeType string,
+	basePath string,
+	now time.Time,
+) {
+	t.Helper()
+
+	switch nodeType {
+	case "LOCAL":
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO storage_nodes (
+				id, code, name, node_type, access_mode, enabled, created_at, updated_at
+			) VALUES (
+				$1, $1, $2, 'LOCAL', 'DIRECT', true, $3, $3
+			)
+		`, nodeID, "本地节点", now); err != nil {
+			t.Fatalf("insert local node: %v", err)
+		}
+	case "NAS":
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO storage_nodes (
+				id, code, name, node_type, address, access_mode, account_alias, enabled, description, created_at, updated_at
+			) VALUES (
+				$1, $1, $2, 'NAS', $3, 'SMB', 'mare', true, 'nas route test', $4, $4
+			)
+		`, nodeID, "NAS 节点", basePath, now); err != nil {
+			t.Fatalf("insert nas node: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO storage_node_credentials (
+				id, storage_node_id, credential_kind, username, secret_ciphertext, updated_at, created_at
+			) VALUES (
+				$1, $2, 'PASSWORD', 'mare', 'cipher::secret', $3, $3
+			)
+		`, "cred-"+nodeID, nodeID, now); err != nil {
+			t.Fatalf("insert nas credentials: %v", err)
+		}
+	case "CLOUD":
+		providerPayload, err := json.Marshal(map[string]string{
+			"cloudName":     "115",
+			"cloudUserName": "mare-user",
+			"cloudPath":     basePath,
+		})
+		if err != nil {
+			t.Fatalf("marshal cloud payload: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO storage_nodes (
+				id, code, name, node_type, vendor, address, access_mode, account_alias, enabled, created_at, updated_at
+			) VALUES (
+				$1, $1, $2, 'CLOUD', '115', $3, 'QR', '115 云归档', true, $4, $4
+			)
+		`, nodeID, "115 云归档", basePath, now); err != nil {
+			t.Fatalf("insert cloud node: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO storage_node_credentials (
+				id, storage_node_id, credential_kind, secret_ciphertext, secret_ref, token_status, updated_at, created_at
+			) VALUES (
+				$1, $2, 'TOKEN', 'cipher::token', 'tv', 'CONFIGURED', $3, $3
+			)
+		`, "cred-"+nodeID, nodeID, now); err != nil {
+			t.Fatalf("insert cloud credentials: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO cloud_node_profiles (
+				id, storage_node_id, provider_vendor, auth_method, remote_root_path, provider_payload, last_auth_at, updated_at, created_at
+			) VALUES (
+				$1, $2, '115', 'QR', $3, $4::jsonb, $5, $5, $5
+			)
+		`, "profile-"+nodeID, nodeID, basePath, string(providerPayload), now); err != nil {
+			t.Fatalf("insert cloud profile: %v", err)
+		}
+	default:
+		t.Fatalf("unsupported node type %s", nodeType)
+	}
+}
+
+func insertMountForRoute(
+	t *testing.T,
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	libraryID string,
+	mountID string,
+	nodeID string,
+	name string,
+	nodeType string,
+	basePath string,
+	now time.Time,
+) {
+	t.Helper()
+
+	mountSourceType := "LOCAL_PATH"
+	switch nodeType {
+	case "NAS":
+		mountSourceType = "NAS_SHARE"
+	case "CLOUD":
+		mountSourceType = "CLOUD_FOLDER"
+	}
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO mounts (
+			id, code, library_id, library_name, storage_node_id, name, mount_source_type, mount_mode,
+			source_path, relative_root_path, heartbeat_policy, scan_policy, enabled, sort_order, created_at, updated_at
+		) VALUES (
+			$1, $1, $2, '商业摄影资产库', $3, $4, $5, 'READ_WRITE',
+			$6, '/', 'NEVER', 'MANUAL', true, 0, $7, $7
+		)
+	`, mountID, libraryID, nodeID, name, mountSourceType, basePath, now); err != nil {
+		t.Fatalf("insert mount: %v", err)
+	}
+}
+
+func buildReplicaPhysicalPath(nodeType string, basePath string, relativePath string) string {
+	if nodeType == "CLOUD" {
+		return "/" + strings.TrimLeft(strings.ReplaceAll(relativePath, "\\", "/"), "/")
+	}
+	return filepath.Join(basePath, filepath.FromSlash(relativePath))
 }
 
 func waitForItemStatus(t *testing.T, ctx context.Context, service *jobs.Service, jobID string, itemKey string, expected string) jobdto.Detail {

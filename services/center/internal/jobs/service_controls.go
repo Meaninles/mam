@@ -9,15 +9,238 @@ import (
 )
 
 func (s *Service) PauseJob(ctx context.Context, id string) (jobdto.MutationResponse, error) {
-	return s.transitionJob(ctx, id, []string{StatusPending, StatusQueued, StatusRunning, StatusWaitingRetry}, StatusPaused, EventJobPaused, "作业已暂停", nil)
+	now := s.now().UTC()
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return jobdto.MutationResponse{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	current, err := s.loadJobRowTx(ctx, tx, id)
+	if err != nil {
+		return jobdto.MutationResponse{}, err
+	}
+	if !containsStatus([]string{StatusPending, StatusQueued, StatusRunning, StatusWaitingRetry}, current.Status) {
+		return jobdto.MutationResponse{}, apperrors.BadRequest("当前状态不允许执行该操作")
+	}
+
+	runningItems := []string{}
+	if current.Status == StatusRunning {
+		rows, queryErr := tx.Query(ctx, `
+			SELECT id
+			FROM job_items
+			WHERE job_id = $1
+			  AND status = 'RUNNING'
+			ORDER BY created_at ASC
+		`, id)
+		if queryErr != nil {
+			return jobdto.MutationResponse{}, queryErr
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var itemID string
+			if err := rows.Scan(&itemID); err != nil {
+				return jobdto.MutationResponse{}, err
+			}
+			runningItems = append(runningItems, itemID)
+		}
+		if err := rows.Err(); err != nil {
+			return jobdto.MutationResponse{}, err
+		}
+
+		if len(runningItems) > 0 {
+			if _, err := tx.Exec(ctx, `
+				UPDATE job_items
+				SET status = 'PAUSED',
+				    phase = 'PAUSED',
+				    updated_at = $2
+				WHERE job_id = $1
+				  AND status = 'RUNNING'
+			`, id, now); err != nil {
+				return jobdto.MutationResponse{}, err
+			}
+			if _, err := tx.Exec(ctx, `
+				UPDATE job_attempts
+				SET status = 'CANCELED',
+				    finished_at = $2
+				WHERE job_id = $1
+				  AND status = 'RUNNING'
+			`, id, now); err != nil {
+				return jobdto.MutationResponse{}, err
+			}
+		}
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE jobs
+		SET status = $2,
+		    updated_at = $3
+		WHERE id = $1
+	`, id, StatusPaused, now); err != nil {
+		return jobdto.MutationResponse{}, err
+	}
+	if err := s.refreshJobAggregateTx(ctx, tx, id, now); err != nil {
+		return jobdto.MutationResponse{}, err
+	}
+
+	jobEvent, err := s.insertEvent(ctx, tx, eventInsertInput{
+		JobID:     id,
+		EventType: EventJobPaused,
+		Message:   "作业已暂停",
+		JobStatus: ptr(StatusPaused),
+		CreatedAt: now,
+	})
+	if err != nil {
+		return jobdto.MutationResponse{}, err
+	}
+
+	itemEvents := make([]jobdto.StreamEvent, 0, len(runningItems))
+	for _, itemID := range runningItems {
+		event, err := s.insertEvent(ctx, tx, eventInsertInput{
+			JobID:      id,
+			JobItemID:  &itemID,
+			EventType:  EventItemPaused,
+			Message:    "子任务已暂停",
+			JobStatus:  ptr(StatusPaused),
+			ItemStatus: ptr(ItemStatusPaused),
+			CreatedAt:  now,
+		})
+		if err != nil {
+			return jobdto.MutationResponse{}, err
+		}
+		itemEvents = append(itemEvents, event)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return jobdto.MutationResponse{}, err
+	}
+
+	for _, itemID := range runningItems {
+		s.interruptRunningItem(itemID)
+	}
+	s.publish(jobEvent)
+	for _, event := range itemEvents {
+		s.publish(event)
+	}
+	s.syncJobNotifications(ctx, id)
+
+	job, err := s.loadJobRecord(ctx, id)
+	if err != nil {
+		return jobdto.MutationResponse{}, err
+	}
+	return jobdto.MutationResponse{Message: "作业已暂停", Job: job}, nil
 }
 
 func (s *Service) ResumeJob(ctx context.Context, id string) (jobdto.MutationResponse, error) {
-	result, err := s.transitionJob(ctx, id, []string{StatusPaused}, StatusQueued, EventJobResumed, "作业已恢复排队", nil)
-	if err == nil {
-		s.wake()
+	now := s.now().UTC()
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return jobdto.MutationResponse{}, err
 	}
-	return result, err
+	defer tx.Rollback(ctx)
+
+	current, err := s.loadJobRowTx(ctx, tx, id)
+	if err != nil {
+		return jobdto.MutationResponse{}, err
+	}
+	if current.Status != StatusPaused {
+		return jobdto.MutationResponse{}, apperrors.BadRequest("当前状态不允许执行该操作")
+	}
+
+	pausedItems := []string{}
+	rows, queryErr := tx.Query(ctx, `
+		SELECT id
+		FROM job_items
+		WHERE job_id = $1
+		  AND status = 'PAUSED'
+		ORDER BY created_at ASC
+	`, id)
+	if queryErr != nil {
+		return jobdto.MutationResponse{}, queryErr
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var itemID string
+		if err := rows.Scan(&itemID); err != nil {
+			return jobdto.MutationResponse{}, err
+		}
+		pausedItems = append(pausedItems, itemID)
+	}
+	if err := rows.Err(); err != nil {
+		return jobdto.MutationResponse{}, err
+	}
+
+	if len(pausedItems) > 0 {
+		if _, err := tx.Exec(ctx, `
+			UPDATE job_items
+			SET status = 'QUEUED',
+			    phase = NULL,
+			    canceled_at = NULL,
+			    finished_at = NULL,
+			    updated_at = $2
+			WHERE job_id = $1
+			  AND status = 'PAUSED'
+		`, id, now); err != nil {
+			return jobdto.MutationResponse{}, err
+		}
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE jobs
+		SET status = $2,
+		    updated_at = $3
+		WHERE id = $1
+	`, id, StatusQueued, now); err != nil {
+		return jobdto.MutationResponse{}, err
+	}
+	if err := s.refreshJobAggregateTx(ctx, tx, id, now); err != nil {
+		return jobdto.MutationResponse{}, err
+	}
+
+	jobEvent, err := s.insertEvent(ctx, tx, eventInsertInput{
+		JobID:     id,
+		EventType: EventJobResumed,
+		Message:   "作业已恢复排队",
+		JobStatus: ptr(StatusQueued),
+		CreatedAt: now,
+	})
+	if err != nil {
+		return jobdto.MutationResponse{}, err
+	}
+
+	itemEvents := make([]jobdto.StreamEvent, 0, len(pausedItems))
+	for _, itemID := range pausedItems {
+		event, err := s.insertEvent(ctx, tx, eventInsertInput{
+			JobID:      id,
+			JobItemID:  &itemID,
+			EventType:  EventItemResumed,
+			Message:    "子任务已恢复",
+			JobStatus:  ptr(StatusQueued),
+			ItemStatus: ptr(ItemStatusQueued),
+			CreatedAt:  now,
+		})
+		if err != nil {
+			return jobdto.MutationResponse{}, err
+		}
+		itemEvents = append(itemEvents, event)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return jobdto.MutationResponse{}, err
+	}
+
+	s.publish(jobEvent)
+	for _, event := range itemEvents {
+		s.publish(event)
+	}
+	s.syncJobNotifications(ctx, id)
+	s.wake()
+
+	job, err := s.loadJobRecord(ctx, id)
+	if err != nil {
+		return jobdto.MutationResponse{}, err
+	}
+	return jobdto.MutationResponse{Message: "作业已恢复排队", Job: job}, nil
 }
 
 func (s *Service) CancelJob(ctx context.Context, id string) (jobdto.MutationResponse, error) {
@@ -36,6 +259,31 @@ func (s *Service) CancelJob(ctx context.Context, id string) (jobdto.MutationResp
 		return jobdto.MutationResponse{}, apperrors.BadRequest("当前状态不允许取消")
 	}
 
+	runningItems := []string{}
+	if current.Status == StatusRunning {
+		rows, queryErr := tx.Query(ctx, `
+			SELECT id
+			FROM job_items
+			WHERE job_id = $1
+			  AND status = 'RUNNING'
+			ORDER BY created_at ASC
+		`, id)
+		if queryErr != nil {
+			return jobdto.MutationResponse{}, queryErr
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var itemID string
+			if err := rows.Scan(&itemID); err != nil {
+				return jobdto.MutationResponse{}, err
+			}
+			runningItems = append(runningItems, itemID)
+		}
+		if err := rows.Err(); err != nil {
+			return jobdto.MutationResponse{}, err
+		}
+	}
+
 	_, err = tx.Exec(ctx, `
 		UPDATE jobs
 		SET status = $2,
@@ -47,21 +295,31 @@ func (s *Service) CancelJob(ctx context.Context, id string) (jobdto.MutationResp
 		return jobdto.MutationResponse{}, err
 	}
 
-	if current.Status != StatusRunning {
+	if _, err := tx.Exec(ctx, `
+		UPDATE job_items
+		SET status = CASE WHEN status = 'COMPLETED' THEN status ELSE 'CANCELED' END,
+		    phase = CASE WHEN status = 'COMPLETED' THEN phase ELSE 'CANCELED' END,
+		    progress_percent = CASE WHEN status = 'COMPLETED' THEN progress_percent ELSE 100 END,
+		    canceled_at = COALESCE(canceled_at, $2),
+		    finished_at = COALESCE(finished_at, $2),
+		    updated_at = $2
+		WHERE job_id = $1
+	`, id, now); err != nil {
+		return jobdto.MutationResponse{}, err
+	}
+	if len(runningItems) > 0 {
 		if _, err := tx.Exec(ctx, `
-			UPDATE job_items
-			SET status = CASE WHEN status = 'COMPLETED' THEN status ELSE 'CANCELED' END,
-			    progress_percent = CASE WHEN status = 'COMPLETED' THEN progress_percent ELSE 100 END,
-			    canceled_at = COALESCE(canceled_at, $2),
-			    finished_at = COALESCE(finished_at, $2),
-			    updated_at = $2
+			UPDATE job_attempts
+			SET status = 'CANCELED',
+			    finished_at = $2
 			WHERE job_id = $1
+			  AND status = 'RUNNING'
 		`, id, now); err != nil {
 			return jobdto.MutationResponse{}, err
 		}
-		if err := s.refreshJobAggregateTx(ctx, tx, id, now); err != nil {
-			return jobdto.MutationResponse{}, err
-		}
+	}
+	if err := s.refreshJobAggregateTx(ctx, tx, id, now); err != nil {
+		return jobdto.MutationResponse{}, err
 	}
 
 	event, err := s.insertEvent(ctx, tx, eventInsertInput{
@@ -75,11 +333,34 @@ func (s *Service) CancelJob(ctx context.Context, id string) (jobdto.MutationResp
 		return jobdto.MutationResponse{}, err
 	}
 
+	itemEvents := make([]jobdto.StreamEvent, 0, len(runningItems))
+	for _, itemID := range runningItems {
+		itemEvent, err := s.insertEvent(ctx, tx, eventInsertInput{
+			JobID:      id,
+			JobItemID:  &itemID,
+			EventType:  EventItemCanceled,
+			Message:    "子任务已取消",
+			JobStatus:  ptr(StatusCanceled),
+			ItemStatus: ptr(ItemStatusCanceled),
+			CreatedAt:  now,
+		})
+		if err != nil {
+			return jobdto.MutationResponse{}, err
+		}
+		itemEvents = append(itemEvents, itemEvent)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return jobdto.MutationResponse{}, err
 	}
 
+	for _, itemID := range runningItems {
+		s.interruptRunningItem(itemID)
+	}
 	s.publish(event)
+	for _, itemEvent := range itemEvents {
+		s.publish(itemEvent)
+	}
 	s.syncJobIssues(ctx, id)
 	s.syncJobNotifications(ctx, id)
 	job, err := s.loadJobRecord(ctx, id)

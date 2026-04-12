@@ -242,6 +242,141 @@ describe('fileCenterApi', () => {
     expect(sorted.map((row) => row.id)).toEqual(['dir-b', 'dir-a', 'file-2', 'file-1']);
   });
 
+  it('会把同步到 115 识别为 CloudDrive2 上传并标记支持断点续传', () => {
+    const entry = {
+      id: 'asset-1',
+      libraryId: 'photo',
+      parentId: 'root',
+      type: 'file' as const,
+      lifecycleState: 'ACTIVE' as const,
+      name: 'A001.RAW',
+      fileKind: '图片' as const,
+      displayType: 'RAW 图像',
+      modifiedAt: '2026-04-10 12:20',
+      createdAt: '2026-04-10 12:20',
+      size: '47.8 MB',
+      path: '/A001.RAW',
+      sourceLabel: 'Sony A7R V',
+      lastTaskText: '等待补齐到 115',
+      lastTaskTone: 'warning' as const,
+      rating: 0,
+      colorLabel: '无' as const,
+      badges: [],
+      riskTags: [],
+      tags: [],
+      endpoints: [
+        { name: '本地NVMe', state: '已同步' as const, tone: 'success' as const, lastSyncAt: '今天 09:18', endpointType: 'local' as const },
+        { name: '115', state: '未同步' as const, tone: 'critical' as const, lastSyncAt: '尚未开始', endpointType: 'cloud' as const },
+      ],
+    };
+
+    const plan = __FILE_CENTER_TESTING__.resolveSyncPlan(entry, '115');
+
+    expect(plan).toMatchObject({
+      routeType: 'UPLOAD',
+      engine: 'CD2_REMOTE_UPLOAD',
+      supportsResume: true,
+      usesCloud: true,
+      targetEndpointName: '115',
+      sourceEndpointName: '本地NVMe',
+    });
+    expect(plan?.summary).toContain('CloudDrive2');
+    expect(plan?.summary).toContain('断点续传');
+  });
+
+  it('会把从 115 同步到本地识别为 aria2 下载并要求 aria2 在线', () => {
+    const entry = {
+      id: 'asset-2',
+      libraryId: 'photo',
+      parentId: 'root',
+      type: 'file' as const,
+      lifecycleState: 'ACTIVE' as const,
+      name: 'A002.RAW',
+      fileKind: '图片' as const,
+      displayType: 'RAW 图像',
+      modifiedAt: '2026-04-10 12:20',
+      createdAt: '2026-04-10 12:20',
+      size: '47.8 MB',
+      path: '/A002.RAW',
+      sourceLabel: 'Sony A7R V',
+      lastTaskText: '等待下载到本地',
+      lastTaskTone: 'warning' as const,
+      rating: 0,
+      colorLabel: '无' as const,
+      badges: [],
+      riskTags: [],
+      tags: [],
+      endpoints: [
+        { name: '本地NVMe', state: '未同步' as const, tone: 'critical' as const, lastSyncAt: '尚未开始', endpointType: 'local' as const },
+        { name: '115', state: '已同步' as const, tone: 'success' as const, lastSyncAt: '今天 09:18', endpointType: 'cloud' as const },
+      ],
+    };
+
+    const plan = __FILE_CENTER_TESTING__.resolveSyncPlan(entry, '本地NVMe');
+    const availability = __FILE_CENTER_TESTING__.resolveSyncAvailability(entry, '本地NVMe', {
+      cd2Online: true,
+      aria2Online: false,
+      cloudAuthReady: true,
+      aria2Message: 'aria2 未就绪',
+    });
+
+    expect(plan).toMatchObject({
+      routeType: 'DOWNLOAD',
+      engine: 'ARIA2',
+      supportsResume: true,
+      usesCloud: true,
+      sourceEndpointName: '115',
+      targetEndpointName: '本地NVMe',
+    });
+    expect(plan?.summary).toContain('aria2');
+    expect(plan?.summary).toContain('断点续传');
+    expect(availability).toMatchObject({
+      enabled: false,
+      reason: 'aria2 当前不可用，请先前往设置页处理',
+    });
+  });
+
+  it('删除 115 副本会要求 CloudDrive2 在线且 115 节点鉴权可用', () => {
+    const entry = {
+      id: 'asset-3',
+      libraryId: 'photo',
+      parentId: 'root',
+      type: 'file' as const,
+      lifecycleState: 'ACTIVE' as const,
+      name: 'A003.RAW',
+      fileKind: '图片' as const,
+      displayType: 'RAW 图像',
+      modifiedAt: '2026-04-10 12:20',
+      createdAt: '2026-04-10 12:20',
+      size: '47.8 MB',
+      path: '/A003.RAW',
+      sourceLabel: 'Sony A7R V',
+      lastTaskText: '云端已归档',
+      lastTaskTone: 'success' as const,
+      rating: 0,
+      colorLabel: '无' as const,
+      badges: [],
+      riskTags: [],
+      tags: [],
+      endpoints: [
+        { name: '115', state: '已同步' as const, tone: 'success' as const, lastSyncAt: '今天 09:18', endpointType: 'cloud' as const },
+      ],
+    };
+
+    const availability = __FILE_CENTER_TESTING__.resolveDeleteAvailability(entry, '115', {
+      cd2Online: true,
+      aria2Online: true,
+      cloudAuthReady: false,
+      cloudAuthMessage: '115 节点鉴权未就绪，请先前往存储节点页处理',
+    });
+
+    expect(availability).toMatchObject({
+      enabled: false,
+      reason: '115 节点鉴权未就绪，请先前往存储节点页处理',
+    });
+    expect(availability.execution?.summary).toContain('CloudDrive2');
+  });
+
   it('从中心服务读取文件详情', async () => {
     vi.stubGlobal(
       'fetch',

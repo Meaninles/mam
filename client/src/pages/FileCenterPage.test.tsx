@@ -325,6 +325,83 @@ describe('FileCenterPage', () => {
     expect(onSetStatusFilter).toHaveBeenCalledWith('全部');
   });
 
+  it('当 CloudDrive2 不可用时会禁用 115 同步并显示前置原因', () => {
+    render(
+      <FileCenterPage
+        breadcrumbs={[{ id: null, label: '商业摄影资产库' }]}
+        batchDeleteEndpointActions={[]}
+        batchSyncEndpointActions={[]}
+        canGoBack={false}
+        canGoForward={false}
+        currentEntries={[sampleEntry]}
+        currentPage={1}
+        currentPathChildren={1}
+        fileTypeFilter="全部"
+        loading={false}
+        pageCount={1}
+        pageSize={10}
+        partialSyncEndpointNames={[]}
+        refreshing={false}
+        searchText=""
+        selectedIds={[]}
+        sortDirection="desc"
+        sortValue="修改时间"
+        statusFilterEndpointNames={['本地NVMe', '影像NAS', '115']}
+        statusFilter="全部"
+        theme="light"
+        total={1}
+        cloudActionNotice={{
+          tone: 'warning',
+          message: '115 云端动作暂不可用：CloudDrive2 当前异常。',
+          actions: ['settings'],
+        }}
+        integrationHealth={{
+          cd2Online: false,
+          aria2Online: true,
+          cloudAuthReady: true,
+          cd2Message: 'CloudDrive2 当前异常',
+        }}
+        onOpenCloudDependencySettings={vi.fn()}
+        onOpenStorageNodes={vi.fn()}
+        onChangeSort={vi.fn()}
+        onClearSelection={vi.fn()}
+        onCreateFolder={vi.fn()}
+        onDeleteAssetDirect={vi.fn()}
+        onDeleteSelected={vi.fn()}
+        onGoBack={vi.fn()}
+        onGoForward={vi.fn()}
+        onNavigateBreadcrumb={vi.fn()}
+        onOpenItem={vi.fn()}
+        onOpenBatchAnnotationEditor={vi.fn()}
+        onOpenBatchTagEditor={vi.fn()}
+        onOpenItemDetail={vi.fn()}
+        onOpenTagEditor={vi.fn()}
+        onRefreshIndex={vi.fn()}
+        onUploadFiles={vi.fn()}
+        onUploadFolder={vi.fn()}
+        onRequestBatchDeleteEndpoint={vi.fn()}
+        onRequestBatchSyncEndpoint={vi.fn()}
+        onRequestDeleteEndpoint={vi.fn()}
+        onRequestSyncEndpoint={vi.fn()}
+        onSetCurrentPage={vi.fn()}
+        onSetFileTypeFilter={vi.fn()}
+        onSetPageSize={vi.fn()}
+        onSetSearchText={vi.fn()}
+        onSetStatusFilter={vi.fn()}
+        onClearPartialSyncEndpoints={vi.fn()}
+        onTogglePartialSyncEndpoint={vi.fn()}
+        onToggleSortDirection={vi.fn()}
+        onToggleSelect={vi.fn()}
+        onToggleSelectVisible={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('115 云端动作暂不可用：CloudDrive2 当前异常。')).toBeInTheDocument();
+    const button = screen.getByRole('button', { name: '115 未同步' });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute('data-tooltip', 'CloudDrive2 当前不可用，请先前往设置页处理');
+  });
+
   it('靠近底部时更多操作浮窗会自动向上展开', async () => {
     const user = userEvent.setup();
     const originalInnerHeight = window.innerHeight;

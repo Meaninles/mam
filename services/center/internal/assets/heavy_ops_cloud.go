@@ -73,7 +73,7 @@ func (s *Service) executeCloudUploadTask(ctx context.Context, jobID string, item
 		err = driver.WaitUpload(ctx, *taskID, buildCloudDriverPath(targetMount.ProviderPayload, destinationPath), s.progressNotifier(jobID, itemID))
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
-				s.handleCanceledCloudUpload(ctx, itemID, driver, *taskID)
+				s.handleCanceledCloudUpload(ctx, jobID, itemID, driver, *taskID)
 			}
 			return err
 		}
@@ -99,7 +99,7 @@ func (s *Service) executeCloudUploadTask(ctx context.Context, jobID string, item
 	err = driver.WaitUpload(ctx, externalTaskID, fullPath, s.progressNotifier(jobID, itemID))
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			s.handleCanceledCloudUpload(ctx, itemID, driver, externalTaskID)
+			s.handleCanceledCloudUpload(ctx, jobID, itemID, driver, externalTaskID)
 		}
 		return err
 	}
@@ -164,7 +164,7 @@ func (s *Service) executeCloudDownloadTask(ctx context.Context, jobID string, it
 		err = downloader.Wait(ctx, *taskID, s.progressNotifier(jobID, itemID))
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
-				s.handleCanceledDownload(ctx, itemID, downloader, *taskID)
+				s.handleCanceledDownload(ctx, jobID, itemID, downloader, *taskID)
 			}
 			return err
 		}
@@ -187,7 +187,7 @@ func (s *Service) executeCloudDownloadTask(ctx context.Context, jobID string, it
 	err = downloader.Wait(ctx, gid, s.progressNotifier(jobID, itemID))
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			s.handleCanceledDownload(ctx, itemID, downloader, gid)
+			s.handleCanceledDownload(ctx, jobID, itemID, downloader, gid)
 		}
 		return err
 	}
@@ -279,7 +279,7 @@ func buildCloudDriverPath(payload integration.CloudProviderPayload, replicaPath 
 }
 
 func shouldResumeCD2Upload(itemStatus string, externalTaskStatus *string) bool {
-	if itemStatus != "QUEUED" && itemStatus != "WAITING_RETRY" {
+	if itemStatus != "QUEUED" && itemStatus != "WAITING_RETRY" && itemStatus != "RUNNING" {
 		return false
 	}
 	if externalTaskStatus == nil {
@@ -290,7 +290,7 @@ func shouldResumeCD2Upload(itemStatus string, externalTaskStatus *string) bool {
 }
 
 func shouldResumeAria2Download(itemStatus string, externalTaskStatus *string) bool {
-	if itemStatus != "QUEUED" && itemStatus != "WAITING_RETRY" {
+	if itemStatus != "QUEUED" && itemStatus != "WAITING_RETRY" && itemStatus != "RUNNING" {
 		return false
 	}
 	if externalTaskStatus == nil {
@@ -323,30 +323,34 @@ func (s *Service) loadExternalTaskState(ctx context.Context, itemID string) (str
 	return s.jobRuntime.LoadExternalTaskState(ctx, itemID)
 }
 
-func (s *Service) handleCanceledCloudUpload(ctx context.Context, itemID string, driver integration.CloudProviderDriver, taskID string) {
+func (s *Service) handleCanceledCloudUpload(ctx context.Context, jobID string, itemID string, driver integration.CloudProviderDriver, taskID string) {
 	status, _, _, _, _, err := s.loadExternalTaskState(ctx, itemID)
 	if err != nil {
 		return
 	}
 	if status == "PAUSED" {
 		_ = driver.PauseUpload(context.Background(), taskID)
+		_ = s.updateExternalTask(context.Background(), jobID, itemID, "CD2_REMOTE_UPLOAD", taskID, "Pause", nil)
 		return
 	}
 	if status == "CANCELED" {
 		_ = driver.CancelUpload(context.Background(), taskID)
+		_ = s.updateExternalTask(context.Background(), jobID, itemID, "CD2_REMOTE_UPLOAD", taskID, "Cancelled", nil)
 	}
 }
 
-func (s *Service) handleCanceledDownload(ctx context.Context, itemID string, downloader integration.DownloadEngine, taskID string) {
+func (s *Service) handleCanceledDownload(ctx context.Context, jobID string, itemID string, downloader integration.DownloadEngine, taskID string) {
 	status, _, _, _, _, err := s.loadExternalTaskState(ctx, itemID)
 	if err != nil {
 		return
 	}
 	if status == "PAUSED" {
 		_ = downloader.Pause(context.Background(), taskID)
+		_ = s.updateExternalTask(context.Background(), jobID, itemID, "ARIA2", taskID, "paused", nil)
 		return
 	}
 	if status == "CANCELED" {
 		_ = downloader.Cancel(context.Background(), taskID)
+		_ = s.updateExternalTask(context.Background(), jobID, itemID, "ARIA2", taskID, "removed", nil)
 	}
 }

@@ -56,6 +56,11 @@ CREATE TABLE job_items (
   eta_seconds INTEGER,
   bytes_total BIGINT CHECK (bytes_total IS NULL OR bytes_total >= 0),
   bytes_done BIGINT CHECK (bytes_done IS NULL OR bytes_done >= 0),
+  external_task_engine TEXT,
+  external_task_id TEXT,
+  external_task_status TEXT,
+  external_task_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  resume_token TEXT,
   attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
   issue_count INTEGER NOT NULL DEFAULT 0 CHECK (issue_count >= 0),
   latest_error_code TEXT,
@@ -127,6 +132,7 @@ CREATE INDEX idx_job_items_job_status ON job_items (job_id, status);
 CREATE INDEX idx_job_items_job_type ON job_items (job_id, item_type);
 CREATE INDEX idx_job_items_parent_item_id ON job_items (parent_item_id);
 CREATE INDEX idx_job_items_updated_at ON job_items (updated_at DESC);
+CREATE INDEX idx_job_items_external_task ON job_items (external_task_engine, external_task_id);
 
 CREATE INDEX idx_job_attempts_job_started_at ON job_attempts (job_id, started_at DESC);
 CREATE INDEX idx_job_attempts_job_item_started_at ON job_attempts (job_item_id, started_at DESC);

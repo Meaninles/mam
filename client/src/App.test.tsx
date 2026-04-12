@@ -6,6 +6,7 @@ import type { Library } from './data';
 import { TaskCenterPage } from './pages/TaskCenterPage';
 import { createInitialState } from './lib/clientState';
 import { fileCenterApi, resetFileCenterMock } from './lib/fileCenterApi';
+import { integrationsApi } from './lib/integrationsApi';
 
 const TEST_LIBRARIES: Library[] = [
   { id: 'photo', name: '商业摄影资产库', rootLabel: '/', itemCount: '0', health: '100%', storagePolicy: '本地 + NAS' },
@@ -701,6 +702,34 @@ describe('MARE 客户端', () => {
     await user.click(within(row!).getByRole('button', { name: '连接测试 影像 NAS 01' }));
 
     expect(await screen.findByRole('dialog', { name: '连接测试结果' })).toBeInTheDocument();
+  });
+
+  it('当 CloudDrive2 离线时，文件中心会提示云端动作受限并可跳转到设置页', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(integrationsApi, 'loadRuntime').mockResolvedValue([
+      {
+        name: 'CloudDrive2',
+        status: 'ERROR',
+        message: 'CloudDrive2 当前异常',
+        lastErrorCode: 'gateway_offline',
+        lastErrorMessage: 'CloudDrive2 RPC 无法连接',
+      },
+      {
+        name: 'aria2',
+        status: 'ONLINE',
+        message: 'aria2 运行正常',
+      },
+    ]);
+
+    render(<App />);
+
+    expect(await screen.findByText(/115 云端动作暂不可用/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '打开设置页' }));
+
+    expect(await screen.findByRole('button', { name: '依赖服务' })).toBeInTheDocument();
+    expect(screen.getAllByText('CloudDrive2').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('aria2').length).toBeGreaterThan(0);
   });
 
   it('页头展示动态导入入口并可跳转到导入中心', async () => {

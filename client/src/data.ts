@@ -281,6 +281,11 @@ export interface TaskRecord {
   resultSummary?: string;
   waitingReason?: string;
   assetIds?: string[];
+  executorEngineLabel?: string;
+  externalTaskId?: string;
+  externalTaskStatus?: string;
+  failureLocation?: string;
+  rawErrorMessage?: string;
 }
 
 export interface TaskItemRecord {
@@ -304,6 +309,11 @@ export interface TaskItemRecord {
   resultLabel?: string;
   issueIds?: string[];
   invalidated?: boolean;
+  executorEngineLabel?: string;
+  externalTaskId?: string;
+  externalTaskStatus?: string;
+  failureLocation?: string;
+  rawErrorMessage?: string;
 }
 
 export interface IssueSource {

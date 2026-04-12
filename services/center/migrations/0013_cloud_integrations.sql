@@ -41,16 +41,6 @@ CREATE TABLE IF NOT EXISTS integration_gateway_credentials (
 CREATE INDEX IF NOT EXISTS idx_integration_gateways_runtime
   ON integration_gateways (gateway_type, runtime_status);
 
-ALTER TABLE job_items
-  ADD COLUMN IF NOT EXISTS external_task_engine TEXT,
-  ADD COLUMN IF NOT EXISTS external_task_id TEXT,
-  ADD COLUMN IF NOT EXISTS external_task_status TEXT,
-  ADD COLUMN IF NOT EXISTS external_task_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-  ADD COLUMN IF NOT EXISTS resume_token TEXT;
-
-CREATE INDEX IF NOT EXISTS idx_job_items_external_task
-  ON job_items (external_task_engine, external_task_id);
-
 INSERT INTO cloud_node_profiles (
   id,
   storage_node_id,

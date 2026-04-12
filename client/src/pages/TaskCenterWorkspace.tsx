@@ -302,9 +302,14 @@ function mapJobDetailToTask(detail: JobDetail): TaskRecord {
   const { job, items, links } = detail;
   const kind = resolveTaskKind(job);
   const firstItem = items[0];
+  const externalItem = resolvePrimaryExternalTaskItem(items);
   const routeSummary = resolveRouteSummary(job, firstItem);
   const scopeLabel = firstItem?.sourcePath ?? firstItem?.targetPath ?? job.summary;
   const phaseLabel = resolveTaskPhaseLabel(job.status, items);
+  const executorEngineLabel = resolveExecutorEngineLabel(externalItem?.externalTaskEngine, job.routeType);
+  const externalTaskStatus = resolveExternalTaskStatusValue(externalItem);
+  const failureLocation = resolveFailureLocation(job, externalItem);
+  const rawErrorMessage = externalItem?.latestErrorMessage ?? job.latestErrorMessage;
 
   return {
     id: job.id,
@@ -341,6 +346,11 @@ function mapJobDetailToTask(detail: JobDetail): TaskRecord {
     endpointLabel: resolveEndpointLabel(links),
     resultSummary: job.outcomeSummary ?? job.latestErrorMessage ?? firstItem?.resultSummary,
     waitingReason: resolveWaitingReason(job.status),
+    executorEngineLabel,
+    externalTaskId: externalItem?.externalTaskId,
+    externalTaskStatus,
+    failureLocation,
+    rawErrorMessage,
   };
 }
 
@@ -365,7 +375,28 @@ function mapJobItemsToTaskItems(detail: JobDetail): TaskItemRecord[] {
     pathLabel: item.sourcePath ?? item.targetPath,
     resultLabel: item.latestErrorMessage ?? item.resultSummary,
     issueIds: [],
+    executorEngineLabel: resolveExecutorEngineLabel(item.externalTaskEngine, detail.job.routeType),
+    externalTaskId: item.externalTaskId,
+    externalTaskStatus: resolveExternalTaskStatusValue(item),
+    failureLocation: resolveFailureLocation(detail.job, item),
+    rawErrorMessage: item.latestErrorMessage,
   }));
+}
+
+function resolvePrimaryExternalTaskItem(items: JobItemRecord[]) {
+  const withExternal = items.filter((item) => item.externalTaskEngine || item.externalTaskId || item.externalTaskStatus);
+  if (withExternal.length === 0) {
+    return null;
+  }
+
+  const priorityOrder = ['RUNNING', 'FAILED', 'PAUSED', 'CANCELED', 'COMPLETED', 'QUEUED', 'PENDING'];
+  return (
+    withExternal.sort((left, right) => {
+      const leftIndex = priorityOrder.indexOf(left.status);
+      const rightIndex = priorityOrder.indexOf(right.status);
+      return (leftIndex === -1 ? priorityOrder.length : leftIndex) - (rightIndex === -1 ? priorityOrder.length : rightIndex);
+    })[0] ?? null
+  );
 }
 
 function resolveTaskKind(job: JobRecord): TaskTab {
@@ -491,11 +522,15 @@ function mapTaskPriorityToJobPriority(priority: TaskPriority): JobPriority {
 }
 
 function resolveTaskPhaseLabel(status: JobStatus, items: JobItemRecord[]) {
-  const runningItem = items.find((item) => item.status === 'RUNNING');
-  if (runningItem?.phase) {
-    return resolvePhaseLabel(runningItem.phase);
+  const primaryItem =
+    items.find((item) => item.status === 'RUNNING') ??
+    items.find((item) => item.status === 'FAILED') ??
+    items.find((item) => item.status === 'PAUSED') ??
+    resolvePrimaryExternalTaskItem(items);
+  if (primaryItem?.phase) {
+    return resolvePhaseLabel(primaryItem.phase);
   }
-  const externalPhase = resolveExternalTaskPhaseLabel(runningItem?.externalTaskEngine, runningItem?.externalTaskStatus);
+  const externalPhase = resolveExternalTaskPhaseLabel(primaryItem?.externalTaskEngine, primaryItem?.externalTaskStatus);
   if (externalPhase) {
     return externalPhase;
   }
@@ -528,28 +563,71 @@ function resolveExternalTaskPhaseLabel(engine?: string, status?: string) {
   }
 
   if (engine === 'CD2_REMOTE_UPLOAD') {
-    if (status === 'WaitforPreprocessing' || status === 'Preprocessing') return '文件预处理中';
-    if (status === 'Inqueue') return '上传排队中';
-    if (status === 'Transfer') return '上传中';
+    if (status === 'WaitforPreprocessing' || status === 'Preprocessing') return '写入 CD2 缓存中';
+    if (status === 'Inqueue') return '缓存写入完成，等待云端上传';
+    if (status === 'Transfer') return 'CloudDrive2 上传中';
     if (status === 'Pause') return '已暂停';
     if (status === 'Finish') return '已完成';
     if (status === 'Skipped') return '已跳过';
     if (status === 'Cancelled') return '已取消';
-    if (status === 'Error' || status === 'FatalError') return '上传失败';
+    if (status === 'Error' || status === 'FatalError') return 'CloudDrive2 上传失败';
     return status;
   }
 
   if (engine === 'ARIA2') {
-    if (status === 'active') return '下载中';
-    if (status === 'waiting') return '等待下载';
+    if (status === 'active') return 'aria2 下载中';
+    if (status === 'waiting') return 'aria2 等待下载';
     if (status === 'paused') return '已暂停';
     if (status === 'complete') return '已完成';
-    if (status === 'error') return '下载失败';
+    if (status === 'error') return 'aria2 下载失败';
     if (status === 'removed') return '已取消';
     return status;
   }
 
   return status;
+}
+
+function resolveExecutorEngineLabel(engine?: string, routeType?: string) {
+  if (engine === 'CD2_REMOTE_UPLOAD') {
+    return 'CloudDrive2 上传';
+  }
+  if (engine === 'ARIA2') {
+    return 'aria2 下载';
+  }
+  if (routeType === 'UPLOAD') {
+    return '中心服务上传';
+  }
+  if (routeType === 'DOWNLOAD') {
+    return '中心服务下载';
+  }
+  if (routeType === 'COPY') {
+    return '中心服务复制';
+  }
+  return undefined;
+}
+
+function resolveExternalTaskStatusValue(item?: Pick<JobItemRecord, 'externalTaskEngine' | 'externalTaskStatus'> | null) {
+  if (!item?.externalTaskStatus) {
+    return undefined;
+  }
+  const normalized = resolveExternalTaskPhaseLabel(item.externalTaskEngine, item.externalTaskStatus);
+  if (!normalized || normalized === item.externalTaskStatus) {
+    return item.externalTaskStatus;
+  }
+  return `${item.externalTaskStatus}（${normalized}）`;
+}
+
+function resolveFailureLocation(job: JobRecord, item?: Pick<JobItemRecord, 'externalTaskEngine' | 'latestErrorMessage'> | null) {
+  if (item?.externalTaskEngine === 'CD2_REMOTE_UPLOAD') {
+    return 'CloudDrive2 上传器';
+  }
+  if (item?.externalTaskEngine === 'ARIA2') {
+    return 'aria2 下载器';
+  }
+  if (job.status === 'FAILED' || job.status === 'PARTIAL_SUCCESS') {
+    return '中心服务';
+  }
+  return undefined;
 }
 
 function resolveTaskItemKind(item: JobItemRecord): TaskItemRecord['kind'] {

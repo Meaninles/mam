@@ -58,7 +58,30 @@ func (s *Service) loadJobItems(ctx context.Context, jobID string) ([]jobdto.Item
 		SELECT
 			id, job_id, parent_item_id, item_key, item_type, route_type, status, phase, title, summary,
 			source_path, target_path, progress_percent, speed_bps, eta_seconds, bytes_total, bytes_done,
-			external_task_engine, external_task_id, external_task_status, external_task_payload, resume_token,
+			(
+				SELECT je.payload->>'externalTaskEngine'
+				FROM job_events je
+				WHERE je.job_item_id = job_items.id
+				  AND je.payload ? 'externalTaskEngine'
+				ORDER BY je.created_at DESC
+				LIMIT 1
+			) AS external_task_engine,
+			(
+				SELECT je.payload->>'externalTaskId'
+				FROM job_events je
+				WHERE je.job_item_id = job_items.id
+				  AND je.payload ? 'externalTaskId'
+				ORDER BY je.created_at DESC
+				LIMIT 1
+			) AS external_task_id,
+			(
+				SELECT je.payload->>'externalTaskStatus'
+				FROM job_events je
+				WHERE je.job_item_id = job_items.id
+				  AND je.payload ? 'externalTaskStatus'
+				ORDER BY je.created_at DESC
+				LIMIT 1
+			) AS external_task_status,
 			attempt_count, issue_count, latest_error_code, latest_error_message, result_summary,
 			started_at, finished_at, canceled_at, updated_at, created_at
 		FROM job_items
@@ -86,7 +109,30 @@ func (s *Service) loadItemRows(ctx context.Context, jobID string) ([]itemRow, er
 		SELECT
 			id, job_id, parent_item_id, item_key, item_type, route_type, status, phase, title, summary,
 			source_path, target_path, progress_percent, speed_bps, eta_seconds, bytes_total, bytes_done,
-			external_task_engine, external_task_id, external_task_status, external_task_payload, resume_token,
+			(
+				SELECT je.payload->>'externalTaskEngine'
+				FROM job_events je
+				WHERE je.job_item_id = job_items.id
+				  AND je.payload ? 'externalTaskEngine'
+				ORDER BY je.created_at DESC
+				LIMIT 1
+			) AS external_task_engine,
+			(
+				SELECT je.payload->>'externalTaskId'
+				FROM job_events je
+				WHERE je.job_item_id = job_items.id
+				  AND je.payload ? 'externalTaskId'
+				ORDER BY je.created_at DESC
+				LIMIT 1
+			) AS external_task_id,
+			(
+				SELECT je.payload->>'externalTaskStatus'
+				FROM job_events je
+				WHERE je.job_item_id = job_items.id
+				  AND je.payload ? 'externalTaskStatus'
+				ORDER BY je.created_at DESC
+				LIMIT 1
+			) AS external_task_status,
 			attempt_count, issue_count, latest_error_code, latest_error_message, result_summary,
 			started_at, finished_at, canceled_at, updated_at, created_at
 		FROM job_items
@@ -111,13 +157,36 @@ func (s *Service) loadItemRows(ctx context.Context, jobID string) ([]itemRow, er
 
 func (s *Service) loadJobItemRecord(ctx context.Context, itemID string) (jobdto.ItemRecord, error) {
 	row := s.pool.QueryRow(ctx, `
-		SELECT
-			id, job_id, parent_item_id, item_key, item_type, route_type, status, phase, title, summary,
-			source_path, target_path, progress_percent, speed_bps, eta_seconds, bytes_total, bytes_done,
-			external_task_engine, external_task_id, external_task_status, external_task_payload, resume_token,
-			attempt_count, issue_count, latest_error_code, latest_error_message, result_summary,
-			started_at, finished_at, canceled_at, updated_at, created_at
-		FROM job_items
+	SELECT
+		id, job_id, parent_item_id, item_key, item_type, route_type, status, phase, title, summary,
+		source_path, target_path, progress_percent, speed_bps, eta_seconds, bytes_total, bytes_done,
+		(
+			SELECT je.payload->>'externalTaskEngine'
+			FROM job_events je
+			WHERE je.job_item_id = job_items.id
+			  AND je.payload ? 'externalTaskEngine'
+			ORDER BY je.created_at DESC
+			LIMIT 1
+		) AS external_task_engine,
+		(
+			SELECT je.payload->>'externalTaskId'
+			FROM job_events je
+			WHERE je.job_item_id = job_items.id
+			  AND je.payload ? 'externalTaskId'
+			ORDER BY je.created_at DESC
+			LIMIT 1
+		) AS external_task_id,
+		(
+			SELECT je.payload->>'externalTaskStatus'
+			FROM job_events je
+			WHERE je.job_item_id = job_items.id
+			  AND je.payload ? 'externalTaskStatus'
+			ORDER BY je.created_at DESC
+			LIMIT 1
+		) AS external_task_status,
+		attempt_count, issue_count, latest_error_code, latest_error_message, result_summary,
+		started_at, finished_at, canceled_at, updated_at, created_at
+	FROM job_items
 		WHERE id = $1
 	`, itemID)
 	item, err := scanItemRow(row)
@@ -132,7 +201,30 @@ func (s *Service) loadItemRowTx(ctx context.Context, tx pgx.Tx, itemID string) (
 		SELECT
 			id, job_id, parent_item_id, item_key, item_type, route_type, status, phase, title, summary,
 			source_path, target_path, progress_percent, speed_bps, eta_seconds, bytes_total, bytes_done,
-			external_task_engine, external_task_id, external_task_status, external_task_payload, resume_token,
+			(
+				SELECT je.payload->>'externalTaskEngine'
+				FROM job_events je
+				WHERE je.job_item_id = job_items.id
+				  AND je.payload ? 'externalTaskEngine'
+				ORDER BY je.created_at DESC
+				LIMIT 1
+			) AS external_task_engine,
+			(
+				SELECT je.payload->>'externalTaskId'
+				FROM job_events je
+				WHERE je.job_item_id = job_items.id
+				  AND je.payload ? 'externalTaskId'
+				ORDER BY je.created_at DESC
+				LIMIT 1
+			) AS external_task_id,
+			(
+				SELECT je.payload->>'externalTaskStatus'
+				FROM job_events je
+				WHERE je.job_item_id = job_items.id
+				  AND je.payload ? 'externalTaskStatus'
+				ORDER BY je.created_at DESC
+				LIMIT 1
+			) AS external_task_status,
 			attempt_count, issue_count, latest_error_code, latest_error_message, result_summary,
 			started_at, finished_at, canceled_at, updated_at, created_at
 		FROM job_items
@@ -343,8 +435,6 @@ func scanItemRow(row pgx.Row) (itemRow, error) {
 		&item.ExternalTaskEngine,
 		&item.ExternalTaskID,
 		&item.ExternalTaskStatus,
-		&item.ExternalTaskPayload,
-		&item.ResumeToken,
 		&item.AttemptCount,
 		&item.IssueCount,
 		&item.LatestErrorCode,

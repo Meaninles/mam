@@ -220,8 +220,6 @@ type itemRow struct {
 	ExternalTaskEngine *string
 	ExternalTaskID     *string
 	ExternalTaskStatus *string
-	ExternalTaskPayload []byte
-	ResumeToken        *string
 	AttemptCount       int
 	IssueCount         int
 	LatestErrorCode    *string

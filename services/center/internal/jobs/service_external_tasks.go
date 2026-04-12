@@ -21,15 +21,22 @@ func (s *Service) UpdateExternalTask(ctx context.Context, jobID string, itemID s
 
 	if _, err := tx.Exec(ctx, `
 		UPDATE job_items
-		SET external_task_engine = $2,
-		    external_task_id = $3,
-		    external_task_status = $4,
-		    external_task_payload = COALESCE($5, '{}'::jsonb),
-		    resume_token = $6,
-		    updated_at = $7
+		SET updated_at = $2
 		WHERE id = $1
-	`, itemID, engine, taskID, status, payloadJSON, resumeToken, now); err != nil {
+	`, itemID, now); err != nil {
 		return err
+	}
+
+	eventPayload := map[string]any{
+		"externalTaskEngine": engine,
+		"externalTaskId":     taskID,
+		"externalTaskStatus": status,
+	}
+	if resumeToken != nil && *resumeToken != "" {
+		eventPayload["resumeToken"] = *resumeToken
+	}
+	if len(payloadJSON) > 0 {
+		eventPayload["externalTaskPayload"] = payload
 	}
 
 	event, err := s.insertEvent(ctx, tx, eventInsertInput{
@@ -38,11 +45,7 @@ func (s *Service) UpdateExternalTask(ctx context.Context, jobID string, itemID s
 		EventType: EventItemProgress,
 		Message:   "外部任务状态已更新",
 		CreatedAt: now,
-		Payload: map[string]any{
-			"externalTaskEngine": engine,
-			"externalTaskId":     taskID,
-			"externalTaskStatus": status,
-		},
+		Payload:   eventPayload,
 	})
 	if err != nil {
 		return err
@@ -78,10 +81,9 @@ func (s *Service) UpdateItemTransferProgress(ctx context.Context, jobID string, 
 		    bytes_total = CASE WHEN $3 > 0 THEN $3 ELSE bytes_total END,
 		    speed_bps = CASE WHEN $4 > 0 THEN $4 ELSE NULL END,
 		    progress_percent = CASE WHEN $5 > progress_percent THEN $5 ELSE progress_percent END,
-		    external_task_status = $6,
-		    updated_at = $7
+		    updated_at = $6
 		WHERE id = $1
-	`, itemID, bytesDone, bytesTotal, speedBPS, progress, status, now); err != nil {
+	`, itemID, bytesDone, bytesTotal, speedBPS, progress, now); err != nil {
 		return err
 	}
 
@@ -133,9 +135,22 @@ func (s *Service) LoadExternalTaskState(ctx context.Context, itemID string) (str
 		resumeToken        *string
 	)
 	err := s.pool.QueryRow(ctx, `
-		SELECT status, external_task_engine, external_task_id, external_task_status, resume_token
-		FROM job_items
-		WHERE id = $1
+		SELECT
+			ji.status,
+			ext.payload->>'externalTaskEngine',
+			ext.payload->>'externalTaskId',
+			ext.payload->>'externalTaskStatus',
+			ext.payload->>'resumeToken'
+		FROM job_items ji
+		LEFT JOIN LATERAL (
+			SELECT payload
+			FROM job_events je
+			WHERE je.job_item_id = ji.id
+			  AND je.payload ? 'externalTaskEngine'
+			ORDER BY je.created_at DESC
+			LIMIT 1
+		) ext ON TRUE
+		WHERE ji.id = $1
 	`, itemID).Scan(&status, &taskEngine, &taskID, &externalTaskStatus, &resumeToken)
 	if err != nil {
 		return "", nil, nil, nil, nil, err
