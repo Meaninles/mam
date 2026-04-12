@@ -178,14 +178,6 @@ export function resolveImportSubmitState(
     };
   }
 
-  if (device.sessionStatus === '导入中' || draft.status === '导入中') {
-    return {
-      disabled: true,
-      reason: null,
-      actionLabel: '查看任务',
-    };
-  }
-
   if (draft.hasBlockingIssues || draft.precheckSummary.blockingCount > 0) {
     return {
       disabled: true,
@@ -197,6 +189,13 @@ export function resolveImportSubmitState(
     return {
       disabled: true,
       reason: '请先选择导入目标资产库。',
+    };
+  }
+
+  if (sourceNodes.length === 0) {
+    return {
+      disabled: true,
+      reason: '请先选择要导入的文件夹或文件。',
     };
   }
 

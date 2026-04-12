@@ -1,0 +1,8 @@
+ALTER TABLE import_reports
+  ADD COLUMN IF NOT EXISTS verify_mode TEXT NOT NULL DEFAULT 'LIGHT';
+
+ALTER TABLE import_reports
+  ADD COLUMN IF NOT EXISTS verified_count INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE import_reports
+  ADD COLUMN IF NOT EXISTS verify_failed_count INTEGER NOT NULL DEFAULT 0;

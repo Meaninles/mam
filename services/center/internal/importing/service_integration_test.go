@@ -42,6 +42,7 @@ func TestServiceRefreshesSessionsAndCompletesImportJob(t *testing.T) {
 
 	sourceRoot := t.TempDir()
 	targetRoot := t.TempDir()
+	secondTargetRoot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(sourceRoot, "A001"), 0o755); err != nil {
 		t.Fatalf("mkdir source nested: %v", err)
 	}
@@ -70,6 +71,27 @@ func TestServiceRefreshesSessionsAndCompletesImportJob(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("save local folder: %v", err)
+	}
+	secondNode, err := localFolders.SaveLocalNode(ctx, storagedto.SaveLocalNodeRequest{
+		Name:     "导入第二目标本地节点",
+		RootPath: secondTargetRoot,
+		Notes:    "integration",
+	})
+	if err != nil {
+		t.Fatalf("save second local node: %v", err)
+	}
+	secondMount, err := localFolders.SaveLocalFolder(ctx, storagedto.SaveLocalFolderRequest{
+		Name:            "商业摄影第二备份",
+		LibraryID:       "photo",
+		LibraryName:     "商业摄影资产库",
+		NodeID:          secondNode.Record.ID,
+		MountMode:       "可写",
+		HeartbeatPolicy: "从不",
+		RelativePath:    "原片2",
+		Notes:           "integration",
+	})
+	if err != nil {
+		t.Fatalf("save second local folder: %v", err)
 	}
 
 	jobService := jobs.NewService(pool)
@@ -149,7 +171,7 @@ func TestServiceRefreshesSessionsAndCompletesImportJob(t *testing.T) {
 	if len(browse.Items) != 2 {
 		t.Fatalf("expected root browse items, got %+v", browse.Items)
 	}
-	if _, err := service.SaveSelectionTargets(ctx, dashboard.Devices[0].ID, "DIRECTORY", "A001", "A001", []string{mount.Record.ID}); err != nil {
+	if _, err := service.SaveSelectionTargets(ctx, dashboard.Devices[0].ID, "DIRECTORY", "A001", "A001", []string{mount.Record.ID, secondMount.Record.ID}); err != nil {
 		t.Fatalf("save selection targets: %v", err)
 	}
 	if _, err := service.RefreshPrecheck(ctx, draftID); err != nil {
@@ -161,6 +183,31 @@ func TestServiceRefreshesSessionsAndCompletesImportJob(t *testing.T) {
 		t.Fatalf("submit import: %v", err)
 	}
 	waitForJobStatus(t, ctx, jobService, submit.Report.TaskID, jobs.StatusCompleted)
+	report, err := service.LoadDashboard(ctx)
+	if err != nil {
+		t.Fatalf("reload dashboard: %v", err)
+	}
+	if len(report.Reports) == 0 {
+		t.Fatalf("expected import reports, got %+v", report)
+	}
+	latestReport := report.Reports[0]
+	if latestReport.VerifyMode != "轻校验" {
+		t.Fatalf("expected light verify mode, got %+v", latestReport)
+	}
+	if latestReport.VerifiedCount != 2 {
+		t.Fatalf("expected verified count 2, got %+v", latestReport)
+	}
+	if latestReport.VerifyFailedCount != 0 {
+		t.Fatalf("expected no verify failures, got %+v", latestReport)
+	}
+	if len(latestReport.TargetSummaries) != 2 {
+		t.Fatalf("expected two target summaries, got %+v", latestReport.TargetSummaries)
+	}
+	for _, targetSummary := range latestReport.TargetSummaries {
+		if targetSummary.SuccessCount != 1 || targetSummary.VerifiedCount != 1 {
+			t.Fatalf("expected target summary success/verify counts, got %+v", targetSummary)
+		}
+	}
 
 	root, err := assetService.BrowseLibrary(ctx, "photo", assetdto.BrowseQuery{
 		Page:          1,
@@ -238,6 +285,10 @@ func (f *fakeAgentBridge) ExecuteImport(_ context.Context, _ string, request imp
 			PhysicalPath: target.PhysicalPath,
 			BytesWritten: int64(len(data)),
 			ModifiedAt:   info.ModTime().UTC().Format(time.RFC3339),
+			Status:       "SUCCEEDED",
+			VerifyMode:   "LIGHT",
+			VerifyStatus: "PASSED",
+			VerifySummary:"轻校验通过",
 		})
 	}
 	return importdto.ExecuteImportResponse{Targets: results}, nil

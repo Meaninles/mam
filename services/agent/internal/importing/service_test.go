@@ -139,6 +139,12 @@ func TestServiceExecutesLocalFileCopyAndPreservesMtime(t *testing.T) {
 	if len(result.Targets) != 1 {
 		t.Fatalf("expected 1 target result, got %d", len(result.Targets))
 	}
+	if result.Targets[0].Status != "SUCCEEDED" {
+		t.Fatalf("expected target success status, got %+v", result.Targets[0])
+	}
+	if result.Targets[0].VerifyStatus != "PASSED" {
+		t.Fatalf("expected verify passed status, got %+v", result.Targets[0])
+	}
 
 	info, err := os.Stat(targetPath)
 	if err != nil {
@@ -146,5 +152,52 @@ func TestServiceExecutesLocalFileCopyAndPreservesMtime(t *testing.T) {
 	}
 	if info.ModTime().UTC() != modTime {
 		t.Fatalf("expected target mtime %s, got %s", modTime, info.ModTime().UTC())
+	}
+}
+
+func TestServiceContinuesOtherTargetsWhenOneTargetFails(t *testing.T) {
+	root := t.TempDir()
+	sourcePath := filepath.Join(root, "source.mov")
+	successTargetPath := filepath.Join(root, "success", "imported.mov")
+	if err := os.WriteFile(sourcePath, []byte("payload"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	service := NewService(Options{
+		DiscoverAttachedSources: func(context.Context) ([]SourceDescriptor, error) {
+			return []SourceDescriptor{}, nil
+		},
+	})
+	result, err := service.ExecuteImport(context.Background(), ExecuteImportRequest{
+		SourcePath: sourcePath,
+		Targets: []ExecuteImportTarget{
+			{
+				TargetID:      "target-success",
+				NodeType:      "LOCAL",
+				PhysicalPath:  successTargetPath,
+				PreserveMtime: true,
+			},
+			{
+				TargetID:      "target-failed",
+				NodeType:      "NAS",
+				PhysicalPath:  `\\nas\share\imported.mov`,
+				PreserveMtime: true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute import should not fail as a whole: %v", err)
+	}
+	if len(result.Targets) != 2 {
+		t.Fatalf("expected 2 target results, got %d", len(result.Targets))
+	}
+	if result.Targets[0].Status != "SUCCEEDED" {
+		t.Fatalf("expected first target success, got %+v", result.Targets[0])
+	}
+	if result.Targets[1].Status != "FAILED" {
+		t.Fatalf("expected second target failure, got %+v", result.Targets[1])
+	}
+	if _, statErr := os.Stat(successTargetPath); statErr != nil {
+		t.Fatalf("expected successful target file written: %v", statErr)
 	}
 }

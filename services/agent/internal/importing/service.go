@@ -250,19 +250,40 @@ func (s *Service) ExecuteImport(ctx context.Context, request ExecuteImportReques
 		if ctx.Err() != nil {
 			return ExecuteImportResponse{}, ctx.Err()
 		}
+		result := ExecuteImportTargetResult{
+			TargetID:   target.TargetID,
+			PhysicalPath: target.PhysicalPath,
+			VerifyMode: "LIGHT",
+		}
 		if target.NodeType != "LOCAL" {
-			return ExecuteImportResponse{}, fmt.Errorf("暂不支持 %s 目标写入", target.NodeType)
+			result.Status = "FAILED"
+			result.VerifyStatus = "SKIPPED"
+			result.VerifySummary = "未执行校验"
+			result.ErrorMessage = fmt.Sprintf("暂不支持 %s 目标写入", target.NodeType)
+			results = append(results, result)
+			continue
 		}
 		written, modifiedAt, err := copyFileToLocalPath(sourcePath, target.PhysicalPath, target.PreserveMtime)
 		if err != nil {
-			return ExecuteImportResponse{}, err
+			result.Status = "FAILED"
+			result.VerifyStatus = "SKIPPED"
+			result.VerifySummary = "未执行校验"
+			result.ErrorMessage = err.Error()
+			results = append(results, result)
+			continue
 		}
-		results = append(results, ExecuteImportTargetResult{
-			TargetID:     target.TargetID,
-			PhysicalPath: target.PhysicalPath,
-			BytesWritten: written,
-			ModifiedAt:   modifiedAt.UTC().Format(time.RFC3339),
-		})
+		verifyStatus, verifySummary, verifyErr := verifyLightCopy(sourcePath, target.PhysicalPath, target.PreserveMtime)
+		result.BytesWritten = written
+		result.ModifiedAt = modifiedAt.UTC().Format(time.RFC3339)
+		result.VerifyStatus = verifyStatus
+		result.VerifySummary = verifySummary
+		if verifyErr != nil {
+			result.Status = "FAILED"
+			result.ErrorMessage = verifyErr.Error()
+		} else {
+			result.Status = "SUCCEEDED"
+		}
+		results = append(results, result)
 	}
 
 	return ExecuteImportResponse{Targets: results}, nil
@@ -302,6 +323,24 @@ func copyFileToLocalPath(sourcePath string, targetPath string, preserveMtime boo
 		}
 	}
 	return written, modifiedAt, nil
+}
+
+func verifyLightCopy(sourcePath string, targetPath string, preserveMtime bool) (string, string, error) {
+	sourceInfo, err := os.Stat(sourcePath)
+	if err != nil {
+		return "FAILED", "轻校验失败", err
+	}
+	targetInfo, err := os.Stat(targetPath)
+	if err != nil {
+		return "FAILED", "轻校验失败", err
+	}
+	if sourceInfo.Size() != targetInfo.Size() {
+		return "FAILED", "轻校验失败：大小不一致", fmt.Errorf("light verify failed: size mismatch")
+	}
+	if preserveMtime && !sourceInfo.ModTime().UTC().Equal(targetInfo.ModTime().UTC()) {
+		return "FAILED", "轻校验失败：修改时间不一致", fmt.Errorf("light verify failed: mtime mismatch")
+	}
+	return "PASSED", "轻校验通过", nil
 }
 
 func normalizeDeviceKey(sourcePath string) string {

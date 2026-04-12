@@ -1210,15 +1210,23 @@ button {
 }
 
 .import-col-name {
-  width: 42%;
+  width: 32%;
+}
+
+.import-col-type {
+  width: 84px;
+}
+
+.import-col-size {
+  width: 84px;
 }
 
 .import-col-modified {
-  width: 112px;
+  width: 104px;
 }
 
 .import-col-targets {
-  width: 34%;
+  width: 28%;
 }
 
 .import-file-table .file-center-name-cell {

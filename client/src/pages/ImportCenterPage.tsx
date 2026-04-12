@@ -8,7 +8,6 @@ import {
   FileText,
   FolderOpen,
   Info,
-  RefreshCw,
   Search,
   ShieldCheck,
   TriangleAlert,
@@ -281,17 +280,6 @@ export function ImportCenterPage(props: {
                   <DenseRow label="容量 / 可用空间" value={`${selectedDevice.capacitySummary.total} / ${selectedDevice.capacitySummary.available}`} />
                   <DenseRow label="最近在线" value={selectedDevice.lastSeenAt} />
                 </div>
-                <div className="toolbar-group wrap import-primary-actions">
-                  <ActionButton onClick={() => onBrowseSession(selectedDevice.id, currentPath === '/' ? undefined : currentPath.slice(1))}>
-                    <RefreshCw size={14} />
-                    刷新当前层级
-                  </ActionButton>
-                  <ActionButton onClick={() => selectedDraft && onRefreshPrecheck(selectedDraft.id)}>
-                    <ShieldCheck size={14} />
-                    重新预检
-                  </ActionButton>
-                  {selectedReport ? <ActionButton onClick={() => onOpenTaskCenter(selectedReport.taskId)}>打开任务中心</ActionButton> : null}
-                </div>
               </div>
 
               <div className="workspace-card">
@@ -407,6 +395,8 @@ export function ImportCenterPage(props: {
                       <colgroup>
                         <col className="import-col-checkbox" />
                         <col className="import-col-name" />
+                        <col className="import-col-type" />
+                        <col className="import-col-size" />
                         <col className="import-col-modified" />
                         <col className="import-col-targets" />
                       </colgroup>
@@ -427,6 +417,8 @@ export function ImportCenterPage(props: {
                             />
                           </th>
                           <th scope="col">名称</th>
+                          <th scope="col">类型</th>
+                          <th scope="col">大小</th>
                           <th scope="col">修改时间</th>
                           <th scope="col">目标端</th>
                         </tr>
@@ -477,6 +469,8 @@ export function ImportCenterPage(props: {
                                 </div>
                               </div>
                             </td>
+                            <td>{item.entryType === 'DIRECTORY' ? '文件夹' : item.fileKind}</td>
+                            <td>{item.size ?? '—'}</td>
                             <td>{formatImportDateTime(item.modifiedAt)}</td>
                             <td>
                               {selectedDraft?.libraryId ? (
@@ -538,7 +532,7 @@ export function ImportCenterPage(props: {
                     </div>
                     <div className="import-overview-metric">
                       <span>最近更新时间</span>
-                      <strong>{selectedReport.latestUpdatedAt}</strong>
+                      <strong>{formatImportDateTime(selectedReport.latestUpdatedAt)}</strong>
                     </div>
                   </div>
                   <p className="muted-text">{selectedReport.verifySummary}</p>

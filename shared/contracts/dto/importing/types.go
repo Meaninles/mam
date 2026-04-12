@@ -119,6 +119,8 @@ type ReportTargetSummary struct {
 	Status          string `json:"status"`
 	SuccessCount    int    `json:"successCount"`
 	FailedCount     int    `json:"failedCount"`
+	VerifiedCount   int    `json:"verifiedCount"`
+	VerifyFailedCount int  `json:"verifyFailedCount"`
 	TransferredSize string `json:"transferredSize"`
 }
 
@@ -134,6 +136,9 @@ type ReportSnapshot struct {
 	SuccessCount    int                   `json:"successCount"`
 	FailedCount     int                   `json:"failedCount"`
 	PartialCount    int                   `json:"partialCount"`
+	VerifyMode      string                `json:"verifyMode"`
+	VerifiedCount   int                   `json:"verifiedCount"`
+	VerifyFailedCount int                 `json:"verifyFailedCount"`
 	VerifySummary   string                `json:"verifySummary"`
 	TargetSummaries []ReportTargetSummary `json:"targetSummaries"`
 	IssueIDs        []string              `json:"issueIds"`
@@ -238,6 +243,11 @@ type ExecuteImportTargetResult struct {
 	PhysicalPath  string `json:"physicalPath"`
 	BytesWritten  int64  `json:"bytesWritten"`
 	ModifiedAt    string `json:"modifiedAt"`
+	Status        string `json:"status"`
+	VerifyMode    string `json:"verifyMode"`
+	VerifyStatus  string `json:"verifyStatus"`
+	VerifySummary string `json:"verifySummary"`
+	ErrorMessage  string `json:"errorMessage,omitempty"`
 }
 
 type ExecuteImportResponse struct {

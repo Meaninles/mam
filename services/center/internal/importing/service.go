@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -582,17 +583,17 @@ func (s *Service) Submit(ctx context.Context, sessionID string) (importdto.Submi
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO import_reports (
 			id, session_id, plan_id, job_id, library_id, status, title, verify_summary, target_summaries,
-			issue_ids, success_count, failed_count, partial_count, file_count,
+			issue_ids, success_count, failed_count, partial_count, verify_mode, verified_count, verify_failed_count, file_count,
 			submitted_at, latest_updated_at, created_at, updated_at
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9,
-			'{}'::text[], 0, 0, 0, $10,
+			'{}'::text[], 0, 0, 0, 'LIGHT', 0, 0, $10,
 			$11, $11, $11, $11
 		)
 	`, reportID, session.ID, plan.ID, jobResult.JobID, plan.LibraryID, reportStatusQueued,
 		fmt.Sprintf("%s / 刚提交的导入作业", session.DeviceLabel),
 		"导入作业已创建，等待本地执行器执行。",
-		targetSummariesJSON, len(selections), now); err != nil {
+		targetSummariesJSON, 0, now); err != nil {
 		return importdto.SubmitResponse{}, err
 	}
 	if _, err := tx.Exec(ctx, `
@@ -610,11 +611,6 @@ func (s *Service) Submit(ctx context.Context, sessionID string) (importdto.Submi
 		    updated_at = $3
 		WHERE id = $1
 	`, session.ID, sessionStateImporting, now); err != nil {
-		return importdto.SubmitResponse{}, err
-	}
-	if _, err := tx.Exec(ctx, `
-		DELETE FROM import_session_entries WHERE session_id = $1
-	`, session.ID); err != nil {
 		return importdto.SubmitResponse{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -679,6 +675,7 @@ func (s *Service) ExecuteImportJobItem(ctx context.Context, execution jobs.Execu
 	if err != nil {
 		return s.failEntry(ctx, reportID, session.ID, selection.ID, err)
 	}
+	failureMessages := make([]string, 0)
 	for _, candidate := range filesToImport {
 		logicalPath := joinLogicalPath(plan.DestinationRootPath, candidate.RelativePath)
 		targetRequest := make([]importdto.ExecuteImportTarget, 0, len(targets))
@@ -697,9 +694,20 @@ func (s *Service) ExecuteImportJobItem(ctx context.Context, execution jobs.Execu
 		if execErr != nil {
 			return s.failEntry(ctx, reportID, session.ID, selection.ID, execErr)
 		}
+		if err := s.recordReportFileOutcome(ctx, reportID, result.Targets); err != nil {
+			return s.failEntry(ctx, reportID, session.ID, selection.ID, err)
+		}
 		for _, targetResult := range result.Targets {
 			target, ok := targetByID[targetResult.TargetID]
 			if !ok {
+				continue
+			}
+			if targetResult.Status != "SUCCEEDED" || targetResult.VerifyStatus != "PASSED" {
+				message := targetResult.ErrorMessage
+				if strings.TrimSpace(message) == "" {
+					message = targetResult.VerifySummary
+				}
+				failureMessages = append(failureMessages, fmt.Sprintf("%s -> %s：%s", candidate.RelativePath, target.Label, message))
 				continue
 			}
 			modifiedAt, parseErr := time.Parse(time.RFC3339, targetResult.ModifiedAt)
@@ -719,6 +727,9 @@ func (s *Service) ExecuteImportJobItem(ctx context.Context, execution jobs.Execu
 			}
 		}
 	}
+	if len(failureMessages) > 0 {
+		return s.failEntry(ctx, reportID, session.ID, selection.ID, fmt.Errorf("%s", strings.Join(failureMessages, "；")))
+	}
 	if err := s.completeEntry(ctx, reportID, session.ID, selection.ID); err != nil {
 		return err
 	}
@@ -736,9 +747,112 @@ func (s *Service) failEntry(ctx context.Context, reportID string, sessionID stri
 	return execErr
 }
 
+func (s *Service) recordReportFileOutcome(ctx context.Context, reportID string, targetResults []importdto.ExecuteImportTargetResult) error {
+	type reportRow struct {
+		SuccessCount      int
+		FailedCount       int
+		PartialCount      int
+		FileCount         int
+		VerifiedCount     int
+		VerifyFailedCount int
+		TargetSummaries   []importdto.ReportTargetSummary
+	}
+
+	var row reportRow
+	var targetJSON []byte
+	if err := s.pool.QueryRow(ctx, `
+		SELECT success_count, failed_count, partial_count, file_count, verified_count, verify_failed_count, target_summaries
+		FROM import_reports
+		WHERE id = $1
+	`, reportID).Scan(&row.SuccessCount, &row.FailedCount, &row.PartialCount, &row.FileCount, &row.VerifiedCount, &row.VerifyFailedCount, &targetJSON); err != nil {
+		return err
+	}
+	if len(targetJSON) > 0 {
+		_ = json.Unmarshal(targetJSON, &row.TargetSummaries)
+	}
+	if row.TargetSummaries == nil {
+		row.TargetSummaries = []importdto.ReportTargetSummary{}
+	}
+
+	targetByID := make(map[string]*importdto.ReportTargetSummary, len(row.TargetSummaries))
+	for index := range row.TargetSummaries {
+		targetByID[row.TargetSummaries[index].EndpointID] = &row.TargetSummaries[index]
+	}
+
+	successTargets := 0
+	failedTargets := 0
+	for _, result := range targetResults {
+		summary, ok := targetByID[result.TargetID]
+		if !ok {
+			continue
+		}
+		if result.Status == "SUCCEEDED" {
+			successTargets++
+			summary.SuccessCount++
+			summary.TransferredSize = formatBytes(parseBytes(summary.TransferredSize) + result.BytesWritten)
+			if result.VerifyStatus == "PASSED" {
+				summary.VerifiedCount++
+				row.VerifiedCount++
+			} else {
+				summary.VerifyFailedCount++
+				row.VerifyFailedCount++
+			}
+		} else {
+			failedTargets++
+			summary.FailedCount++
+			if result.VerifyStatus == "FAILED" {
+				summary.VerifyFailedCount++
+				row.VerifyFailedCount++
+			}
+		}
+		summary.Status = resolveTargetSummaryStatus(*summary)
+	}
+
+	switch {
+	case successTargets > 0 && failedTargets == 0:
+		row.SuccessCount++
+	case successTargets > 0 && failedTargets > 0:
+		row.PartialCount++
+	case failedTargets > 0:
+		row.FailedCount++
+	}
+	row.FileCount++
+
+	updatedTargetJSON, err := json.Marshal(row.TargetSummaries)
+	if err != nil {
+		return err
+	}
+	verifySummary := buildVerifySummary(row.VerifiedCount, row.VerifyFailedCount)
+	_, err = s.pool.Exec(ctx, `
+		UPDATE import_reports
+		SET success_count = $2,
+		    failed_count = $3,
+		    partial_count = $4,
+		    file_count = $5,
+		    verified_count = $6,
+		    verify_failed_count = $7,
+		    verify_summary = $8,
+		    target_summaries = $9,
+		    latest_updated_at = $10,
+		    updated_at = $10
+		WHERE id = $1
+	`, reportID, row.SuccessCount, row.FailedCount, row.PartialCount, row.FileCount, row.VerifiedCount, row.VerifyFailedCount, verifySummary, updatedTargetJSON, s.now().UTC())
+	return err
+}
+
 func (s *Service) refreshReportAggregate(ctx context.Context, reportID string, sessionID string) error {
 	var jobID string
-	if err := s.pool.QueryRow(ctx, `SELECT job_id FROM import_reports WHERE id = $1`, reportID).Scan(&jobID); err != nil {
+	var successCount int
+	var failedCount int
+	var partialCount int
+	var fileCount int
+	var verifiedCount int
+	var verifyFailedCount int
+	if err := s.pool.QueryRow(ctx, `
+		SELECT job_id, success_count, failed_count, partial_count, file_count, verified_count, verify_failed_count
+		FROM import_reports
+		WHERE id = $1
+	`, reportID).Scan(&jobID, &successCount, &failedCount, &partialCount, &fileCount, &verifiedCount, &verifyFailedCount); err != nil {
 		return err
 	}
 	detail, err := s.jobCreator.LoadJobDetail(ctx, jobID)
@@ -757,27 +871,26 @@ func (s *Service) refreshReportAggregate(ctx context.Context, reportID string, s
 		}
 	}
 	status := reportStatusRunning
-	verifySummary := "导入执行中"
-	if success+failed >= total {
+	verifySummary := buildVerifySummary(verifiedCount, verifyFailedCount)
+	processedCount := successCount + failedCount + partialCount
+	if fileCount > 0 && processedCount >= fileCount && success+failed >= total {
 		switch {
-		case success == total:
+		case failedCount == 0 && partialCount == 0:
 			status = reportStatusCompleted
-			verifySummary = "导入已完成"
-		case success > 0:
+			verifySummary = "导入已完成，" + buildVerifySummary(verifiedCount, verifyFailedCount)
+		case successCount > 0 || partialCount > 0:
 			status = reportStatusPartial
-			verifySummary = "导入部分成功，请处理失败项"
+			verifySummary = "导入部分成功，请处理失败项；" + buildVerifySummary(verifiedCount, verifyFailedCount)
 		default:
 			status = reportStatusFailed
-			verifySummary = "导入失败，请查看异常和任务详情"
+			verifySummary = "导入失败，请查看异常和任务详情；" + buildVerifySummary(verifiedCount, verifyFailedCount)
 		}
 	}
 	now := s.now().UTC()
 	if _, err := s.pool.Exec(ctx, `
 		UPDATE import_reports
 		SET status = $2,
-		    success_count = $3,
-		    failed_count = $4,
-		    partial_count = CASE WHEN $4 > 0 AND $3 > 0 THEN $4 ELSE 0 END,
+		    partial_count = CASE WHEN $4 > 0 AND $3 > 0 THEN $4 ELSE partial_count END,
 		    verify_summary = $5,
 		    latest_updated_at = $6,
 		    finished_at = CASE WHEN $2 IN ('COMPLETED', 'FAILED', 'PARTIAL_SUCCESS') THEN COALESCE(finished_at, $6) ELSE NULL END,
@@ -1431,7 +1544,8 @@ func (s *Service) loadLatestReportIDBySession(ctx context.Context, sessionID str
 func (s *Service) loadReports(ctx context.Context) ([]importdto.ReportSnapshot, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, session_id, library_id, job_id, title, status, submitted_at, finished_at,
-		       success_count, failed_count, partial_count, verify_summary, target_summaries, issue_ids, latest_updated_at, file_count, note
+		       success_count, failed_count, partial_count, verify_mode, verified_count, verify_failed_count,
+		       verify_summary, target_summaries, issue_ids, latest_updated_at, file_count, note
 		FROM import_reports
 		ORDER BY latest_updated_at DESC
 	`)
@@ -1447,7 +1561,8 @@ func (s *Service) loadReports(ctx context.Context) ([]importdto.ReportSnapshot, 
 		var finishedAt *time.Time
 		var latestUpdatedAt time.Time
 		if err := rows.Scan(&item.ID, &item.DeviceSessionID, &item.LibraryID, &item.TaskID, &item.Title, &item.Status, &submittedAt, &finishedAt,
-			&item.SuccessCount, &item.FailedCount, &item.PartialCount, &item.VerifySummary, &targetJSON, &item.IssueIDs, &latestUpdatedAt, &item.FileCount, &item.Note); err != nil {
+			&item.SuccessCount, &item.FailedCount, &item.PartialCount, &item.VerifyMode, &item.VerifiedCount, &item.VerifyFailedCount,
+			&item.VerifySummary, &targetJSON, &item.IssueIDs, &latestUpdatedAt, &item.FileCount, &item.Note); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(targetJSON, &item.TargetSummaries)
@@ -1457,7 +1572,8 @@ func (s *Service) loadReports(ctx context.Context) ([]importdto.ReportSnapshot, 
 		if item.IssueIDs == nil {
 			item.IssueIDs = []string{}
 		}
-		item.Status = mapReportStatus(item.Status)
+		item.Status = mapReportStatus(normalizeReportStatus(item.Status, item.SuccessCount, item.FailedCount, item.PartialCount, item.FileCount))
+		item.VerifyMode = mapVerifyMode(item.VerifyMode)
 		item.SubmittedAt = formatRelativeTimestamp(submittedAt)
 		item.LatestUpdatedAt = formatRelativeTimestamp(latestUpdatedAt)
 		if finishedAt != nil {
@@ -1768,6 +1884,22 @@ func emptyPrecheckSummary(updatedAt time.Time) importdto.PrecheckSummary {
 	return summary
 }
 
+func buildSelectionRequiredPrecheck(updatedAt time.Time) importdto.PrecheckSummary {
+	summary := emptyPrecheckSummary(updatedAt)
+	summary.BlockingCount = 1
+	summary.PassedCount = 0
+	summary.Checks.TargetWritable = "blocking"
+	summary.Items = []importdto.PrecheckItem{
+		{
+			ID:     "selection-required",
+			Label:  "已选择导入对象",
+			Status: "blocking",
+			Detail: "请先选择要导入的文件夹或文件。",
+		},
+	}
+	return summary
+}
+
 func buildCapacitySummary(total *int64, available *int64) importdto.CapacitySummary {
 	if total == nil || available == nil || *total <= 0 {
 		return importdto.CapacitySummary{Total: "—", Available: "—", UsedPercent: 0}
@@ -1864,6 +1996,31 @@ func mapReportStatus(status string) string {
 	}
 }
 
+func mapVerifyMode(mode string) string {
+	if strings.EqualFold(strings.TrimSpace(mode), "LIGHT") {
+		return "轻校验"
+	}
+	return mode
+}
+
+func normalizeReportStatus(status string, successCount int, failedCount int, partialCount int, fileCount int) string {
+	if fileCount <= 0 {
+		return status
+	}
+	processedCount := successCount + failedCount + partialCount
+	if processedCount < fileCount {
+		return status
+	}
+	switch {
+	case failedCount == 0 && partialCount == 0:
+		return reportStatusCompleted
+	case successCount > 0 || partialCount > 0:
+		return reportStatusPartial
+	default:
+		return reportStatusFailed
+	}
+}
+
 func mapSelectionTitleType(entryType string) string {
 	if entryType == "DIRECTORY" {
 		return "目录"
@@ -1895,6 +2052,32 @@ func mapTargetTone(authStatus string, healthStatus string) string {
 	return "success"
 }
 
+func resolveTargetSummaryStatus(item importdto.ReportTargetSummary) string {
+	switch {
+	case item.FailedCount > 0 && item.SuccessCount > 0:
+		return "部分成功"
+	case item.FailedCount > 0:
+		return "失败"
+	case item.SuccessCount > 0:
+		return "已完成"
+	default:
+		return "等待执行"
+	}
+}
+
+func buildVerifySummary(verifiedCount int, verifyFailedCount int) string {
+	switch {
+	case verifyFailedCount > 0 && verifiedCount > 0:
+		return fmt.Sprintf("轻校验完成：%d 通过，%d 失败", verifiedCount, verifyFailedCount)
+	case verifyFailedCount > 0:
+		return fmt.Sprintf("轻校验失败：%d 项失败", verifyFailedCount)
+	case verifiedCount > 0:
+		return fmt.Sprintf("轻校验完成：%d 项通过", verifiedCount)
+	default:
+		return "等待本地执行器执行。"
+	}
+}
+
 func formatBytes(value int64) string {
 	if value >= 1024*1024*1024 {
 		return fmt.Sprintf("%.1f GB", float64(value)/float64(1024*1024*1024))
@@ -1906,6 +2089,33 @@ func formatBytes(value int64) string {
 		return fmt.Sprintf("%.1f KB", float64(value)/1024)
 	}
 	return fmt.Sprintf("%d B", value)
+}
+
+func parseBytes(value string) int64 {
+	trimmed := strings.TrimSpace(strings.ToUpper(value))
+	if trimmed == "" || trimmed == "—" {
+		return 0
+	}
+	number := strings.TrimSpace(strings.TrimRight(trimmed, "B"))
+	multiplier := float64(1)
+	switch {
+	case strings.Contains(trimmed, "GB"):
+		multiplier = 1024 * 1024 * 1024
+		number = strings.TrimSpace(strings.TrimSuffix(trimmed, "GB"))
+	case strings.Contains(trimmed, "MB"):
+		multiplier = 1024 * 1024
+		number = strings.TrimSpace(strings.TrimSuffix(trimmed, "MB"))
+	case strings.Contains(trimmed, "KB"):
+		multiplier = 1024
+		number = strings.TrimSpace(strings.TrimSuffix(trimmed, "KB"))
+	case strings.Contains(trimmed, "B"):
+		number = strings.TrimSpace(strings.TrimSuffix(trimmed, "B"))
+	}
+	parsed, err := strconv.ParseFloat(strings.TrimSpace(number), 64)
+	if err != nil {
+		return 0
+	}
+	return int64(parsed * multiplier)
 }
 
 func formatOptionalBytes(value *int64) string {
@@ -2023,6 +2233,14 @@ func nonNilStrings(items []string) []string {
 		return []string{}
 	}
 	return items
+}
+
+func mustMarshalJSON(value any) []byte {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return []byte(`{}`)
+	}
+	return raw
 }
 
 func ptr[T any](value T) *T {
