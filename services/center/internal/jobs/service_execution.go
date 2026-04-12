@@ -521,11 +521,30 @@ func (s *Service) cancelPendingItems(ctx context.Context, jobID string) error {
 
 func (s *Service) recoverQueuedJobs(ctx context.Context) error {
 	now := s.now().UTC()
-	_, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
 		UPDATE jobs
 		SET status = CASE WHEN status = 'RUNNING' THEN 'QUEUED' ELSE status END,
 		    updated_at = $1
 		WHERE status IN ('RUNNING', 'QUEUED', 'PENDING', 'WAITING_RETRY')
-	`, now)
-	return err
+	`, now); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE job_items
+		SET status = 'QUEUED',
+		    phase = NULL,
+		    updated_at = $1
+		WHERE status = 'RUNNING'
+	`, now); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
 }

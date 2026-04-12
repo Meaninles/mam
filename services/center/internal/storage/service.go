@@ -13,6 +13,7 @@ import (
 
 	"mare/services/center/internal/assets"
 	apperrors "mare/services/center/internal/errors"
+	"mare/services/center/internal/integration"
 	storagedto "mare/shared/contracts/dto/storage"
 )
 
@@ -22,6 +23,9 @@ type LocalFolderService struct {
 	nas          nasConnector
 	cloud        *http.Client
 	cipher       credentialCipher
+	integration  interface {
+		Provider(vendor string) (integration.CloudProviderDriver, error)
+	}
 	assetService interface {
 		SyncMount(ctx context.Context, mountID string) error
 	}
@@ -36,6 +40,12 @@ func NewLocalFolderService(pool *pgxpool.Pool) *LocalFolderService {
 		cipher:       newSystemCredentialCipher(),
 		assetService: assets.NewService(pool),
 	}
+}
+
+func (s *LocalFolderService) SetIntegrationService(service interface {
+	Provider(vendor string) (integration.CloudProviderDriver, error)
+}) {
+	s.integration = service
 }
 
 func (s *LocalFolderService) SetAssetService(service interface {
@@ -243,7 +253,7 @@ func (s *LocalFolderService) SaveLocalFolder(ctx context.Context, request storag
 		if decryptErr != nil {
 			return storagedto.SaveLocalFolderResponse{}, apperrors.BadRequest("网盘凭据无法读取，请重新保存网盘节点")
 		}
-		cloudService := NewCloudNodeService(s.pool)
+		cloudService := NewCloudNodeService(s.pool, s.integration)
 		cloudService.cipher = s.cipher
 		cloudService.client = s.cloud
 		if ensureErr := cloudService.ensureCloudMountDirectory(ctx, cookie, sourcePath); ensureErr != nil {
@@ -500,7 +510,7 @@ func (s *LocalFolderService) RunLocalFolderConnectionTest(ctx context.Context, i
 				lastErrorMessage = decryptErr.Error()
 				break
 			}
-			cloudService := NewCloudNodeService(s.pool)
+			cloudService := NewCloudNodeService(s.pool, s.integration)
 			cloudService.cipher = s.cipher
 			cloudService.client = s.cloud
 			probe, probeErr := cloudService.probeCloudCredential(ctx, cookie)

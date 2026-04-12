@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -402,10 +401,13 @@ func TestPrepareDeleteAssetPlanRejectsCloudReplica(t *testing.T) {
 		t.Fatalf("insert cloud replica: %v", err)
 	}
 
-	_, err = service.PrepareDeleteAssetPlan(ctx, assetdto.CreateDeleteAssetJobRequest{
+	plan, err := service.PrepareDeleteAssetPlan(ctx, assetdto.CreateDeleteAssetJobRequest{
 		EntryIDs: []string{assetID},
 	})
-	if err == nil || !strings.Contains(err.Error(), "暂不支持删除") {
-		t.Fatalf("expected cloud replica rejection, got %v", err)
+	if err != nil {
+		t.Fatalf("prepare delete asset plan with cloud replica: %v", err)
+	}
+	if len(plan.Items) != 1 {
+		t.Fatalf("expected one delete item, got %+v", plan.Items)
 	}
 }

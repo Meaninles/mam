@@ -10,7 +10,7 @@ import (
 
 func (s *Service) CreateReplicateJob(ctx context.Context, plan assets.ReplicatePlan) (jobdto.CreateResponse, error) {
 	libraryID := plan.LibraryID
-	routeType := "COPY"
+	routeType := deriveReplicateJobRouteType(plan)
 
 	items := make([]CreateItemInput, 0, len(plan.Items))
 	for _, item := range plan.Items {
@@ -24,7 +24,7 @@ func (s *Service) CreateReplicateJob(ctx context.Context, plan assets.ReplicateP
 		items = append(items, CreateItemInput{
 			ItemKey:    fmt.Sprintf("asset:%s:replicate:%s", item.AssetID, item.TargetMountID),
 			ItemType:   ItemTypeAssetReplicaTransfer,
-			RouteType:  &routeType,
+			RouteType:  ptr(item.RouteType),
 			Title:      item.AssetName,
 			Summary:    fmt.Sprintf("同步到 %s", item.TargetMountName),
 			SourcePath: &item.SourcePhysicalPath,
@@ -67,6 +67,22 @@ func (s *Service) CreateReplicateJob(ctx context.Context, plan assets.ReplicateP
 			{LinkRole: LinkRoleTargetMount, ObjectType: ObjectTypeMount, MountID: &plan.TargetMountID},
 		},
 	})
+}
+
+func deriveReplicateJobRouteType(plan assets.ReplicatePlan) string {
+	if len(plan.Items) == 0 {
+		return "COPY"
+	}
+	current := plan.Items[0].RouteType
+	for _, item := range plan.Items[1:] {
+		if item.RouteType != current {
+			return "COPY"
+		}
+	}
+	if current == "UPLOAD" || current == "DOWNLOAD" {
+		return current
+	}
+	return "COPY"
 }
 
 func (s *Service) CreateDeleteReplicaJob(ctx context.Context, plan assets.DeleteReplicaPlan) (jobdto.CreateResponse, error) {

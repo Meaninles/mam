@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	apperrors "mare/services/center/internal/errors"
+	"mare/services/center/internal/integration"
 	storagedto "mare/shared/contracts/dto/storage"
 )
 
@@ -25,6 +26,9 @@ type CloudNodeService struct {
 	now    func() time.Time
 	cipher credentialCipher
 	client *http.Client
+	integration interface {
+		Provider(vendor string) (integration.CloudProviderDriver, error)
+	}
 }
 
 type cloudCredentialProbeResult struct {
@@ -32,12 +36,21 @@ type cloudCredentialProbeResult struct {
 	Message       string
 }
 
-func NewCloudNodeService(pool *pgxpool.Pool) *CloudNodeService {
+func NewCloudNodeService(pool *pgxpool.Pool, integrations ...interface {
+	Provider(vendor string) (integration.CloudProviderDriver, error)
+}) *CloudNodeService {
+	var integrationService interface {
+		Provider(vendor string) (integration.CloudProviderDriver, error)
+	}
+	if len(integrations) > 0 {
+		integrationService = integrations[0]
+	}
 	return &CloudNodeService{
 		pool:   pool,
 		now:    time.Now,
 		cipher: newSystemCredentialCipher(),
 		client: &http.Client{Timeout: 10 * time.Second},
+		integration: integrationService,
 	}
 }
 
@@ -46,10 +59,10 @@ func (s *CloudNodeService) ListCloudNodes(ctx context.Context) ([]storagedto.Clo
 		SELECT
 			sn.id,
 			sn.name,
-			COALESCE(sn.vendor, '115'),
-			COALESCE(sn.access_mode, 'QR'),
+			COALESCE(cp.provider_vendor, COALESCE(sn.vendor, '115')),
+			COALESCE(cp.auth_method, COALESCE(sn.access_mode, 'QR')),
 			COALESCE(snc.secret_ref, ''),
-			COALESCE(sn.address, ''),
+			COALESCE(cp.remote_root_path, COALESCE(sn.address, '')),
 			COALESCE(snc.token_status, 'UNKNOWN'),
 			snr.last_check_at,
 			COALESCE(snr.auth_status, 'UNKNOWN'),
@@ -57,14 +70,15 @@ func (s *CloudNodeService) ListCloudNodes(ctx context.Context) ([]storagedto.Clo
 			COALESCE(sn.description, ''),
 			COUNT(m.id) FILTER (WHERE m.deleted_at IS NULL)
 		FROM storage_nodes sn
+		LEFT JOIN cloud_node_profiles cp ON cp.storage_node_id = sn.id
 		LEFT JOIN storage_node_credentials snc ON snc.storage_node_id = sn.id
 		LEFT JOIN storage_node_runtime snr ON snr.storage_node_id = sn.id
 		LEFT JOIN mounts m ON m.storage_node_id = sn.id
 		WHERE sn.node_type = 'CLOUD'
 		  AND sn.deleted_at IS NULL
 		GROUP BY
-			sn.id, sn.name, sn.vendor, sn.access_mode, snc.secret_ref,
-			sn.address, snc.token_status, snr.last_check_at,
+			sn.id, sn.name, cp.provider_vendor, cp.auth_method, snc.secret_ref,
+			cp.remote_root_path, snc.token_status, snr.last_check_at,
 			snr.auth_status, snr.health_status, sn.description
 		ORDER BY sn.created_at DESC
 	`)
@@ -117,6 +131,9 @@ func (s *CloudNodeService) ListCloudNodes(ctx context.Context) ([]storagedto.Clo
 }
 
 func (s *CloudNodeService) SaveCloudNode(ctx context.Context, request storagedto.SaveCloudNodeRequest) (storagedto.SaveCloudNodeResponse, error) {
+	if s.integration == nil {
+		return s.saveCloudNodeLegacy(ctx, request)
+	}
 	request.Name = strings.TrimSpace(request.Name)
 	request.Vendor = strings.TrimSpace(request.Vendor)
 	request.AccessMethod = strings.TrimSpace(request.AccessMethod)
@@ -133,24 +150,41 @@ func (s *CloudNodeService) SaveCloudNode(ctx context.Context, request storagedto
 	}
 
 	if request.Name == "" {
-		if request.Name == "" {
-			return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest("网盘名称不能为空")
+		return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest("网盘名称不能为空")
+	}
+	if request.Vendor == "" {
+		request.Vendor = "115"
+	}
+	if request.MountPath == "" {
+		return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest("挂载目录不能为空")
+	}
+	if request.AccessMethod == "" {
+		return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest("接入方式无效")
+	}
+	if request.AccessMethod == "QR" && request.QRChannel == "" {
+		request.QRChannel = "wechatmini"
+	}
+	driver, err := s.integration.Provider(request.Vendor)
+	if err != nil {
+		return storagedto.SaveCloudNodeResponse{}, err
+	}
+
+	var (
+		authResult integration.ProviderAuthResult
+		hasAuthResult bool
+	)
+	if strings.TrimSpace(request.Token) != "" {
+		authResult, err = driver.AuthenticateToken(ctx, request.Token)
+		if err != nil {
+			return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest(err.Error())
 		}
-		if request.Vendor == "" {
-			return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest("网盘类型不能为空")
+		hasAuthResult = true
+	} else if request.QRSession != nil {
+		authResult, err = driver.ConsumeQRCodeSession(ctx, request.QRSession.UID)
+		if err != nil {
+			return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest(err.Error())
 		}
-		if request.MountPath == "" {
-			return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest("挂载目录不能为空")
-		}
-		if request.AccessMethod == "" {
-			return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest("接入方式无效")
-		}
-		if request.AccessMethod == "QR" && request.QRChannel == "" {
-			return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest("扫码登录类型不能为空")
-		}
-		if request.AccessMethod == "TOKEN" && request.Token == "" {
-			return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest("Token 不能为空")
-		}
+		hasAuthResult = true
 	}
 
 	now := s.now().UTC()
@@ -161,47 +195,38 @@ func (s *CloudNodeService) SaveCloudNode(ctx context.Context, request storagedto
 	defer tx.Rollback(ctx)
 
 	accessMode := dbCloudAccessMode(request.AccessMethod)
-	tokenStatus := "PENDING_SCAN"
+	tokenStatus := "CONFIGURED"
 	ciphertext := ""
-	plainCredential := ""
 	authStatus := "UNKNOWN"
 	healthStatus := "UNKNOWN"
-	if request.AccessMethod == "QR" {
-		if request.QRSession == nil {
-			return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest("请先获取扫码二维码")
-		}
-		cookie, err := s.consumeQRCodeSession(ctx, *request.QRSession)
-		if err != nil {
-			return storagedto.SaveCloudNodeResponse{}, err
-		}
-		plainCredential = cookie
-		ciphertext, err = s.cipher.Encrypt(cookie)
-		if err != nil {
-			return storagedto.SaveCloudNodeResponse{}, err
-		}
-		tokenStatus = "CONFIGURED"
-		authStatus = "AUTHORIZED"
-		healthStatus = "ONLINE"
-	} else if request.Token != "" {
-		probe, err := s.probeCloudCredential(ctx, request.Token)
-		if err != nil {
-			return storagedto.SaveCloudNodeResponse{}, err
-		}
-		if !probe.Authenticated {
-			return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest(probe.Message)
-		}
-		plainCredential = request.Token
-		ciphertext, err = s.cipher.Encrypt(request.Token)
-		if err != nil {
-			return storagedto.SaveCloudNodeResponse{}, err
-		}
-		tokenStatus = "CONFIGURED"
-		authStatus = "AUTHORIZED"
-		healthStatus = "ONLINE"
+	if request.AccessMethod == "QR" && request.QRSession == nil && request.ID == "" {
+		return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest("请先获取扫码二维码")
 	}
-	if ensureErr := s.ensureCloudMountDirectory(ctx, plainCredential, request.MountPath); ensureErr != nil {
-		return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest(ensureErr.Error())
+	if request.AccessMethod == "TOKEN" && strings.TrimSpace(request.Token) == "" && request.ID == "" {
+		return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest("Token 不能为空")
 	}
+
+	profile, profileErr := s.loadCloudProfile(ctx, request.ID)
+	if profileErr != nil && request.ID != "" {
+		return storagedto.SaveCloudNodeResponse{}, profileErr
+	}
+	if !hasAuthResult {
+		authResult = integration.ProviderAuthResult{
+			ProviderVendor: request.Vendor,
+			Payload:        profile.Payload,
+		}
+	}
+	if request.AccessMethod == "QR" && !hasAuthResult && request.ID == "" {
+		return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest("扫码登录尚未完成")
+	}
+	if request.AccessMethod == "TOKEN" && !hasAuthResult && request.ID == "" {
+		return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest("Token 无效")
+	}
+	if err := driver.EnsureRemoteRoot(ctx, authResult.Payload, request.MountPath); err != nil {
+		return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest(err.Error())
+	}
+	authStatus = "AUTHORIZED"
+	healthStatus = "ONLINE"
 
 	if request.ID == "" {
 		nodeID := buildCode("cloud-node-id", now)
@@ -285,6 +310,35 @@ func (s *CloudNodeService) SaveCloudNode(ctx context.Context, request storagedto
 		}
 	}
 
+	providerPayload, err := integration.MarshalProviderPayload(authResult.Payload)
+	if err != nil {
+		return storagedto.SaveCloudNodeResponse{}, err
+	}
+	providerPayloadJSON, err := json.Marshal(providerPayload)
+	if err != nil {
+		return storagedto.SaveCloudNodeResponse{}, err
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO cloud_node_profiles (
+			id, storage_node_id, provider_vendor, auth_method, remote_root_path, provider_payload,
+			last_auth_at, last_auth_error_code, last_auth_error_message, updated_at, created_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, NULL, NULL, $7, $7
+		)
+		ON CONFLICT (storage_node_id) DO UPDATE SET
+			provider_vendor = EXCLUDED.provider_vendor,
+			auth_method = EXCLUDED.auth_method,
+			remote_root_path = EXCLUDED.remote_root_path,
+			provider_payload = EXCLUDED.provider_payload,
+			last_auth_at = EXCLUDED.last_auth_at,
+			last_auth_error_code = NULL,
+			last_auth_error_message = NULL,
+			updated_at = EXCLUDED.updated_at
+	`, buildCode("cloud-node-profile", now), request.ID, request.Vendor, request.AccessMethod, request.MountPath, providerPayloadJSON, now)
+	if err != nil {
+		return storagedto.SaveCloudNodeResponse{}, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return storagedto.SaveCloudNodeResponse{}, err
 	}
@@ -301,6 +355,9 @@ func (s *CloudNodeService) SaveCloudNode(ctx context.Context, request storagedto
 }
 
 func (s *CloudNodeService) RunCloudNodeConnectionTest(ctx context.Context, ids []string) (storagedto.RunCloudNodeConnectionTestResponse, error) {
+	if s.integration == nil {
+		return s.runCloudNodeConnectionTestLegacy(ctx, ids)
+	}
 	if len(ids) == 0 {
 		return storagedto.RunCloudNodeConnectionTestResponse{}, apperrors.BadRequest("ids 不能为空")
 	}
@@ -309,6 +366,14 @@ func (s *CloudNodeService) RunCloudNodeConnectionTest(ctx context.Context, ids [
 	results := make([]storagedto.ConnectionTestResult, 0, len(ids))
 	for _, id := range ids {
 		record, err := s.loadCloudNodeByID(ctx, id)
+		if err != nil {
+			return storagedto.RunCloudNodeConnectionTestResponse{}, err
+		}
+		profile, err := s.loadCloudProfile(ctx, id)
+		if err != nil {
+			return storagedto.RunCloudNodeConnectionTestResponse{}, err
+		}
+		driver, err := s.integration.Provider(profile.ProviderVendor)
 		if err != nil {
 			return storagedto.RunCloudNodeConnectionTestResponse{}, err
 		}
@@ -325,30 +390,16 @@ func (s *CloudNodeService) RunCloudNodeConnectionTest(ctx context.Context, ids [
 			{Label: "挂载根目录", Status: "success", Detail: record.MountPath},
 		}
 
-		cookie, err := s.loadCloudCredential(ctx, id)
-		if err != nil {
-			lastErrorCode = "credential_load_failed"
+		if err := driver.EnsureRemoteRoot(ctx, profile.Payload, record.MountPath); err != nil {
+			lastErrorCode = "cloud_root_check_failed"
 			lastErrorMessage = err.Error()
-			checks = append(checks, storagedto.ConnectionCheck{Label: "凭据加载", Status: "critical", Detail: err.Error()})
+			checks = append(checks, storagedto.ConnectionCheck{Label: "远端根目录校验", Status: "critical", Detail: err.Error()})
 		} else {
-			checks = append(checks, storagedto.ConnectionCheck{Label: "凭据加载", Status: "success", Detail: "已读取已保存凭据"})
-			probe, probeErr := s.probeCloudCredential(ctx, cookie)
-			if probeErr != nil {
-				lastErrorCode = "credential_probe_failed"
-				lastErrorMessage = probeErr.Error()
-				summary = "115 接口校验失败"
-				checks = append(checks, storagedto.ConnectionCheck{Label: "115 登录态校验", Status: "critical", Detail: probeErr.Error()})
-			} else if !probe.Authenticated {
-				lastErrorCode = "credential_invalid"
-				lastErrorMessage = probe.Message
-				checks = append(checks, storagedto.ConnectionCheck{Label: "115 登录态校验", Status: "critical", Detail: probe.Message})
-			} else {
-				overallTone = "success"
-				summary = "已通过 115 登录态校验，当前 cookie 可用"
-				authStatus = "AUTHORIZED"
-				healthStatus = "ONLINE"
-				checks = append(checks, storagedto.ConnectionCheck{Label: "115 登录态校验", Status: "success", Detail: probe.Message})
-			}
+			overallTone = "success"
+			summary = "已通过 CloudDrive2 云端连通性校验"
+			authStatus = "AUTHORIZED"
+			healthStatus = "ONLINE"
+			checks = append(checks, storagedto.ConnectionCheck{Label: "远端根目录校验", Status: "success", Detail: "CloudDrive2 已确认云端路径可用"})
 		}
 
 		_, err = s.pool.Exec(ctx, `
@@ -418,6 +469,7 @@ func (s *CloudNodeService) DeleteCloudNode(ctx context.Context, id string) (stor
 
 	return storagedto.DeleteCloudNodeResponse{Message: "网盘已删除"}, nil
 }
+
 func (s *CloudNodeService) loadCloudNodeByID(ctx context.Context, id string) (storagedto.CloudNodeRecord, error) {
 	items, err := s.ListCloudNodes(ctx)
 	if err != nil {
@@ -429,6 +481,46 @@ func (s *CloudNodeService) loadCloudNodeByID(ctx context.Context, id string) (st
 		}
 	}
 	return storagedto.CloudNodeRecord{}, apperrors.NotFound("网盘节点不存在")
+}
+
+type cloudProfile struct {
+	ProviderVendor string
+	AuthMethod     string
+	RemoteRootPath string
+	Payload        integration.CloudProviderPayload
+}
+
+func (s *CloudNodeService) loadCloudProfile(ctx context.Context, nodeID string) (cloudProfile, error) {
+	if strings.TrimSpace(nodeID) == "" {
+		return cloudProfile{}, nil
+	}
+	var (
+		vendor string
+		authMethod string
+		remoteRoot string
+		payload []byte
+	)
+	err := s.pool.QueryRow(ctx, `
+		SELECT provider_vendor, auth_method, remote_root_path, provider_payload
+		FROM cloud_node_profiles
+		WHERE storage_node_id = $1
+	`, nodeID).Scan(&vendor, &authMethod, &remoteRoot, &payload)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return cloudProfile{}, apperrors.NotFound("网盘节点配置不存在")
+		}
+		return cloudProfile{}, err
+	}
+	decoded, err := integration.UnmarshalProviderPayload(payload)
+	if err != nil {
+		return cloudProfile{}, err
+	}
+	return cloudProfile{
+		ProviderVendor: vendor,
+		AuthMethod:     authMethod,
+		RemoteRootPath: remoteRoot,
+		Payload:        decoded,
+	}, nil
 }
 
 func dbCloudAccessMode(value string) string {
@@ -549,26 +641,338 @@ func uiCloudSuggestion(tone string, accessMethod string) string {
 }
 
 func (s *CloudNodeService) CreateCloudQRCodeSession(ctx context.Context, channel string) (storagedto.CloudQRCodeSession, error) {
+	if s.integration == nil {
+		return s.createCloudQRCodeSessionLegacy(ctx, channel)
+	}
 	channel = normalizeCloudQRChannel(channel)
 	if !isSupportedCloudQRChannel(channel) {
 		return storagedto.CloudQRCodeSession{}, apperrors.BadRequest("扫码登录类型无效")
 	}
+	driver, err := s.integration.Provider("115")
+	if err != nil {
+		return storagedto.CloudQRCodeSession{}, err
+	}
+	session, err := driver.CreateQRCodeSession(ctx, channel)
+	if err != nil {
+		return storagedto.CloudQRCodeSession{}, err
+	}
+	return storagedto.CloudQRCodeSession{
+		UID:     session.ID,
+		Time:    time.Now().Unix(),
+		Sign:    buildCode("cloud-qr-sign", s.now().UTC()),
+		QRCode:  session.ImageURL,
+		Channel: channel,
+	}, nil
+	}
 
+func (s *CloudNodeService) GetCloudQRCodeStatus(ctx context.Context, session storagedto.CloudQRCodeSession) (storagedto.CloudQRCodeStatusResponse, error) {
+	if s.integration == nil {
+		return s.getCloudQRCodeStatusLegacy(ctx, session)
+	}
+	if session.UID == "" {
+		return storagedto.CloudQRCodeStatusResponse{}, apperrors.BadRequest("二维码会话无效")
+	}
+	driver, err := s.integration.Provider("115")
+	if err != nil {
+		return storagedto.CloudQRCodeStatusResponse{}, err
+	}
+	qrSession, err := driver.GetQRCodeSession(ctx, session.UID)
+	if err != nil {
+		return storagedto.CloudQRCodeStatusResponse{}, err
+	}
+	status := "WAITING"
+	switch qrSession.Status {
+	case "COMPLETED":
+		status = "CONFIRMED"
+	case "FAILED":
+		status = "EXPIRED"
+	case "PENDING_SCAN", "SCANNED":
+		status = "SCANNED"
+	}
+	return storagedto.CloudQRCodeStatusResponse{
+		Status:  status,
+		Message: qrSession.Message,
+	}, nil
+	}
+
+func (s *CloudNodeService) FetchCloudQRCodeImage(ctx context.Context, session storagedto.CloudQRCodeSession) ([]byte, string, error) {
+	if s.integration == nil {
+		return s.fetchCloudQRCodeImageLegacy(ctx, session)
+	}
+	driver, err := s.integration.Provider("115")
+	if err != nil {
+		return nil, "", err
+	}
+	qrSession, err := driver.GetQRCodeSession(ctx, session.UID)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(qrSession.ImageData) > 0 {
+		return qrSession.ImageData, "image/png", nil
+	}
+	if strings.TrimSpace(qrSession.ImageURL) == "" {
+		return nil, "", apperrors.BadRequest("二维码图片尚未生成")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, normalizeCloudQRCodeURL(qrSession.ImageURL), nil)
+	if err != nil {
+		return nil, "", err
+	}
+	response, err := s.client.Do(request)
+	if err != nil {
+		return nil, "", err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return nil, "", err
+	}
+	contentType := response.Header.Get("Content-Type")
+	if strings.TrimSpace(contentType) == "" {
+		contentType = "image/png"
+	}
+	return body, contentType, nil
+}
+
+func (s *CloudNodeService) saveCloudNodeLegacy(ctx context.Context, request storagedto.SaveCloudNodeRequest) (storagedto.SaveCloudNodeResponse, error) {
+	request.Name = strings.TrimSpace(request.Name)
+	request.Vendor = strings.TrimSpace(request.Vendor)
+	request.AccessMethod = normalizeCloudAccessMethod(strings.TrimSpace(request.AccessMethod), request.QRSession != nil, strings.TrimSpace(request.Token) != "")
+	request.QRChannel = normalizeCloudQRChannel(strings.TrimSpace(request.QRChannel))
+	request.MountPath = strings.TrimSpace(request.MountPath)
+	request.Token = strings.TrimSpace(request.Token)
+	request.Notes = strings.TrimSpace(request.Notes)
+	if request.Name == "" {
+		return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest("网盘名称不能为空")
+	}
+	if request.Vendor == "" {
+		request.Vendor = "115"
+	}
+	if request.MountPath == "" {
+		return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest("挂载目录不能为空")
+	}
+	if request.AccessMethod == "QR" && request.QRSession == nil {
+		return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest("请先获取扫码二维码")
+	}
+	if request.AccessMethod == "TOKEN" && request.Token == "" {
+		return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest("Token 不能为空")
+	}
+
+	now := s.now().UTC()
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return storagedto.SaveCloudNodeResponse{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	accessMode := dbCloudAccessMode(request.AccessMethod)
+	tokenStatus := "PENDING_SCAN"
+	ciphertext := ""
+	authStatus := "UNKNOWN"
+	healthStatus := "UNKNOWN"
+	plainCredential := ""
+	if request.AccessMethod == "QR" {
+		cookie, err := s.consumeQRCodeSession(ctx, *request.QRSession)
+		if err != nil {
+			return storagedto.SaveCloudNodeResponse{}, err
+		}
+		plainCredential = cookie
+		ciphertext, err = s.cipher.Encrypt(cookie)
+		if err != nil {
+			return storagedto.SaveCloudNodeResponse{}, err
+		}
+		tokenStatus = "CONFIGURED"
+		authStatus = "AUTHORIZED"
+		healthStatus = "ONLINE"
+	} else {
+		probe, err := s.probeCloudCredential(ctx, request.Token)
+		if err != nil {
+			return storagedto.SaveCloudNodeResponse{}, err
+		}
+		if !probe.Authenticated {
+			return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest(probe.Message)
+		}
+		plainCredential = request.Token
+		ciphertext, err = s.cipher.Encrypt(request.Token)
+		if err != nil {
+			return storagedto.SaveCloudNodeResponse{}, err
+		}
+		tokenStatus = "CONFIGURED"
+		authStatus = "AUTHORIZED"
+		healthStatus = "ONLINE"
+	}
+	if ensureErr := s.ensureCloudMountDirectory(ctx, plainCredential, request.MountPath); ensureErr != nil {
+		return storagedto.SaveCloudNodeResponse{}, apperrors.BadRequest(ensureErr.Error())
+	}
+
+	nodeID := request.ID
+	if nodeID == "" {
+		nodeID = buildCode("cloud-node-id", now)
+		_, err = tx.Exec(ctx, `
+			INSERT INTO storage_nodes (
+				id, code, name, node_type, vendor, address, access_mode, account_alias, enabled, description, created_at, updated_at
+			) VALUES ($1, $2, $3, 'CLOUD', $4, $5, $6, $7, true, $8, $9, $9)
+		`, nodeID, buildCode("cloud-node", now), request.Name, request.Vendor, request.MountPath, accessMode, request.Name, request.Notes, now)
+	} else {
+		_, err = tx.Exec(ctx, `
+			UPDATE storage_nodes
+			SET name = $2,
+			    vendor = $3,
+			    address = $4,
+			    access_mode = $5,
+			    account_alias = $6,
+			    description = $7,
+			    updated_at = $8
+			WHERE id = $1
+		`, nodeID, request.Name, request.Vendor, request.MountPath, accessMode, request.Name, request.Notes, now)
+	}
+	if err != nil {
+		return storagedto.SaveCloudNodeResponse{}, err
+	}
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO storage_node_credentials (
+			id, storage_node_id, credential_kind, secret_ciphertext, secret_ref, token_status, updated_at, created_at
+		) VALUES ($1, $2, 'TOKEN', NULLIF($3, ''), NULLIF($4, ''), $5, $6, $6)
+		ON CONFLICT (storage_node_id) DO UPDATE SET
+			secret_ciphertext = EXCLUDED.secret_ciphertext,
+			secret_ref = EXCLUDED.secret_ref,
+			token_status = EXCLUDED.token_status,
+			updated_at = EXCLUDED.updated_at
+	`, buildCode("cloud-node-credential", now), nodeID, ciphertext, request.QRChannel, tokenStatus, now)
+	if err != nil {
+		return storagedto.SaveCloudNodeResponse{}, err
+	}
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO storage_node_runtime (
+			id, storage_node_id, health_status, auth_status, last_check_at, last_success_at, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $5, $5, $5)
+		ON CONFLICT (storage_node_id) DO UPDATE SET
+			health_status = EXCLUDED.health_status,
+			auth_status = EXCLUDED.auth_status,
+			last_check_at = EXCLUDED.last_check_at,
+			last_success_at = EXCLUDED.last_success_at,
+			last_error_code = NULL,
+			last_error_message = NULL,
+			updated_at = EXCLUDED.updated_at
+	`, buildCode("cloud-node-runtime", now), nodeID, healthStatus, authStatus, now)
+	if err != nil {
+		return storagedto.SaveCloudNodeResponse{}, err
+	}
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO cloud_node_profiles (
+			id, storage_node_id, provider_vendor, auth_method, remote_root_path, provider_payload, last_auth_at, updated_at, created_at
+		) VALUES ($1, $2, $3, $4, $5, '{}'::jsonb, $6, $6, $6)
+		ON CONFLICT (storage_node_id) DO UPDATE SET
+			provider_vendor = EXCLUDED.provider_vendor,
+			auth_method = EXCLUDED.auth_method,
+			remote_root_path = EXCLUDED.remote_root_path,
+			last_auth_at = EXCLUDED.last_auth_at,
+			updated_at = EXCLUDED.updated_at
+	`, buildCode("cloud-node-profile", now), nodeID, request.Vendor, request.AccessMethod, request.MountPath, now)
+	if err != nil {
+		return storagedto.SaveCloudNodeResponse{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return storagedto.SaveCloudNodeResponse{}, err
+	}
+	record, err := s.loadCloudNodeByID(ctx, nodeID)
+	if err != nil {
+		return storagedto.SaveCloudNodeResponse{}, err
+	}
+	return storagedto.SaveCloudNodeResponse{Message: "网盘已保存", Record: record}, nil
+}
+
+func (s *CloudNodeService) runCloudNodeConnectionTestLegacy(ctx context.Context, ids []string) (storagedto.RunCloudNodeConnectionTestResponse, error) {
+	if len(ids) == 0 {
+		return storagedto.RunCloudNodeConnectionTestResponse{}, apperrors.BadRequest("ids 不能为空")
+	}
+	now := s.now().UTC()
+	results := make([]storagedto.ConnectionTestResult, 0, len(ids))
+	for _, id := range ids {
+		record, err := s.loadCloudNodeByID(ctx, id)
+		if err != nil {
+			return storagedto.RunCloudNodeConnectionTestResponse{}, err
+		}
+		cookie, err := s.loadCloudCredential(ctx, id)
+		overallTone := "success"
+		summary := "已通过 115 登录态校验，当前 cookie 可用"
+		authStatus := "AUTHORIZED"
+		healthStatus := "ONLINE"
+		lastErrorCode := ""
+		lastErrorMessage := ""
+		checks := []storagedto.ConnectionCheck{
+			{Label: "网盘类型", Status: "success", Detail: record.Vendor},
+			{Label: "挂载根目录", Status: "success", Detail: record.MountPath},
+		}
+		if err != nil {
+			overallTone = "critical"
+			summary = "未能通过 115 登录态校验"
+			authStatus = "FAILED"
+			healthStatus = "ERROR"
+			lastErrorCode = "credential_load_failed"
+			lastErrorMessage = err.Error()
+			checks = append(checks, storagedto.ConnectionCheck{Label: "凭据加载", Status: "critical", Detail: err.Error()})
+		} else {
+			checks = append(checks, storagedto.ConnectionCheck{Label: "凭据加载", Status: "success", Detail: "已读取已保存凭据"})
+			probe, probeErr := s.probeCloudCredential(ctx, cookie)
+			if probeErr != nil || !probe.Authenticated {
+				overallTone = "critical"
+				summary = "115 接口校验失败"
+				authStatus = "FAILED"
+				healthStatus = "ERROR"
+				lastErrorCode = "credential_probe_failed"
+				if probeErr != nil {
+					lastErrorMessage = probeErr.Error()
+					checks = append(checks, storagedto.ConnectionCheck{Label: "115 登录态校验", Status: "critical", Detail: probeErr.Error()})
+				} else {
+					lastErrorMessage = probe.Message
+					checks = append(checks, storagedto.ConnectionCheck{Label: "115 登录态校验", Status: "critical", Detail: probe.Message})
+				}
+			} else {
+				checks = append(checks, storagedto.ConnectionCheck{Label: "115 登录态校验", Status: "success", Detail: probe.Message})
+			}
+		}
+		_, _ = s.pool.Exec(ctx, `
+			UPDATE storage_node_runtime
+			SET health_status = $2,
+			    auth_status = $3,
+			    last_check_at = $4,
+			    last_success_at = CASE WHEN $5 THEN $4 ELSE last_success_at END,
+			    last_error_code = NULLIF($6, ''),
+			    last_error_message = NULLIF($7, ''),
+			    updated_at = $4
+			WHERE storage_node_id = $1
+		`, id, healthStatus, authStatus, now, overallTone == "success", lastErrorCode, lastErrorMessage)
+		results = append(results, storagedto.ConnectionTestResult{
+			ID:          id,
+			Name:        record.Name,
+			OverallTone: overallTone,
+			Summary:     summary,
+			Checks:      checks,
+			Suggestion:  uiCloudSuggestion(overallTone, record.AccessMethod),
+			TestedAt:    "刚刚",
+		})
+	}
+	return storagedto.RunCloudNodeConnectionTestResponse{Message: "连接测试已完成", Results: results}, nil
+}
+
+func (s *CloudNodeService) createCloudQRCodeSessionLegacy(ctx context.Context, channel string) (storagedto.CloudQRCodeSession, error) {
+	channel = normalizeCloudQRChannel(channel)
+	if !isSupportedCloudQRChannel(channel) {
+		return storagedto.CloudQRCodeSession{}, apperrors.BadRequest("扫码登录类型无效")
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://qrcodeapi.115.com/api/1.0/web/1.0/token/", nil)
 	if err != nil {
 		return storagedto.CloudQRCodeSession{}, err
 	}
-
 	response, err := s.client.Do(request)
 	if err != nil {
 		return storagedto.CloudQRCodeSession{}, err
 	}
 	defer response.Body.Close()
-
-	if response.StatusCode >= 400 {
-		return storagedto.CloudQRCodeSession{}, apperrors.BadRequest("获取 115 扫码二维码失败")
-	}
-
 	var payload struct {
 		Data struct {
 			UID    string `json:"uid"`
@@ -580,11 +984,6 @@ func (s *CloudNodeService) CreateCloudQRCodeSession(ctx context.Context, channel
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		return storagedto.CloudQRCodeSession{}, err
 	}
-
-	if payload.Data.UID == "" || payload.Data.Sign == "" || payload.Data.QRCode == "" {
-		return storagedto.CloudQRCodeSession{}, apperrors.BadRequest("115 扫码二维码数据不完整")
-	}
-
 	return storagedto.CloudQRCodeSession{
 		UID:     payload.Data.UID,
 		Time:    payload.Data.Time,
@@ -594,39 +993,20 @@ func (s *CloudNodeService) CreateCloudQRCodeSession(ctx context.Context, channel
 	}, nil
 }
 
-func (s *CloudNodeService) GetCloudQRCodeStatus(ctx context.Context, session storagedto.CloudQRCodeSession) (storagedto.CloudQRCodeStatusResponse, error) {
-	if session.UID == "" || session.Sign == "" {
-		return storagedto.CloudQRCodeStatusResponse{}, apperrors.BadRequest("二维码会话无效")
-	}
-
+func (s *CloudNodeService) getCloudQRCodeStatusLegacy(ctx context.Context, session storagedto.CloudQRCodeSession) (storagedto.CloudQRCodeStatusResponse, error) {
 	values := url.Values{}
 	values.Set("uid", session.UID)
 	values.Set("time", fmt.Sprintf("%d", session.Time))
 	values.Set("sign", session.Sign)
-
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://qrcodeapi.115.com/get/status/?"+values.Encode(), nil)
 	if err != nil {
 		return storagedto.CloudQRCodeStatusResponse{}, err
 	}
-	request.Header.Set("User-Agent", "Mozilla/5.0")
-	request.Header.Set("Accept", "application/json,text/plain,*/*")
-
 	response, err := s.client.Do(request)
 	if err != nil {
-		if isCloudQRCodeTimeout(err) {
-			return storagedto.CloudQRCodeStatusResponse{
-				Status:  "WAITING",
-				Message: "115 状态查询超时，请稍后重试",
-			}, nil
-		}
 		return storagedto.CloudQRCodeStatusResponse{}, err
 	}
 	defer response.Body.Close()
-
-	if response.StatusCode >= 400 {
-		return storagedto.CloudQRCodeStatusResponse{}, apperrors.BadRequest("获取二维码状态失败")
-	}
-
 	var payload struct {
 		Data struct {
 			Status int `json:"status"`
@@ -635,39 +1015,23 @@ func (s *CloudNodeService) GetCloudQRCodeStatus(ctx context.Context, session sto
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		return storagedto.CloudQRCodeStatusResponse{}, err
 	}
-
-	return storagedto.CloudQRCodeStatusResponse{
-		Status:  mapCloudQRStatus(payload.Data.Status),
-		Message: mapCloudQRMessage(payload.Data.Status),
-	}, nil
+	return storagedto.CloudQRCodeStatusResponse{Status: mapCloudQRStatus(payload.Data.Status), Message: mapCloudQRMessage(payload.Data.Status)}, nil
 }
 
-func (s *CloudNodeService) FetchCloudQRCodeImage(ctx context.Context, session storagedto.CloudQRCodeSession) ([]byte, string, error) {
-	if strings.TrimSpace(session.QRCode) == "" {
-		return nil, "", apperrors.BadRequest("娴滃瞼娣惍浣告禈閻楀洤婀撮崸鈧弮鐘虫櫏")
-	}
-
+func (s *CloudNodeService) fetchCloudQRCodeImageLegacy(ctx context.Context, session storagedto.CloudQRCodeSession) ([]byte, string, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, normalizeCloudQRCodeURL(session.QRCode), nil)
 	if err != nil {
 		return nil, "", err
 	}
-	request.Header.Set("User-Agent", "Mozilla/5.0")
-
 	response, err := s.client.Do(request)
 	if err != nil {
 		return nil, "", err
 	}
 	defer response.Body.Close()
-
-	if response.StatusCode >= 400 {
-		return nil, "", apperrors.BadRequest("获取二维码图片失败")
-	}
-
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		return nil, "", err
 	}
-
 	contentType := response.Header.Get("Content-Type")
 	if strings.TrimSpace(contentType) == "" {
 		contentType = "image/png"

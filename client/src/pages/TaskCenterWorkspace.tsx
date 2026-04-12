@@ -495,12 +495,20 @@ function resolveTaskPhaseLabel(status: JobStatus, items: JobItemRecord[]) {
   if (runningItem?.phase) {
     return resolvePhaseLabel(runningItem.phase);
   }
+  const externalPhase = resolveExternalTaskPhaseLabel(runningItem?.externalTaskEngine, runningItem?.externalTaskStatus);
+  if (externalPhase) {
+    return externalPhase;
+  }
   return resolveJobStatusLabel(status);
 }
 
 function resolveItemPhaseLabel(item: JobItemRecord) {
   if (item.phase) {
     return resolvePhaseLabel(item.phase);
+  }
+  const externalPhase = resolveExternalTaskPhaseLabel(item.externalTaskEngine, item.externalTaskStatus);
+  if (externalPhase) {
+    return externalPhase;
   }
   return resolveItemStatusLabel(item.status);
 }
@@ -512,6 +520,36 @@ function resolvePhaseLabel(phase: string) {
   if (phase === 'PAUSED') return '已暂停';
   if (phase === 'CANCELED') return '已取消';
   return phase;
+}
+
+function resolveExternalTaskPhaseLabel(engine?: string, status?: string) {
+  if (!status) {
+    return null;
+  }
+
+  if (engine === 'CD2_REMOTE_UPLOAD') {
+    if (status === 'WaitforPreprocessing' || status === 'Preprocessing') return '文件预处理中';
+    if (status === 'Inqueue') return '上传排队中';
+    if (status === 'Transfer') return '上传中';
+    if (status === 'Pause') return '已暂停';
+    if (status === 'Finish') return '已完成';
+    if (status === 'Skipped') return '已跳过';
+    if (status === 'Cancelled') return '已取消';
+    if (status === 'Error' || status === 'FatalError') return '上传失败';
+    return status;
+  }
+
+  if (engine === 'ARIA2') {
+    if (status === 'active') return '下载中';
+    if (status === 'waiting') return '等待下载';
+    if (status === 'paused') return '已暂停';
+    if (status === 'complete') return '已完成';
+    if (status === 'error') return '下载失败';
+    if (status === 'removed') return '已取消';
+    return status;
+  }
+
+  return status;
 }
 
 function resolveTaskItemKind(item: JobItemRecord): TaskItemRecord['kind'] {

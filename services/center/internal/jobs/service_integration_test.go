@@ -342,6 +342,96 @@ func TestServiceCancelRunningItemKeepsRemainingItemsExecutable(t *testing.T) {
 	}
 }
 
+func TestServiceRestartRequeuesRunningItems(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	defer pool.Close()
+	resetSchema(t, ctx, pool)
+
+	migrator := db.NewMigrator()
+	if _, err := migrator.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	service := jobs.NewService(pool)
+	result, err := service.CreateJob(ctx, jobs.CreateJobInput{
+		JobFamily:     jobs.JobFamilyMaintenance,
+		JobIntent:     jobs.JobIntentScanDirectory,
+		Title:         "扫描目录：/",
+		Summary:       "服务重启恢复测试",
+		SourceDomain:  jobs.SourceDomainFileCenter,
+		Priority:      jobs.PriorityNormal,
+		CreatedByType: jobs.CreatedByUser,
+		Items: []jobs.CreateItemInput{
+			{ItemKey: "mount:first", ItemType: jobs.ItemTypeDirectoryScan, Title: "扫描 first", Summary: "扫描 first"},
+			{ItemKey: "mount:second", ItemType: jobs.ItemTypeDirectoryScan, Title: "扫描 second", Summary: "扫描 second"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	detail, err := service.LoadJobDetail(ctx, result.JobID)
+	if err != nil {
+		t.Fatalf("load job detail: %v", err)
+	}
+	firstItemID := findItemID(t, detail.Items, "mount:first")
+	secondItemID := findItemID(t, detail.Items, "mount:second")
+
+	now := time.Now().UTC()
+	if _, err := pool.Exec(ctx, `
+		UPDATE jobs
+		SET status = 'RUNNING',
+		    started_at = $2,
+		    updated_at = $2
+		WHERE id = $1
+	`, result.JobID, now); err != nil {
+		t.Fatalf("seed running job: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE job_items
+		SET status = CASE WHEN id = $1 THEN 'RUNNING' ELSE 'PENDING' END,
+		    phase = CASE WHEN id = $1 THEN 'EXECUTING' ELSE NULL END,
+		    started_at = CASE WHEN id = $1 THEN $3 ELSE started_at END,
+		    updated_at = $3
+		WHERE id IN ($1, $2)
+	`, firstItemID, secondItemID, now); err != nil {
+		t.Fatalf("seed running items: %v", err)
+	}
+
+	restarted := jobs.NewService(pool)
+	executed := make(chan string, 2)
+	restarted.RegisterExecutor(jobs.JobIntentScanDirectory, func(ctx context.Context, execution jobs.ExecutionContext) error {
+		select {
+		case executed <- execution.Item.ItemKey:
+		default:
+		}
+		return nil
+	})
+	restarted.Start(ctx)
+
+	final := waitForJobStatus(t, ctx, restarted, result.JobID, jobs.StatusCompleted)
+	assertItemStatus(t, final.Items, "mount:first", jobs.ItemStatusCompleted)
+	assertItemStatus(t, final.Items, "mount:second", jobs.ItemStatusCompleted)
+
+	executedKeys := make(map[string]struct{}, 2)
+	deadline := time.After(2 * time.Second)
+	for len(executedKeys) < 2 {
+		select {
+		case key := <-executed:
+			executedKeys[key] = struct{}{}
+		case <-deadline:
+			t.Fatalf("expected both queued and recovered items to execute, got %#v", executedKeys)
+		}
+	}
+}
+
 func TestServiceExecutesReplicateJobAgainstRealAssets(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in short mode")

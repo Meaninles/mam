@@ -3,6 +3,7 @@ package assets
 import (
 	"context"
 	"io"
+	"encoding/json"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	apperrors "mare/services/center/internal/errors"
+	"mare/services/center/internal/integration"
 	assetdto "mare/shared/contracts/dto/asset"
 )
 
@@ -27,6 +29,7 @@ type ReplicatePlan struct {
 type ReplicatePlanItem struct {
 	AssetID              string
 	AssetName            string
+	RouteType            string
 	RelativePath         string
 	SizeBytes            int64
 	SourceReplicaID      string
@@ -88,6 +91,8 @@ type operationMount struct {
 	RelativeRootPath string
 	MountMode        string
 	NodeType         string
+	ProviderVendor   string
+	ProviderPayload  integration.CloudProviderPayload
 	Username         string
 	SecretCiphertext string
 }
@@ -99,6 +104,8 @@ type operationReplica struct {
 	MountName        string
 	StorageNodeID    string
 	NodeType         string
+	ProviderVendor   string
+	ProviderPayload  integration.CloudProviderPayload
 	SourcePath       string
 	RelativeRootPath string
 	MountMode        string
@@ -158,6 +165,7 @@ func (s *Service) PrepareReplicatePlan(ctx context.Context, request assetdto.Cre
 		items = append(items, ReplicatePlanItem{
 			AssetID:             asset.ID,
 			AssetName:           asset.Name,
+			RouteType:           determineReplicateRouteType(source.NodeType, targetMount.NodeType),
 			RelativePath:        asset.RelativePath,
 			SizeBytes:           asset.SizeBytes,
 			SourceReplicaID:     source.ID,
@@ -718,6 +726,7 @@ func (s *Service) loadLibraryName(ctx context.Context, libraryID string) (string
 
 func (s *Service) loadOperationMountByName(ctx context.Context, libraryID string, endpointName string) (operationMount, error) {
 	var row operationMount
+	var providerPayload []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT
 			m.id,
@@ -729,10 +738,13 @@ func (s *Service) loadOperationMountByName(ctx context.Context, libraryID string
 			m.relative_root_path,
 			m.mount_mode,
 			sn.node_type,
+			COALESCE(cp.provider_vendor, COALESCE(sn.vendor, '')),
+			COALESCE(cp.provider_payload, '{}'::jsonb),
 			COALESCE(snc.username, ''),
 			COALESCE(snc.secret_ciphertext, '')
 		FROM mounts m
 		INNER JOIN storage_nodes sn ON sn.id = m.storage_node_id
+		LEFT JOIN cloud_node_profiles cp ON cp.storage_node_id = sn.id
 		LEFT JOIN storage_node_credentials snc ON snc.storage_node_id = sn.id
 		WHERE m.library_id = $1
 		  AND m.name = $2
@@ -749,6 +761,8 @@ func (s *Service) loadOperationMountByName(ctx context.Context, libraryID string
 		&row.RelativeRootPath,
 		&row.MountMode,
 		&row.NodeType,
+		&row.ProviderVendor,
+		&providerPayload,
 		&row.Username,
 		&row.SecretCiphertext,
 	)
@@ -758,11 +772,15 @@ func (s *Service) loadOperationMountByName(ctx context.Context, libraryID string
 		}
 		return operationMount{}, err
 	}
+	if err := json.Unmarshal(providerPayload, &row.ProviderPayload); err != nil {
+		return operationMount{}, err
+	}
 	return row, nil
 }
 
 func (s *Service) loadOperationMountByID(ctx context.Context, mountID string) (operationMount, error) {
 	var row operationMount
+	var providerPayload []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT
 			m.id,
@@ -774,10 +792,13 @@ func (s *Service) loadOperationMountByID(ctx context.Context, mountID string) (o
 			m.relative_root_path,
 			m.mount_mode,
 			sn.node_type,
+			COALESCE(cp.provider_vendor, COALESCE(sn.vendor, '')),
+			COALESCE(cp.provider_payload, '{}'::jsonb),
 			COALESCE(snc.username, ''),
 			COALESCE(snc.secret_ciphertext, '')
 		FROM mounts m
 		INNER JOIN storage_nodes sn ON sn.id = m.storage_node_id
+		LEFT JOIN cloud_node_profiles cp ON cp.storage_node_id = sn.id
 		LEFT JOIN storage_node_credentials snc ON snc.storage_node_id = sn.id
 		WHERE m.id = $1
 		  AND m.deleted_at IS NULL
@@ -792,6 +813,8 @@ func (s *Service) loadOperationMountByID(ctx context.Context, mountID string) (o
 		&row.RelativeRootPath,
 		&row.MountMode,
 		&row.NodeType,
+		&row.ProviderVendor,
+		&providerPayload,
 		&row.Username,
 		&row.SecretCiphertext,
 	)
@@ -799,6 +822,9 @@ func (s *Service) loadOperationMountByID(ctx context.Context, mountID string) (o
 		if err == pgx.ErrNoRows {
 			return operationMount{}, apperrors.NotFound("未找到指定挂载")
 		}
+		return operationMount{}, err
+	}
+	if err := json.Unmarshal(providerPayload, &row.ProviderPayload); err != nil {
 		return operationMount{}, err
 	}
 	return row, nil
@@ -813,6 +839,8 @@ func (s *Service) loadOperationReplicasByAsset(ctx context.Context, assetID stri
 			m.name,
 			m.storage_node_id,
 			sn.node_type,
+			COALESCE(cp.provider_vendor, COALESCE(sn.vendor, '')),
+			COALESCE(cp.provider_payload, '{}'::jsonb),
 			m.source_path,
 			m.relative_root_path,
 			m.mount_mode,
@@ -825,6 +853,7 @@ func (s *Service) loadOperationReplicasByAsset(ctx context.Context, assetID stri
 		FROM asset_replicas ar
 		INNER JOIN mounts m ON m.id = ar.mount_id
 		INNER JOIN storage_nodes sn ON sn.id = m.storage_node_id
+		LEFT JOIN cloud_node_profiles cp ON cp.storage_node_id = sn.id
 		LEFT JOIN storage_node_credentials snc ON snc.storage_node_id = sn.id
 		WHERE ar.asset_id = $1
 	`, assetID)
@@ -836,6 +865,7 @@ func (s *Service) loadOperationReplicasByAsset(ctx context.Context, assetID stri
 	items := make([]operationReplica, 0)
 	for rows.Next() {
 		var row operationReplica
+		var providerPayload []byte
 		if err := rows.Scan(
 			&row.ID,
 			&row.AssetID,
@@ -843,6 +873,8 @@ func (s *Service) loadOperationReplicasByAsset(ctx context.Context, assetID stri
 			&row.MountName,
 			&row.StorageNodeID,
 			&row.NodeType,
+			&row.ProviderVendor,
+			&providerPayload,
 			&row.SourcePath,
 			&row.RelativeRootPath,
 			&row.MountMode,
@@ -855,6 +887,9 @@ func (s *Service) loadOperationReplicasByAsset(ctx context.Context, assetID stri
 		); err != nil {
 			return nil, err
 		}
+		if err := json.Unmarshal(providerPayload, &row.ProviderPayload); err != nil {
+			return nil, err
+		}
 		items = append(items, row)
 	}
 	return items, rows.Err()
@@ -862,6 +897,7 @@ func (s *Service) loadOperationReplicasByAsset(ctx context.Context, assetID stri
 
 func (s *Service) loadOperationReplicaByID(ctx context.Context, replicaID string) (operationReplica, error) {
 	var row operationReplica
+	var providerPayload []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT
 			ar.id,
@@ -870,6 +906,8 @@ func (s *Service) loadOperationReplicaByID(ctx context.Context, replicaID string
 			m.name,
 			m.storage_node_id,
 			sn.node_type,
+			COALESCE(cp.provider_vendor, COALESCE(sn.vendor, '')),
+			COALESCE(cp.provider_payload, '{}'::jsonb),
 			m.source_path,
 			m.relative_root_path,
 			m.mount_mode,
@@ -882,6 +920,7 @@ func (s *Service) loadOperationReplicaByID(ctx context.Context, replicaID string
 		FROM asset_replicas ar
 		INNER JOIN mounts m ON m.id = ar.mount_id
 		INNER JOIN storage_nodes sn ON sn.id = m.storage_node_id
+		LEFT JOIN cloud_node_profiles cp ON cp.storage_node_id = sn.id
 		LEFT JOIN storage_node_credentials snc ON snc.storage_node_id = sn.id
 		WHERE ar.id = $1
 	`, replicaID).Scan(
@@ -891,6 +930,8 @@ func (s *Service) loadOperationReplicaByID(ctx context.Context, replicaID string
 		&row.MountName,
 		&row.StorageNodeID,
 		&row.NodeType,
+		&row.ProviderVendor,
+		&providerPayload,
 		&row.SourcePath,
 		&row.RelativeRootPath,
 		&row.MountMode,
@@ -905,6 +946,9 @@ func (s *Service) loadOperationReplicaByID(ctx context.Context, replicaID string
 		if err == pgx.ErrNoRows {
 			return operationReplica{}, apperrors.NotFound("未找到指定副本")
 		}
+		return operationReplica{}, err
+	}
+	if err := json.Unmarshal(providerPayload, &row.ProviderPayload); err != nil {
 		return operationReplica{}, err
 	}
 	return row, nil
@@ -927,10 +971,19 @@ func normalizeOperationEntryIDs(ids []string) []string {
 	return results
 }
 
+func determineReplicateRouteType(sourceNodeType string, targetNodeType string) string {
+	switch {
+	case targetNodeType == "CLOUD":
+		return "UPLOAD"
+	case sourceNodeType == "CLOUD":
+		return "DOWNLOAD"
+	default:
+		return "COPY"
+	}
+}
+
 func isSupportedWritableNodeType(nodeType string) bool {
-	// 切片 7 当前只落地本地与 NAS 的真实执行链路。
-	// CLOUD 端点先保留正式接口与计划编排入口，后续在切片 11 接入 CD2 / aria2 后再实现。
-	return nodeType == "LOCAL" || nodeType == "NAS"
+	return nodeType == "LOCAL" || nodeType == "NAS" || nodeType == "CLOUD"
 }
 
 func hasAvailableReplicaOnMount(replicas []operationReplica, mountID string) bool {
@@ -956,6 +1009,8 @@ func chooseSourceReplicaForReplication(replicas []operationReplica, targetMountI
 			weight = 0
 		case "NAS":
 			weight = 1
+		case "CLOUD":
+			weight = 2
 		}
 		if best == nil || weight < bestWeight {
 			best = replica

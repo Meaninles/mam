@@ -65,6 +65,9 @@ export type JobItemRecord = {
   etaSeconds?: number;
   bytesTotal?: number;
   bytesDone?: number;
+  externalTaskEngine?: string;
+  externalTaskId?: string;
+  externalTaskStatus?: string;
   attemptCount: number;
   issueCount: number;
   latestErrorCode?: string;
@@ -218,6 +221,7 @@ export const jobsApi = {
       'JOB_FAILED',
       'JOB_PARTIAL_SUCCESS',
       'JOB_PRIORITY_CHANGED',
+      'JOB_ITEM_PROGRESS',
       'JOB_ITEM_STARTED',
       'JOB_ITEM_PAUSED',
       'JOB_ITEM_RESUMED',

@@ -13,6 +13,7 @@ import (
 	"mare/services/center/internal/db"
 	httpapi "mare/services/center/internal/http"
 	"mare/services/center/internal/importing"
+	"mare/services/center/internal/integration"
 	"mare/services/center/internal/issues"
 	"mare/services/center/internal/jobs"
 	"mare/services/center/internal/logging"
@@ -60,8 +61,14 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 	localFolderService := storage.NewLocalFolderService(pool)
 	localFolderService.SetAssetService(assetService)
 	nasNodeService := storage.NewNASNodeService(pool)
-	cloudNodeService := storage.NewCloudNodeService(pool)
 	jobService := jobs.NewService(pool)
+	integrationService := integration.NewService(pool)
+	integrationService.RegisterProvider(integration.NewCD2115Driver(integrationService))
+	integrationService.RegisterDownloader(integration.NewAria2Manager())
+	localFolderService.SetIntegrationService(integrationService)
+	assetService.SetCloudResolver(integrationService)
+	assetService.SetJobRuntime(jobService)
+	cloudNodeService := storage.NewCloudNodeService(pool, integrationService)
 	importService := importing.NewService(pool, importing.NewHTTPAgentBridge(30*time.Second), jobService, assetService)
 	issueService := issues.NewService(pool, jobService)
 	notificationService := notifications.NewService(pool)
@@ -89,14 +96,14 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 		if sourceReplicaID == nil || targetMountID == nil {
 			return errors.New("同步作业缺少源副本或目标挂载关联")
 		}
-		return assetService.ExecuteReplicaSync(ctx, *sourceReplicaID, *targetMountID)
+		return assetService.ExecuteReplicaSyncTask(ctx, execution.Job.ID, execution.Item.ID, *sourceReplicaID, *targetMountID)
 	})
 	jobService.RegisterExecutor(jobs.JobIntentDeleteReplica, func(ctx context.Context, execution jobs.ExecutionContext) error {
 		replicaID := findReplicaLinkID(execution.ItemLinks)
 		if replicaID == nil {
 			return errors.New("副本删除作业缺少副本关联")
 		}
-		return assetService.ExecuteReplicaDeletion(ctx, *replicaID)
+		return assetService.ExecuteReplicaDeletionTask(ctx, execution.Job.ID, execution.Item.ID, *replicaID)
 	})
 	jobService.RegisterExecutor(jobs.JobIntentDeleteAsset, func(ctx context.Context, execution jobs.ExecutionContext) error {
 		assetID := findAssetLinkID(execution.ItemLinks)
@@ -128,6 +135,7 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 		Issues:        issueService,
 		Notifications: notificationService,
 		Imports:       importService,
+		Integrations:  integrationService,
 		LocalNodes:    localFolderService,
 		NasNodes:      nasNodeService,
 		CloudNodes:    cloudNodeService,
@@ -144,9 +152,17 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 			Handler:           router,
 			ReadHeaderTimeout: 5 * time.Second,
 		},
-		jobService: jobService,
+		jobService: multiStarter{jobService, integrationService},
 		dbPool:     pool,
 	}, nil
+}
+
+type multiStarter []interface{ Start(context.Context) }
+
+func (m multiStarter) Start(ctx context.Context) {
+	for _, starter := range m {
+		starter.Start(ctx)
+	}
 }
 
 func (a *ServerApplication) Run(ctx context.Context) error {

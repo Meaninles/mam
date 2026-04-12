@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	apperrors "mare/services/center/internal/errors"
+	"mare/services/center/internal/integration"
 	assetdto "mare/shared/contracts/dto/asset"
 )
 
@@ -18,6 +19,16 @@ type Service struct {
 	pool             *pgxpool.Pool
 	now              func() time.Time
 	executorResolver func(nodeType string) (mountPathExecutor, error)
+	cloudResolver    interface {
+		Provider(vendor string) (integration.CloudProviderDriver, error)
+		Downloader(name string) (integration.DownloadEngine, error)
+		EnsureCD2ClientDeviceID(ctx context.Context) (string, error)
+	}
+	jobRuntime interface {
+		UpdateExternalTask(ctx context.Context, jobID string, itemID string, engine string, taskID string, status string, payload map[string]any, resumeToken *string) error
+		UpdateItemTransferProgress(ctx context.Context, jobID string, itemID string, status string, bytesDone int64, bytesTotal int64, speedBPS int64, message string) error
+		LoadExternalTaskState(ctx context.Context, itemID string) (string, *string, *string, *string, *string, error)
+	}
 }
 
 type libraryModel struct {
@@ -63,6 +74,22 @@ type mountModel struct {
 
 func NewService(pool *pgxpool.Pool) *Service {
 	return &Service{pool: pool, now: time.Now, executorResolver: executorForNodeType}
+}
+
+func (s *Service) SetCloudResolver(resolver interface {
+	Provider(vendor string) (integration.CloudProviderDriver, error)
+	Downloader(name string) (integration.DownloadEngine, error)
+	EnsureCD2ClientDeviceID(ctx context.Context) (string, error)
+}) {
+	s.cloudResolver = resolver
+}
+
+func (s *Service) SetJobRuntime(runtime interface {
+	UpdateExternalTask(ctx context.Context, jobID string, itemID string, engine string, taskID string, status string, payload map[string]any, resumeToken *string) error
+	UpdateItemTransferProgress(ctx context.Context, jobID string, itemID string, status string, bytesDone int64, bytesTotal int64, speedBPS int64, message string) error
+	LoadExternalTaskState(ctx context.Context, itemID string) (string, *string, *string, *string, *string, error)
+}) {
+	s.jobRuntime = runtime
 }
 
 func (s *Service) ListLibraries(ctx context.Context) ([]assetdto.LibraryRecord, error) {

@@ -7,6 +7,8 @@ import type {
   TaskRecord,
 } from '../data';
 import { DenseRow, InlineSettingControl, TonePill } from '../components/Shared';
+import { ActionButton } from '../components/Shared';
+import type { RuntimeComponentRecord } from '../lib/integrationsApi';
 
 type SectionChangeHandler = (sectionId: string, rowId: string, value: string) => void;
 
@@ -54,14 +56,32 @@ export function WorkspaceSettingsPanel({
 }
 
 export function ImportArchiveSettingsPanel({
+  cd2Gateway,
+  cd2Runtime,
   deviceSessions,
+  onChangeCD2Gateway,
+  onSaveCD2Gateway,
   reports,
   sections,
+  onTestCD2Gateway,
   onChangeSetting,
 }: {
+  cd2Gateway: {
+    baseUrl: string;
+    enabled: boolean;
+    password: string;
+    runtimeStatus: string;
+    saving: boolean;
+    testing: boolean;
+    username: string;
+  };
+  cd2Runtime: RuntimeComponentRecord | null;
   deviceSessions: ImportDeviceSessionRecord[];
+  onChangeCD2Gateway: (field: 'baseUrl' | 'username' | 'password' | 'enabled', value: string | boolean) => void;
+  onSaveCD2Gateway: () => void;
   reports: ImportReportSnapshot[];
   sections: SettingSection[];
+  onTestCD2Gateway: () => void;
   onChangeSetting: SectionChangeHandler;
 }) {
   const activeSessions = deviceSessions.filter((session) => session.sessionStatus !== '已拔出');
@@ -79,6 +99,77 @@ export function ImportArchiveSettingsPanel({
               <p className="muted-paragraph">展示当前真实导入会话与导入报告，帮助确认默认策略对预检、目标编排和结果摘要的影响。</p>
             </div>
           </header>
+          <article className="settings-preview-item">
+            <div className="settings-preview-head">
+              <strong>CloudDrive2 集成</strong>
+              <TonePill tone={resolveGatewayTone(cd2Runtime?.status ?? cd2Gateway.runtimeStatus)}>
+                {renderGatewayStatus(cd2Runtime?.status ?? cd2Gateway.runtimeStatus)}
+              </TonePill>
+            </div>
+            <div className="setting-list">
+              <div className="setting-row editable">
+                <div className="setting-copy">
+                  <span>服务地址</span>
+                </div>
+                <input
+                  aria-label="CloudDrive2 服务地址"
+                  className="setting-input"
+                  type="text"
+                  value={cd2Gateway.baseUrl}
+                  onChange={(event) => onChangeCD2Gateway('baseUrl', event.target.value)}
+                />
+              </div>
+              <div className="setting-row editable">
+                <div className="setting-copy">
+                  <span>账号</span>
+                </div>
+                <input
+                  aria-label="CloudDrive2 账号"
+                  className="setting-input"
+                  type="text"
+                  value={cd2Gateway.username}
+                  onChange={(event) => onChangeCD2Gateway('username', event.target.value)}
+                />
+              </div>
+              <div className="setting-row editable">
+                <div className="setting-copy">
+                  <span>密码</span>
+                </div>
+                <input
+                  aria-label="CloudDrive2 密码"
+                  className="setting-input"
+                  type="password"
+                  value={cd2Gateway.password}
+                  onChange={(event) => onChangeCD2Gateway('password', event.target.value)}
+                />
+              </div>
+              <div className="setting-row editable">
+                <div className="setting-copy">
+                  <span>启用集成</span>
+                </div>
+                <button
+                  aria-label="CloudDrive2 启用状态"
+                  className={`toggle-button${cd2Gateway.enabled ? ' active' : ''}`}
+                  type="button"
+                  onClick={() => onChangeCD2Gateway('enabled', !cd2Gateway.enabled)}
+                >
+                  {cd2Gateway.enabled ? '开启' : '关闭'}
+                </button>
+              </div>
+            </div>
+            <div className="toolbar-group wrap">
+              <ActionButton disabled={cd2Gateway.testing} onClick={onTestCD2Gateway}>
+                {cd2Gateway.testing ? '测试中…' : '连接测试'}
+              </ActionButton>
+              <ActionButton disabled={cd2Gateway.saving} tone="primary" onClick={onSaveCD2Gateway}>
+                {cd2Gateway.saving ? '保存中…' : '保存 CloudDrive2'}
+              </ActionButton>
+            </div>
+            <div className="page-stack" style={{ marginTop: 12 }}>
+              <DenseRow label="运行状态" value={cd2Runtime?.message ?? '尚未检测'} />
+              {cd2Runtime?.lastCheckedAt ? <DenseRow label="最近检测" value={cd2Runtime.lastCheckedAt} /> : null}
+            </div>
+          </article>
           <div className="settings-preview-list">
             {activeSessions.slice(0, 3).map((session) => (
               <article className="settings-preview-item" key={session.id}>
@@ -111,6 +202,21 @@ export function ImportArchiveSettingsPanel({
       </div>
     </section>
   );
+}
+
+function renderGatewayStatus(status: string) {
+  if (status === 'ONLINE') return '在线';
+  if (status === 'ERROR') return '异常';
+  if (status === 'DISABLED') return '已禁用';
+  if (status === 'DEGRADED') return '降级';
+  return '未检测';
+}
+
+function resolveGatewayTone(status: string) {
+  if (status === 'ONLINE') return 'success' as const;
+  if (status === 'DISABLED') return 'info' as const;
+  if (status === 'DEGRADED') return 'warning' as const;
+  return 'critical' as const;
 }
 
 export function NotificationSettingsPanel({

@@ -98,6 +98,7 @@ import {
   NotificationSettingsPanel,
   WorkspaceSettingsPanel,
 } from './pages/SettingsPanels';
+import { integrationsApi, type RuntimeComponentRecord } from './lib/integrationsApi';
 import { StorageNodesPage } from './pages/StorageNodesPage';
 import { TagManagementPage } from './pages/TagManagementPage';
 import { TaskCenterWorkspace } from './pages/TaskCenterWorkspace';
@@ -578,6 +579,16 @@ export default function App() {
   const [pageSize, setPageSize] = useState<PageSize>(() => getDefaultPageSize(persisted.settings));
   const [currentPage, setCurrentPage] = useState(1);
   const [settingsDraft, setSettingsDraft] = useState(() => cloneSettingsRecord(persisted.settings));
+  const [cd2GatewayDraft, setCd2GatewayDraft] = useState({
+    baseUrl: 'http://localhost:29798',
+    username: '',
+    password: '',
+    enabled: true,
+    runtimeStatus: 'UNKNOWN',
+    saving: false,
+    testing: false,
+  });
+  const [cd2Runtime, setCd2Runtime] = useState<RuntimeComponentRecord | null>(null);
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
   const [folderHistory, setFolderHistory] = useState<Array<string | null>>([null]);
   const [historyIndex, setHistoryIndex] = useState(0);
@@ -967,9 +978,62 @@ export default function App() {
     if (settingsTab === 'import-archive') {
       return (
         <ImportArchiveSettingsPanel
+          cd2Gateway={cd2GatewayDraft}
+          cd2Runtime={cd2Runtime}
           deviceSessions={importDashboard.devices}
+          onChangeCD2Gateway={(field, value) =>
+            setCd2GatewayDraft((current) => ({
+              ...current,
+              [field]: value,
+            }))
+          }
+          onSaveCD2Gateway={() => {
+            setCd2GatewayDraft((current) => ({ ...current, saving: true }));
+            void integrationsApi
+              .saveCD2Gateway({
+                baseUrl: cd2GatewayDraft.baseUrl.trim(),
+                username: cd2GatewayDraft.username.trim(),
+                password: cd2GatewayDraft.password,
+                enabled: cd2GatewayDraft.enabled,
+              })
+              .then((result) => {
+                setCd2GatewayDraft((current) => ({
+                  ...current,
+                  runtimeStatus: result.record.runtimeStatus,
+                  password: '',
+                  saving: false,
+                }));
+                setFeedback({ message: result.message, tone: 'success' });
+              })
+              .catch((error) => {
+                setCd2GatewayDraft((current) => ({ ...current, saving: false }));
+                setFeedback({ message: error instanceof Error ? error.message : 'CloudDrive2 保存失败', tone: 'critical' });
+              });
+          }}
           reports={importDashboard.reports}
           sections={settingsDraft['import-archive']}
+          onTestCD2Gateway={() => {
+            setCd2GatewayDraft((current) => ({ ...current, testing: true }));
+            void integrationsApi
+              .testCD2Gateway({
+                baseUrl: cd2GatewayDraft.baseUrl.trim(),
+                username: cd2GatewayDraft.username.trim(),
+                password: cd2GatewayDraft.password,
+                enabled: cd2GatewayDraft.enabled,
+              })
+              .then((result) => {
+                setCd2GatewayDraft((current) => ({
+                  ...current,
+                  runtimeStatus: result.record.runtimeStatus,
+                  testing: false,
+                }));
+                setFeedback({ message: result.message, tone: 'success' });
+              })
+              .catch((error) => {
+                setCd2GatewayDraft((current) => ({ ...current, testing: false }));
+                setFeedback({ message: error instanceof Error ? error.message : 'CloudDrive2 测试失败', tone: 'critical' });
+              });
+          }}
           onChangeSetting={(sectionId, rowId, value) =>
             setSettingsDraft((current) => ({
               ...current,
@@ -1054,7 +1118,39 @@ export default function App() {
     settingsDraft,
     settingsTab,
     workspaceLabels,
+    cd2GatewayDraft,
+    cd2Runtime,
   ]);
+
+  useEffect(() => {
+    if (!mountedWorkspaceViews.includes('settings')) {
+      return;
+    }
+    let cancelled = false;
+    const loadCD2 = async () => {
+      try {
+        const [gateways, runtime] = await Promise.all([integrationsApi.loadGateways(), integrationsApi.loadRuntime()]);
+        if (cancelled) return;
+        const gateway = gateways.find((item) => item.gatewayType === 'CD2');
+        const runtimeItem = runtime.find((item) => item.name === 'CloudDrive2') ?? null;
+        setCd2Runtime(runtimeItem);
+        if (gateway) {
+          setCd2GatewayDraft((current) => ({
+            ...current,
+            baseUrl: gateway.baseUrl,
+            username: gateway.username ?? '',
+            enabled: gateway.enabled,
+            runtimeStatus: gateway.runtimeStatus,
+          }));
+        }
+      } catch {
+      }
+    };
+    void loadCD2();
+    return () => {
+      cancelled = true;
+    };
+  }, [mountedWorkspaceViews]);
 
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));

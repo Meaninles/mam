@@ -94,6 +94,7 @@ const (
 	EventItemStarted        = "JOB_ITEM_STARTED"
 	EventItemPaused         = "JOB_ITEM_PAUSED"
 	EventItemResumed        = "JOB_ITEM_RESUMED"
+	EventItemProgress       = "JOB_ITEM_PROGRESS"
 	EventItemCompleted      = "JOB_ITEM_COMPLETED"
 	EventItemFailed         = "JOB_ITEM_FAILED"
 	EventItemCanceled       = "JOB_ITEM_CANCELED"
@@ -216,6 +217,11 @@ type itemRow struct {
 	ETASeconds         *int
 	BytesTotal         *int64
 	BytesDone          *int64
+	ExternalTaskEngine *string
+	ExternalTaskID     *string
+	ExternalTaskStatus *string
+	ExternalTaskPayload []byte
+	ResumeToken        *string
 	AttemptCount       int
 	IssueCount         int
 	LatestErrorCode    *string

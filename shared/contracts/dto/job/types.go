@@ -52,6 +52,9 @@ type ItemRecord struct {
 	ETASeconds         *int    `json:"etaSeconds,omitempty"`
 	BytesTotal         *int64  `json:"bytesTotal,omitempty"`
 	BytesDone          *int64  `json:"bytesDone,omitempty"`
+	ExternalTaskEngine *string `json:"externalTaskEngine,omitempty"`
+	ExternalTaskID     *string `json:"externalTaskId,omitempty"`
+	ExternalTaskStatus *string `json:"externalTaskStatus,omitempty"`
 	AttemptCount       int     `json:"attemptCount"`
 	IssueCount         int     `json:"issueCount"`
 	LatestErrorCode    *string `json:"latestErrorCode,omitempty"`

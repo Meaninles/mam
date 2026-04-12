@@ -23,6 +23,7 @@ import (
 	assetdto "mare/shared/contracts/dto/asset"
 	issuedto "mare/shared/contracts/dto/issue"
 	importdto "mare/shared/contracts/dto/importing"
+	integrationdto "mare/shared/contracts/dto/integration"
 	jobdto "mare/shared/contracts/dto/job"
 	notificationdto "mare/shared/contracts/dto/notification"
 	storagedto "mare/shared/contracts/dto/storage"
@@ -148,6 +149,13 @@ type ImportService interface {
 	Submit(ctx context.Context, sessionID string) (importdto.SubmitResponse, error)
 }
 
+type IntegrationService interface {
+	ListGateways(ctx context.Context) (integrationdto.GatewayListResponse, error)
+	SaveCD2Gateway(ctx context.Context, request integrationdto.SaveCD2GatewayRequest) (integrationdto.SaveCD2GatewayResponse, error)
+	TestCD2Gateway(ctx context.Context, request integrationdto.TestCD2GatewayRequest) (integrationdto.TestCD2GatewayResponse, error)
+	RuntimeStatus(ctx context.Context) (integrationdto.RuntimeStatusResponse, error)
+}
+
 type Dependencies struct {
 	Logger        *slog.Logger
 	Runtime       RuntimeService
@@ -156,6 +164,7 @@ type Dependencies struct {
 	Issues        IssueService
 	Notifications NotificationService
 	Imports       ImportService
+	Integrations  IntegrationService
 	LocalNodes    LocalNodeService
 	NasNodes      NASNodeService
 	CloudNodes    CloudNodeService
@@ -182,6 +191,68 @@ func NewRouter(deps Dependencies) http.Handler {
 
 	mux.HandleFunc("GET /api/runtime/status", func(w http.ResponseWriter, r *http.Request) {
 		payload, err := deps.Runtime.Status(r.Context())
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("GET /api/integrations/gateways", func(w http.ResponseWriter, r *http.Request) {
+		if deps.Integrations == nil {
+			writeError(deps.Logger, w, apperrors.NotFound("集成服务尚未启用"))
+			return
+		}
+		payload, err := deps.Integrations.ListGateways(r.Context())
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, payload)
+	})
+
+	mux.HandleFunc("PUT /api/integrations/gateways/cd2", func(w http.ResponseWriter, r *http.Request) {
+		if deps.Integrations == nil {
+			writeError(deps.Logger, w, apperrors.NotFound("集成服务尚未启用"))
+			return
+		}
+		var payload integrationdto.SaveCD2GatewayRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("CloudDrive2 配置请求格式无效"))
+			return
+		}
+		result, err := deps.Integrations.SaveCD2Gateway(r.Context(), payload)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("POST /api/integrations/gateways/cd2/test", func(w http.ResponseWriter, r *http.Request) {
+		if deps.Integrations == nil {
+			writeError(deps.Logger, w, apperrors.NotFound("集成服务尚未启用"))
+			return
+		}
+		var payload integrationdto.TestCD2GatewayRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(deps.Logger, w, apperrors.BadRequest("CloudDrive2 连接测试请求格式无效"))
+			return
+		}
+		result, err := deps.Integrations.TestCD2Gateway(r.Context(), payload)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		response.WriteSuccess(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("GET /api/integrations/runtime", func(w http.ResponseWriter, r *http.Request) {
+		if deps.Integrations == nil {
+			writeError(deps.Logger, w, apperrors.NotFound("集成服务尚未启用"))
+			return
+		}
+		payload, err := deps.Integrations.RuntimeStatus(r.Context())
 		if err != nil {
 			writeError(deps.Logger, w, err)
 			return
