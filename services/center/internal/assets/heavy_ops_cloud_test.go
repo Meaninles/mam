@@ -21,12 +21,17 @@ func TestShouldResumeCD2Upload(t *testing.T) {
 	}
 
 	active := "Transfer"
-	if shouldResumeCD2Upload("QUEUED", &active) {
-		t.Fatalf("did not expect active upload to resume")
+	if !shouldResumeCD2Upload("QUEUED", &active) {
+		t.Fatalf("expected active upload to be explicitly resumed after recovery")
 	}
 
 	if !shouldResumeCD2Upload("RUNNING", &paused) {
 		t.Fatalf("expected running paused upload to resume")
+	}
+
+	preprocessing := "Preprocessing"
+	if !shouldResumeCD2Upload("RUNNING", &preprocessing) {
+		t.Fatalf("expected preprocessing upload to be explicitly resumed after recovery")
 	}
 }
 
@@ -49,6 +54,9 @@ func TestShouldResumeAria2Download(t *testing.T) {
 func TestIsRecoverableCD2InterruptionError(t *testing.T) {
 	if !isRecoverableCD2InterruptionError(fmt.Errorf("Interrupted upload cancelled")) {
 		t.Fatalf("expected interrupted upload cancelled to be recoverable")
+	}
+	if !isRecoverableCD2InterruptionError(fmt.Errorf(`GeneralFailure Failed to read first segment: GeneralFailure("Upload session not found")`)) {
+		t.Fatalf("expected upload session not found to be recoverable")
 	}
 	if isRecoverableCD2InterruptionError(fmt.Errorf("permission denied")) {
 		t.Fatalf("did not expect unrelated error to be recoverable")
@@ -86,6 +94,7 @@ func (f *fakeCloudDriver) AttachUpload(context.Context, string, string, integrat
 func (f *fakeCloudDriver) WaitUpload(context.Context, string, string, func(integration.TransferProgress)) error {
 	return nil
 }
+func (f *fakeCloudDriver) ResetUploadSession(context.Context) error { return nil }
 func (f *fakeCloudDriver) PauseUpload(_ context.Context, externalTaskID string) error {
 	f.pausedTaskIDs = append(f.pausedTaskIDs, externalTaskID)
 	return nil

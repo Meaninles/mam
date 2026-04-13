@@ -62,6 +62,10 @@ func (f fakeGatewayDriver) WaitUpload(context.Context, string, string, func(Tran
 	return nil
 }
 
+func (f fakeGatewayDriver) ResetUploadSession(context.Context) error {
+	return nil
+}
+
 func (f fakeGatewayDriver) PauseUpload(context.Context, string) error {
 	return nil
 }

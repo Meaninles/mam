@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -143,13 +144,15 @@ func TestAttachUploadRegistersRecoveredSession(t *testing.T) {
 }
 
 func TestRunUploadChannelDisconnectDoesNotFailExistingSessions(t *testing.T) {
+	client := &cd2Client{}
+	stream := failingRemoteUploadChannelClient{}
 	driver := &CD2115Driver{
 		deviceID:     "test-device",
 		qrSessions:   map[string]*qrSessionState{},
 		uploads:      map[string]*cd2UploadSession{},
 		channelCtx:   context.Background(),
-		uploadStream: failingRemoteUploadChannelClient{},
-		uploadClient: &cd2Client{},
+		uploadStream: stream,
+		uploadClient: client,
 	}
 	session := &cd2UploadSession{
 		id:        "upload-1",
@@ -161,7 +164,7 @@ func TestRunUploadChannelDisconnectDoesNotFailExistingSessions(t *testing.T) {
 	}
 	driver.uploads[session.id] = session
 
-	driver.runUploadChannel(context.Background(), &cd2Client{}, failingRemoteUploadChannelClient{})
+	driver.runUploadChannel(context.Background(), client, stream)
 
 	select {
 	case <-session.done:
@@ -208,5 +211,75 @@ func TestHandleUploadStatusChangedPauseClearsHashJobsAndReadState(t *testing.T) 
 	}
 	if session.firstReadAt != nil {
 		t.Fatalf("expected firstReadAt to be reset after pause")
+	}
+}
+
+func TestIsCD2UploadSessionNotFoundError(t *testing.T) {
+	if !isCD2UploadSessionNotFoundError(fmt.Errorf("GeneralFailure Upload session not found")) {
+		t.Fatalf("expected upload session not found to be detected")
+	}
+	if isCD2UploadSessionNotFoundError(context.DeadlineExceeded) {
+		t.Fatalf("did not expect unrelated error to be detected")
+	}
+}
+
+func TestFailUploadResetsChannelWhenSessionNotFound(t *testing.T) {
+	channelCtx, cancel := context.WithCancel(context.Background())
+	driver := &CD2115Driver{
+		qrSessions:   map[string]*qrSessionState{},
+		uploads:      map[string]*cd2UploadSession{},
+		channelCtx:   channelCtx,
+		cancelChan:   cancel,
+		uploadClient: &cd2Client{},
+		uploadStream: stubRemoteUploadChannelClient{},
+	}
+	session := &cd2UploadSession{
+		id:        "upload-1",
+		source:    stubUploadSource{},
+		done:      make(chan struct{}),
+		hashJobs:  map[string]context.CancelFunc{},
+		createdAt: time.Now().UTC(),
+	}
+	driver.uploads[session.id] = session
+
+	driver.failUpload(session.id, fmt.Errorf("GeneralFailure Upload session not found"))
+
+	select {
+	case <-session.done:
+	default:
+		t.Fatalf("expected failed session to be closed")
+	}
+	if driver.channelCtx != nil || driver.cancelChan != nil || driver.uploadClient != nil || driver.uploadStream != nil {
+		t.Fatalf("expected upload channel to be reset after session expiration")
+	}
+	select {
+	case <-channelCtx.Done():
+	default:
+		t.Fatalf("expected upload channel context to be canceled")
+	}
+}
+
+func TestResetUploadChannelIfCurrentDoesNotClearNewerChannel(t *testing.T) {
+	newCtx, newCancel := context.WithCancel(context.Background())
+	driver := &CD2115Driver{
+		qrSessions:   map[string]*qrSessionState{},
+		uploads:      map[string]*cd2UploadSession{},
+		channelCtx:   newCtx,
+		cancelChan:   newCancel,
+		uploadClient: &cd2Client{},
+		uploadStream: stubRemoteUploadChannelClient{},
+	}
+	oldClient := &cd2Client{}
+	oldStream := failingRemoteUploadChannelClient{}
+
+	driver.resetUploadChannelIfCurrent(oldClient, oldStream)
+
+	if driver.channelCtx != newCtx || driver.cancelChan == nil || driver.uploadClient == nil || driver.uploadStream == nil {
+		t.Fatalf("expected newer upload channel to remain intact")
+	}
+	select {
+	case <-newCtx.Done():
+		t.Fatalf("did not expect newer upload channel to be canceled")
+	default:
 	}
 }

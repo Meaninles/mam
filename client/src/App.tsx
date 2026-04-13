@@ -2178,20 +2178,43 @@ export default function App() {
     };
   }, [aria2Runtime, cd2Runtime, storageNodesDashboard]);
 
+  const effectiveFileCenterIntegrationHealth = useMemo<FileCenterIntegrationHealth>(() => {
+    if (fileCenterIntegrationHealth.cloudAuthReady) {
+      return fileCenterIntegrationHealth;
+    }
+
+    const cloudNodes = storageNodesDashboard?.cloudNodes ?? [];
+    const hasUsable115Node = cloudNodes.some(
+      (node) =>
+        node.vendor === '115' &&
+        (node.tone === 'success' || node.tokenStatus === '已配置' || node.status.includes('鉴权')),
+    );
+
+    if (hasUsable115Node || storageNodesDashboard == null) {
+      return {
+        ...fileCenterIntegrationHealth,
+        cloudAuthReady: true,
+        cloudAuthMessage: undefined,
+      };
+    }
+
+    return fileCenterIntegrationHealth;
+  }, [fileCenterIntegrationHealth, storageNodesDashboard]);
+
   const fileCenterCloudActionNotice = useMemo(() => {
     const issues: string[] = [];
     const actions = new Set<'settings' | 'storage-nodes'>();
 
-    if (!fileCenterIntegrationHealth.cd2Online) {
+    if (!effectiveFileCenterIntegrationHealth.cd2Online) {
       issues.push('CloudDrive2 当前不可用');
       actions.add('settings');
     }
-    if (!fileCenterIntegrationHealth.aria2Online) {
+    if (!effectiveFileCenterIntegrationHealth.aria2Online) {
       issues.push('aria2 当前不可用，云端下载会受影响');
       actions.add('settings');
     }
-    if (!fileCenterIntegrationHealth.cloudAuthReady) {
-      issues.push(fileCenterIntegrationHealth.cloudAuthMessage ?? '115 节点鉴权未就绪');
+    if (!effectiveFileCenterIntegrationHealth.cloudAuthReady) {
+      issues.push(effectiveFileCenterIntegrationHealth.cloudAuthMessage ?? '115 节点鉴权未就绪');
       actions.add('storage-nodes');
     }
 
@@ -2215,7 +2238,9 @@ export default function App() {
     );
 
     const syncActions: BatchEndpointAction[] = endpointNames.map((endpointName) => {
-      const results = sourceItems.map((item) => resolveFileCenterSyncAvailability(item, endpointName, fileCenterIntegrationHealth));
+      const results = sourceItems.map((item) =>
+        resolveFileCenterSyncAvailability(item, endpointName, effectiveFileCenterIntegrationHealth),
+      );
       const enabled = results.some((result) => result.enabled);
       return {
         endpointName,
@@ -2226,7 +2251,7 @@ export default function App() {
 
     const deleteActions: BatchEndpointAction[] = endpointNames.map((endpointName) => {
       const results = sourceItems.map((item) =>
-        resolveFileCenterDeleteAvailability(item, endpointName, fileCenterIntegrationHealth),
+          resolveFileCenterDeleteAvailability(item, endpointName, effectiveFileCenterIntegrationHealth),
       );
       const enabled = results.some((result) => result.enabled);
       return {
@@ -2240,7 +2265,7 @@ export default function App() {
       syncActions,
       deleteActions,
     };
-  }, [fileCenterIntegrationHealth, fileCenterState.items, selectedFileEntries, selectedFileIds]);
+  }, [effectiveFileCenterIntegrationHealth, fileCenterState.items, selectedFileEntries, selectedFileIds]);
 
   const selectedActionItems = useMemo(
     () =>
@@ -2283,7 +2308,7 @@ export default function App() {
   const requestBatchDeleteEndpoint = (endpointName: string, sourceItems = selectedActionItems) => {
     const deleteEvaluations = sourceItems.map((item) => ({
       item,
-      availability: resolveFileCenterDeleteAvailability(item, endpointName, fileCenterIntegrationHealth),
+      availability: resolveFileCenterDeleteAvailability(item, endpointName, effectiveFileCenterIntegrationHealth),
     }));
     const eligibleItems = deleteEvaluations.filter((entry) => entry.availability.enabled).map((entry) => entry.item);
 
@@ -2345,7 +2370,7 @@ export default function App() {
   const requestBatchSyncEndpoint = (endpointName: string, sourceItems = selectedActionItems) => {
     const syncEvaluations = sourceItems.map((item) => ({
       item,
-      availability: resolveFileCenterSyncAvailability(item, endpointName, fileCenterIntegrationHealth),
+      availability: resolveFileCenterSyncAvailability(item, endpointName, effectiveFileCenterIntegrationHealth),
     }));
     const eligibleItems = syncEvaluations.filter((entry) => entry.availability.enabled).map((entry) => entry.item);
 

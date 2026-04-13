@@ -534,6 +534,7 @@ func (s *Service) markMissingReplicas(ctx context.Context, tx pgx.Tx, mountID st
 	}
 	defer rows.Close()
 
+	missingIDs := make([]string, 0)
 	for rows.Next() {
 		var id string
 		var physicalPath string
@@ -543,6 +544,14 @@ func (s *Service) markMissingReplicas(ctx context.Context, tx pgx.Tx, mountID st
 		if _, ok := seenPaths[physicalPath]; ok {
 			continue
 		}
+		missingIDs = append(missingIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+
+	for _, id := range missingIDs {
 		if _, err := tx.Exec(ctx, `
 			UPDATE asset_replicas
 			SET replica_state = 'MISSING',
@@ -554,7 +563,7 @@ func (s *Service) markMissingReplicas(ctx context.Context, tx pgx.Tx, mountID st
 			return err
 		}
 	}
-	return rows.Err()
+	return nil
 }
 
 func (s *Service) markMissingDirectoryPresences(ctx context.Context, tx pgx.Tx, mountID string, seenPaths map[string]struct{}, now time.Time) error {
@@ -568,6 +577,7 @@ func (s *Service) markMissingDirectoryPresences(ctx context.Context, tx pgx.Tx, 
 	}
 	defer rows.Close()
 
+	missingIDs := make([]string, 0)
 	for rows.Next() {
 		var id string
 		var physicalPath string
@@ -577,6 +587,14 @@ func (s *Service) markMissingDirectoryPresences(ctx context.Context, tx pgx.Tx, 
 		if _, ok := seenPaths[physicalPath]; ok {
 			continue
 		}
+		missingIDs = append(missingIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+
+	for _, id := range missingIDs {
 		if _, err := tx.Exec(ctx, `
 			UPDATE directory_presences
 			SET presence_state = 'MISSING',
@@ -587,7 +605,7 @@ func (s *Service) markMissingDirectoryPresences(ctx context.Context, tx pgx.Tx, 
 			return err
 		}
 	}
-	return rows.Err()
+	return nil
 }
 
 func (s *Service) markDirectoryPresenceMissing(
@@ -630,6 +648,7 @@ func (s *Service) markMissingDirectReplicas(
 	}
 	defer rows.Close()
 
+	missingIDs := make([]string, 0)
 	for rows.Next() {
 		var id string
 		var physicalPath string
@@ -639,6 +658,14 @@ func (s *Service) markMissingDirectReplicas(
 		if _, ok := seenPaths[physicalPath]; ok {
 			continue
 		}
+		missingIDs = append(missingIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+
+	for _, id := range missingIDs {
 		if _, err := tx.Exec(ctx, `
 			UPDATE asset_replicas
 			SET replica_state = 'MISSING',
@@ -650,7 +677,7 @@ func (s *Service) markMissingDirectReplicas(
 			return err
 		}
 	}
-	return rows.Err()
+	return nil
 }
 
 func (s *Service) markMissingDirectDirectoryPresences(
@@ -676,6 +703,7 @@ func (s *Service) markMissingDirectDirectoryPresences(
 	}
 	defer rows.Close()
 
+	missingIDs := make([]string, 0)
 	for rows.Next() {
 		var id string
 		var physicalPath string
@@ -685,6 +713,14 @@ func (s *Service) markMissingDirectDirectoryPresences(
 		if _, ok := seenPaths[physicalPath]; ok {
 			continue
 		}
+		missingIDs = append(missingIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+
+	for _, id := range missingIDs {
 		if _, err := tx.Exec(ctx, `
 			UPDATE directory_presences
 			SET presence_state = 'MISSING',
@@ -695,5 +731,5 @@ func (s *Service) markMissingDirectDirectoryPresences(
 			return err
 		}
 	}
-	return rows.Err()
+	return nil
 }

@@ -77,6 +77,10 @@ func (f *fakeCloudProviderDriver) WaitUpload(context.Context, string, string, fu
 	return nil
 }
 
+func (f *fakeCloudProviderDriver) ResetUploadSession(context.Context) error {
+	return nil
+}
+
 func (f *fakeCloudProviderDriver) PauseUpload(context.Context, string) error {
 	return nil
 }

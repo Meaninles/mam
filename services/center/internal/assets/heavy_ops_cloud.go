@@ -69,48 +69,119 @@ func (s *Service) executeCloudUploadTask(ctx context.Context, jobID string, item
 			return err
 		}
 		if shouldResumeCD2Upload(status, externalTaskStatus) {
-			_ = driver.ResumeUpload(ctx, *taskID)
-		}
-	err = driver.WaitUpload(ctx, *taskID, buildCloudDriverPath(targetMount.ProviderPayload, destinationPath), s.progressNotifier(jobID, itemID))
-	if err != nil {
-		if errors.Is(err, context.Canceled) || isRecoverableCD2InterruptionError(err) {
-			handled := s.handleCanceledCloudUpload(ctx, jobID, itemID, driver, *taskID)
-			if !handled {
-				restartedTaskID, restartedPath, restartErr := driver.StartUpload(ctx, targetMount.ProviderPayload, targetMount.SourcePath, asset.RelativePath, source)
-				if restartErr == nil {
-					_ = s.updateExternalTask(ctx, jobID, itemID, "CD2_REMOTE_UPLOAD", restartedTaskID, "RUNNING", map[string]any{
-						"destinationPath":        restartedPath,
-						"sourceReplicaId":        sourceReplica.ID,
-						"sourcePhysicalPath":     sourceReplica.PhysicalPath,
-						"sourceNodeType":         sourceReplica.NodeType,
-						"sourceUsername":         sourceReplica.Username,
-						"sourceSecretCiphertext": sourceReplica.SecretCiphertext,
-						"sourceSizeBytes":        source.Size(),
-						"providerVendor":         targetMount.ProviderVendor,
-						"uploadId":               restartedTaskID,
-						"deviceId":               s.currentCD2DeviceID(ctx),
-					})
-					err = driver.WaitUpload(ctx, restartedTaskID, restartedPath, s.progressNotifier(jobID, itemID))
-					if err == nil {
-						return s.upsertCloudReplica(ctx, asset.ID, targetMount, destinationPath, source.Size())
-					}
-					if errors.Is(err, context.Canceled) || isRecoverableCD2InterruptionError(err) {
-						s.handleCanceledCloudUpload(ctx, jobID, itemID, driver, restartedTaskID)
-					}
-				}
+			appendProgressDebugLog(fmt.Sprintf("cd2-resume-existing job=%s item=%s task=%s externalStatus=%v", jobID, itemID, *taskID, externalTaskStatus))
+			if resumeErr := driver.ResumeUpload(ctx, *taskID); resumeErr != nil {
+				appendProgressDebugLog(fmt.Sprintf("cd2-resume-existing-error job=%s item=%s task=%s err=%v", jobID, itemID, *taskID, resumeErr))
 			}
 		}
-		return err
-	}
-		return s.upsertCloudReplica(ctx, asset.ID, targetMount, destinationPath, source.Size())
+		return s.waitForCD2UploadWithRecovery(
+			ctx,
+			jobID,
+			itemID,
+			driver,
+			source,
+			sourceReplica,
+			targetMount,
+			asset,
+			*taskID,
+			buildCloudDriverPath(targetMount.ProviderPayload, destinationPath),
+		)
 	}
 
 	externalTaskID, fullPath, err := driver.StartUpload(ctx, targetMount.ProviderPayload, targetMount.SourcePath, asset.RelativePath, source)
 	if err != nil {
 		return err
 	}
-	_ = s.updateExternalTask(ctx, jobID, itemID, "CD2_REMOTE_UPLOAD", externalTaskID, "RUNNING", map[string]any{
-		"destinationPath":        fullPath,
+	_ = s.updateExternalTask(ctx, jobID, itemID, "CD2_REMOTE_UPLOAD", externalTaskID, "RUNNING", s.buildCloudUploadTaskPayload(ctx, sourceReplica, targetMount, source, fullPath, externalTaskID))
+	return s.waitForCD2UploadWithRecovery(
+		ctx,
+		jobID,
+		itemID,
+		driver,
+		source,
+		sourceReplica,
+		targetMount,
+		asset,
+		externalTaskID,
+		fullPath,
+	)
+}
+
+func (s *Service) waitForCD2UploadWithRecovery(
+	ctx context.Context,
+	jobID string,
+	itemID string,
+	driver integration.CloudProviderDriver,
+	source integration.UploadSource,
+	sourceReplica operationReplica,
+	targetMount operationMount,
+	asset assetModel,
+	initialTaskID string,
+	initialPath string,
+) error {
+	currentTaskID := initialTaskID
+	currentPath := initialPath
+	reboundCurrentTask := false
+
+	for restartCount := 0; restartCount < 3; restartCount++ {
+		err := driver.WaitUpload(ctx, currentTaskID, currentPath, s.progressNotifier(jobID, itemID))
+		if err == nil {
+			return s.upsertCloudReplica(ctx, asset.ID, targetMount, currentPath, source.Size())
+		}
+		if !errors.Is(err, context.Canceled) && !isRecoverableCD2InterruptionError(err) {
+			return err
+		}
+
+		handled := s.handleCanceledCloudUpload(ctx, jobID, itemID, driver, currentTaskID)
+		if handled {
+			return err
+		}
+		if isCD2UploadSessionNotFoundError(err) && !reboundCurrentTask {
+			appendProgressDebugLog(fmt.Sprintf("cd2-rebind-existing job=%s item=%s task=%s", jobID, itemID, currentTaskID))
+			_ = driver.ResetUploadSession(ctx)
+			attachErr := driver.AttachUpload(ctx, currentTaskID, currentPath, source)
+			if attachErr == nil {
+				if resumeErr := driver.ResumeUpload(ctx, currentTaskID); resumeErr != nil {
+					appendProgressDebugLog(fmt.Sprintf("cd2-rebind-existing-resume-error job=%s item=%s task=%s err=%v", jobID, itemID, currentTaskID, resumeErr))
+				}
+				reboundCurrentTask = true
+				continue
+			}
+			appendProgressDebugLog(fmt.Sprintf("cd2-rebind-existing-attach-error job=%s item=%s task=%s err=%v", jobID, itemID, currentTaskID, attachErr))
+		}
+		if restartCount == 2 {
+			return err
+		}
+		if isCD2UploadSessionNotFoundError(err) {
+			_ = driver.CancelUpload(context.Background(), currentTaskID)
+			appendProgressDebugLog(fmt.Sprintf("cd2-reset-session-before-restart job=%s item=%s task=%s", jobID, itemID, currentTaskID))
+			_ = driver.ResetUploadSession(ctx)
+		}
+
+		restartedTaskID, restartedPath, restartErr := driver.StartUpload(ctx, targetMount.ProviderPayload, targetMount.SourcePath, asset.RelativePath, source)
+		if restartErr != nil {
+			return err
+		}
+		appendProgressDebugLog(fmt.Sprintf("cd2-start-recreated job=%s item=%s oldTask=%s newTask=%s", jobID, itemID, currentTaskID, restartedTaskID))
+		currentTaskID = restartedTaskID
+		currentPath = restartedPath
+		reboundCurrentTask = false
+		_ = s.updateExternalTask(ctx, jobID, itemID, "CD2_REMOTE_UPLOAD", currentTaskID, "RUNNING", s.buildCloudUploadTaskPayload(ctx, sourceReplica, targetMount, source, currentPath, currentTaskID))
+	}
+
+	return fmt.Errorf("CloudDrive2 上传恢复已超过最大重建次数")
+}
+
+func (s *Service) buildCloudUploadTaskPayload(
+	ctx context.Context,
+	sourceReplica operationReplica,
+	targetMount operationMount,
+	source integration.UploadSource,
+	destinationPath string,
+	uploadID string,
+) map[string]any {
+	return map[string]any{
+		"destinationPath":        destinationPath,
 		"sourceReplicaId":        sourceReplica.ID,
 		"sourcePhysicalPath":     sourceReplica.PhysicalPath,
 		"sourceNodeType":         sourceReplica.NodeType,
@@ -118,41 +189,9 @@ func (s *Service) executeCloudUploadTask(ctx context.Context, jobID string, item
 		"sourceSecretCiphertext": sourceReplica.SecretCiphertext,
 		"sourceSizeBytes":        source.Size(),
 		"providerVendor":         targetMount.ProviderVendor,
-		"uploadId":               externalTaskID,
+		"uploadId":               uploadID,
 		"deviceId":               s.currentCD2DeviceID(ctx),
-	})
-	err = driver.WaitUpload(ctx, externalTaskID, fullPath, s.progressNotifier(jobID, itemID))
-	if err != nil {
-		if errors.Is(err, context.Canceled) || isRecoverableCD2InterruptionError(err) {
-			handled := s.handleCanceledCloudUpload(ctx, jobID, itemID, driver, externalTaskID)
-			if !handled {
-				restartedTaskID, restartedPath, restartErr := driver.StartUpload(ctx, targetMount.ProviderPayload, targetMount.SourcePath, asset.RelativePath, source)
-				if restartErr == nil {
-					_ = s.updateExternalTask(ctx, jobID, itemID, "CD2_REMOTE_UPLOAD", restartedTaskID, "RUNNING", map[string]any{
-						"destinationPath":        restartedPath,
-						"sourceReplicaId":        sourceReplica.ID,
-						"sourcePhysicalPath":     sourceReplica.PhysicalPath,
-						"sourceNodeType":         sourceReplica.NodeType,
-						"sourceUsername":         sourceReplica.Username,
-						"sourceSecretCiphertext": sourceReplica.SecretCiphertext,
-						"sourceSizeBytes":        source.Size(),
-						"providerVendor":         targetMount.ProviderVendor,
-						"uploadId":               restartedTaskID,
-						"deviceId":               s.currentCD2DeviceID(ctx),
-					})
-					err = driver.WaitUpload(ctx, restartedTaskID, restartedPath, s.progressNotifier(jobID, itemID))
-					if err == nil {
-						return s.upsertCloudReplica(ctx, asset.ID, targetMount, destinationPath, source.Size())
-					}
-					if errors.Is(err, context.Canceled) || isRecoverableCD2InterruptionError(err) {
-						s.handleCanceledCloudUpload(ctx, jobID, itemID, driver, restartedTaskID)
-					}
-				}
-			}
-		}
-		return err
 	}
-	return s.upsertCloudReplica(ctx, asset.ID, targetMount, destinationPath, source.Size())
 }
 
 func (s *Service) currentCD2DeviceID(ctx context.Context) string {
@@ -335,7 +374,12 @@ func shouldResumeCD2Upload(itemStatus string, externalTaskStatus *string) bool {
 		return false
 	}
 	status := strings.TrimSpace(*externalTaskStatus)
-	return status == "Pause"
+	switch status {
+	case "Pause", "Transfer", "WaitforPreprocessing", "Preprocessing", "Inqueue":
+		return true
+	default:
+		return false
+	}
 }
 
 func shouldResumeAria2Download(itemStatus string, externalTaskStatus *string) bool {
@@ -353,7 +397,17 @@ func isRecoverableCD2InterruptionError(err error) bool {
 	if err == nil {
 		return false
 	}
-	return strings.Contains(strings.ToLower(strings.TrimSpace(err.Error())), "interrupted upload cancelled")
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(message, "interrupted upload cancelled") ||
+		strings.Contains(message, "upload session not found") ||
+		strings.Contains(message, "session not found")
+}
+
+func isCD2UploadSessionNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(strings.TrimSpace(err.Error())), "upload session not found")
 }
 
 func (s *Service) progressNotifier(jobID string, itemID string) func(integration.TransferProgress) {

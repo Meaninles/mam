@@ -288,6 +288,108 @@ func TestScanDirectoryIndexesOnlyCurrentLevelUntilChildDirectoryIsScanned(t *tes
 	}
 }
 
+func TestScanDirectoryMarksMissingEntriesWithoutConnBusy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	defer pool.Close()
+	resetSchema(t, ctx, pool)
+
+	migrator := db.NewMigrator()
+	if _, err := migrator.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	rootDir := t.TempDir()
+	localNodes := storage.NewLocalFolderService(pool)
+	node, err := localNodes.SaveLocalNode(ctx, storagedto.SaveLocalNodeRequest{
+		Name:     "Missing local node",
+		RootPath: rootDir,
+		Notes:    "missing scan test",
+	})
+	if err != nil {
+		t.Fatalf("save local node: %v", err)
+	}
+
+	_, err = localNodes.SaveLocalFolder(ctx, storagedto.SaveLocalFolderRequest{
+		Name:            "Missing scan mount",
+		LibraryID:       "photo",
+		LibraryName:     "Photo library",
+		NodeID:          node.Record.ID,
+		MountMode:       "可写",
+		HeartbeatPolicy: "从不",
+		RelativePath:    "source",
+		Notes:           "missing scan",
+	})
+	if err != nil {
+		t.Fatalf("save mount: %v", err)
+	}
+
+	sourceDir := filepath.Join(rootDir, "source")
+	nestedDir := filepath.Join(sourceDir, "nested")
+	rootFile := filepath.Join(sourceDir, "cover.jpg")
+	nestedFile := filepath.Join(nestedDir, "final.txt")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if err := os.WriteFile(rootFile, []byte("cover-image"), 0o644); err != nil {
+		t.Fatalf("write root file: %v", err)
+	}
+	if err := os.WriteFile(nestedFile, []byte("nested-file"), 0o644); err != nil {
+		t.Fatalf("write nested file: %v", err)
+	}
+
+	service := assets.NewService(pool)
+	if _, err := service.ScanDirectory(ctx, "photo", assetdto.ScanDirectoryRequest{}); err != nil {
+		t.Fatalf("initial scan root directory: %v", err)
+	}
+
+	if err := os.Remove(rootFile); err != nil {
+		t.Fatalf("remove root file: %v", err)
+	}
+	if err := os.RemoveAll(nestedDir); err != nil {
+		t.Fatalf("remove nested directory: %v", err)
+	}
+
+	if _, err := service.ScanDirectory(ctx, "photo", assetdto.ScanDirectoryRequest{}); err != nil {
+		t.Fatalf("rescan root directory after deletions: %v", err)
+	}
+
+	root, err := service.BrowseLibrary(ctx, "photo", assetdto.BrowseQuery{
+		Page:          1,
+		PageSize:      20,
+		FileType:      "",
+		StatusFilter:  "",
+		SortValue:     "",
+		SortDirection: "asc",
+	})
+	if err != nil {
+		t.Fatalf("browse root after deletions: %v", err)
+	}
+
+	var foundMissing bool
+	for _, item := range root.Items {
+		if item.Name != "cover.jpg" && item.Name != "nested" {
+			continue
+		}
+		if len(item.Endpoints) == 0 {
+			t.Fatalf("expected endpoint projection for missing entry, got %#v", item)
+		}
+		if item.Endpoints[0].State != "未同步" {
+			t.Fatalf("expected missing entry to be marked unsynced, got %#v", item.Endpoints)
+		}
+		foundMissing = true
+	}
+	if !foundMissing {
+		t.Fatalf("expected removed entries to remain queryable as unsynced projections, got %#v", root.Items)
+	}
+}
+
 func TestCreateLibraryCreatesRootDirectory(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in short mode")

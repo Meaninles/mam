@@ -94,6 +94,7 @@ type CloudProviderDriver interface {
 	StartUpload(ctx context.Context, payload CloudProviderPayload, remoteRootPath string, relativePath string, source UploadSource) (string, string, error)
 	AttachUpload(ctx context.Context, externalTaskID string, destinationPath string, source UploadSource) error
 	WaitUpload(ctx context.Context, externalTaskID string, destinationPath string, notify func(TransferProgress)) error
+	ResetUploadSession(ctx context.Context) error
 	PauseUpload(ctx context.Context, externalTaskID string) error
 	ResumeUpload(ctx context.Context, externalTaskID string) error
 	CancelUpload(ctx context.Context, externalTaskID string) error

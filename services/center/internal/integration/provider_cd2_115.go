@@ -454,6 +454,12 @@ func (d *CD2115Driver) ResumeUpload(ctx context.Context, externalTaskID string) 
 	return d.controlUpload(ctx, externalTaskID, "resume")
 }
 
+func (d *CD2115Driver) ResetUploadSession(ctx context.Context) error {
+	_ = ctx
+	d.resetUploadChannel()
+	return nil
+}
+
 func (d *CD2115Driver) CancelUpload(ctx context.Context, externalTaskID string) error {
 	return d.controlUpload(ctx, externalTaskID, "cancel")
 }
@@ -599,7 +605,7 @@ func (d *CD2115Driver) runUploadChannel(ctx context.Context, client *cd2Client, 
 	for {
 		reply, err := stream.Recv()
 		if err != nil {
-			d.resetUploadChannel()
+			d.resetUploadChannelIfCurrent(client, stream)
 			return
 		}
 		uploadID := reply.GetUploadId()
@@ -638,6 +644,24 @@ func (d *CD2115Driver) hasUploadChannel() bool {
 func (d *CD2115Driver) resetUploadChannel() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.cancelChan != nil {
+		d.cancelChan()
+	}
+	d.channelCtx = nil
+	d.cancelChan = nil
+	d.uploadClient = nil
+	d.uploadStream = nil
+}
+
+func (d *CD2115Driver) resetUploadChannelIfCurrent(client *cd2Client, stream cd2pb.CloudDriveFileSrv_RemoteUploadChannelClient) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.uploadClient != client || d.uploadStream != stream {
+		return
+	}
+	if d.cancelChan != nil {
+		d.cancelChan()
+	}
 	d.channelCtx = nil
 	d.cancelChan = nil
 	d.uploadClient = nil
@@ -722,6 +746,15 @@ func (d *CD2115Driver) failUpload(uploadID string, err error) {
 	session.err = err
 	d.cancelHashJobs(session)
 	closeSession(session)
+	if isCD2UploadSessionNotFoundError(err) {
+		if d.cancelChan != nil {
+			d.cancelChan()
+		}
+		d.channelCtx = nil
+		d.cancelChan = nil
+		d.uploadClient = nil
+		d.uploadStream = nil
+	}
 }
 
 func (d *CD2115Driver) failAllUploads(err error) {
@@ -1090,6 +1123,13 @@ func buildCD2UploadTerminalError(progress TransferProgress) error {
 		return buildCD2UploadStatusError("", progress.ErrorMessage)
 	}
 	return buildCD2UploadStatusError(progress.ExternalStatus, progress.ErrorMessage)
+}
+
+func isCD2UploadSessionNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(strings.TrimSpace(err.Error())), "upload session not found")
 }
 
 func decodeQRCodeContent(raw string) ([]byte, error) {
