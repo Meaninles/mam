@@ -283,3 +283,19 @@ func TestResetUploadChannelIfCurrentDoesNotClearNewerChannel(t *testing.T) {
 	default:
 	}
 }
+
+func TestJoinCloudPathKeepsAbsoluteFilePathWithoutDuplicatingRoot(t *testing.T) {
+	got := joinCloudPath("/115open", "", "/115open/test_112_new1/newshit_115/file.bin")
+	want := "/115open/test_112_new1/newshit_115/file.bin"
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
+func TestJoinCloudPathCombinesRootRemoteRootAndRelativePath(t *testing.T) {
+	got := joinCloudPath("/115open", "test_112_new1/newshit_115", "file.bin")
+	want := "/115open/test_112_new1/newshit_115/file.bin"
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}

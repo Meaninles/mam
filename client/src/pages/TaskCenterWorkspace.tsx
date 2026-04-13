@@ -43,6 +43,7 @@ type TaskCenterWorkspaceProps = {
 };
 
 const PAGE_SIZE = 100;
+const VISIBLE_REFRESH_INTERVAL_MS = 3000;
 
 export function TaskCenterWorkspace(props: TaskCenterWorkspaceProps) {
   const {
@@ -143,6 +144,20 @@ export function TaskCenterWorkspace(props: TaskCenterWorkspaceProps) {
     }
 
     void loadWorkspaceRef.current(false);
+  }, [visible]);
+
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void loadWorkspaceRef.current(false);
+    }, VISIBLE_REFRESH_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
   }, [visible]);
 
   const workspace = useMemo(() => {

@@ -347,17 +347,23 @@ func (s *Service) refreshJobAggregateTx(ctx context.Context, tx pgx.Tx, jobID st
 	var successItems int
 	var failedItems int
 	var skippedItems int
+	var aggregatedSpeed *int64
 	err := tx.QueryRow(ctx, `
 		SELECT
 			COALESCE(AVG(progress_percent), 0),
 			COUNT(*) FILTER (WHERE status = 'COMPLETED'),
 			COUNT(*) FILTER (WHERE status = 'FAILED'),
-			COUNT(*) FILTER (WHERE status = 'SKIPPED')
+			COUNT(*) FILTER (WHERE status = 'SKIPPED'),
+			MAX(speed_bps)
 		FROM job_items
 		WHERE job_id = $1
-	`, jobID).Scan(&avgProgress, &successItems, &failedItems, &skippedItems)
+	`, jobID).Scan(&avgProgress, &successItems, &failedItems, &skippedItems, &aggregatedSpeed)
 	if err != nil {
 		return err
+	}
+	var aggregatedSpeedValue any
+	if aggregatedSpeed != nil {
+		aggregatedSpeedValue = *aggregatedSpeed
 	}
 	_, err = tx.Exec(ctx, `
 		UPDATE jobs
@@ -365,9 +371,17 @@ func (s *Service) refreshJobAggregateTx(ctx context.Context, tx pgx.Tx, jobID st
 		    success_items = $3,
 		    failed_items = $4,
 		    skipped_items = $5,
-		    updated_at = $6
+		    speed_bps = CASE
+		    	WHEN status IN ('COMPLETED', 'FAILED', 'PARTIAL_SUCCESS', 'CANCELED') THEN NULL
+		    	ELSE $6::bigint
+		    END,
+		    eta_seconds = CASE
+		    	WHEN status IN ('COMPLETED', 'FAILED', 'PARTIAL_SUCCESS', 'CANCELED') THEN NULL
+		    	ELSE eta_seconds
+		    END,
+		    updated_at = $7
 		WHERE id = $1
-	`, jobID, avgProgress, successItems, failedItems, skippedItems, now)
+	`, jobID, avgProgress, successItems, failedItems, skippedItems, aggregatedSpeedValue, now)
 	return err
 }
 

@@ -1,11 +1,3 @@
-http://localhost:29798/static/http/localhost:29798/false/115open%2Ftest_112_new1%2Fnewshit_115%2Fcodex_ui_2gb_20260413_145603.bin	
- gid=58f3be63f44dfba6
- dir=C:\Users\erjiguan\Downloads\测试库四\zongjie_bendi
- out=codex_ui_2gb_20260413_145603.bin
- allow-overwrite=true
- continue=true
- auto-file-renaming=false
- max-connection-per-server=8
 http://localhost:29798/static/http/localhost:29798/false/115open%2Ftest_112_new1%2Fnewshit_115%2Fdji_20251226104910_0037_d.mp4	
  gid=a24ce5149258825e
  dir=C:\Users\erjiguan\DOWNLO~1\测试库四\ZONGJI~1
@@ -14,10 +6,18 @@ http://localhost:29798/static/http/localhost:29798/false/115open%2Ftest_112_new1
  continue=true
  auto-file-renaming=false
  max-connection-per-server=8
-http://localhost:29798/static/http/localhost:29798/false/115open%2Ftest_112_new1%2Fnewshit_115%2Fdji_20251226104910_0037_d.mp4	
- gid=514f4d2993b9d163
- dir=C:\Users\erjiguan\DOWNLO~1\测试库四\ZONGJI~1
- out=dji_20251226104910_0037_d.mp4
+http://localhost:29798/static/http/localhost:29798/false/115open%2Ftest_112_new1%2Fnewshit_115%2Fcodex_ui_2gb_20260413_145603.bin	
+ gid=58f3be63f44dfba6
+ dir=C:\Users\erjiguan\Downloads\测试库四\zongjie_bendi
+ out=codex_ui_2gb_20260413_145603.bin
+ allow-overwrite=true
+ continue=true
+ auto-file-renaming=false
+ max-connection-per-server=8
+http://localhost:29798/static/http/localhost:29798/false/115open%2Ftest_112_new1%2Fnewshit_115%2Fcodex_ui_fresh_128mb_20260413_234000.bin	
+ gid=a96e5bea59c83a97
+ dir=C:\Users\erjiguan\Downloads\测试库四\zongjie_bendi
+ out=codex_ui_fresh_128mb_20260413_234000.bin
  allow-overwrite=true
  continue=true
  auto-file-renaming=false

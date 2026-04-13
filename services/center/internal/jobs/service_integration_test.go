@@ -392,6 +392,68 @@ func TestServiceCancelJobAlsoStopsQueuedExternalTask(t *testing.T) {
 	}
 }
 
+func TestUpdateItemTransferProgressKeepsJobSpeedWhenLaterItemReportsZeroSpeed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	defer pool.Close()
+	resetSchema(t, ctx, pool)
+
+	migrator := db.NewMigrator()
+	if _, err := migrator.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	service := jobs.NewService(pool)
+	routeType := "UPLOAD"
+
+	result, err := service.CreateJob(ctx, jobs.CreateJobInput{
+		JobFamily:     jobs.JobFamilyTransfer,
+		JobIntent:     jobs.JobIntentReplicate,
+		RouteType:     &routeType,
+		Title:         "同步到端点：newshit_115",
+		Summary:       "并发上传速度聚合测试",
+		SourceDomain:  jobs.SourceDomainFileCenter,
+		Priority:      jobs.PriorityNormal,
+		CreatedByType: jobs.CreatedByUser,
+		Items: []jobs.CreateItemInput{
+			{ItemKey: "asset:first", ItemType: jobs.ItemTypeAssetReplicaTransfer, RouteType: &routeType, Title: "first.bin", Summary: "first"},
+			{ItemKey: "asset:second", ItemType: jobs.ItemTypeAssetReplicaTransfer, RouteType: &routeType, Title: "second.bin", Summary: "second"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	detail, err := service.LoadJobDetail(ctx, result.JobID)
+	if err != nil {
+		t.Fatalf("load job detail: %v", err)
+	}
+	if len(detail.Items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(detail.Items))
+	}
+
+	if err := service.UpdateItemTransferProgress(ctx, result.JobID, detail.Items[0].ID, jobs.ItemStatusRunning, 50, 100, 1234, "uploading"); err != nil {
+		t.Fatalf("update first item progress: %v", err)
+	}
+	if err := service.UpdateItemTransferProgress(ctx, result.JobID, detail.Items[1].ID, jobs.ItemStatusRunning, 10, 100, 0, "preprocessing"); err != nil {
+		t.Fatalf("update second item progress: %v", err)
+	}
+
+	updated, err := service.LoadJobDetail(ctx, result.JobID)
+	if err != nil {
+		t.Fatalf("reload job detail: %v", err)
+	}
+	if updated.Job.SpeedBPS == nil || *updated.Job.SpeedBPS != 1234 {
+		t.Fatalf("expected aggregated job speed to stay at 1234, got %+v", updated.Job.SpeedBPS)
+	}
+}
+
 func TestServiceRetryFailedJob(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in short mode")

@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createInitialState } from '../lib/clientState';
@@ -25,6 +25,7 @@ describe('TaskCenterWorkspace', () => {
   const seed = createInitialState();
 
   beforeEach(() => {
+    vi.useRealTimers();
     vi.mocked(jobsApi.list).mockResolvedValue({
       items: [
         {
@@ -673,5 +674,126 @@ describe('TaskCenterWorkspace', () => {
     );
 
     expect(await screen.findByText('codex_ui_2gb_20260413_145603.bin')).toBeInTheDocument();
+  });
+
+  it('任务中心保持可见时会定时轮询真实任务数据，避免漏掉运行中的新任务', async () => {
+    vi.useFakeTimers();
+
+    vi.mocked(jobsApi.list)
+      .mockResolvedValueOnce({
+        items: [],
+        total: 0,
+        page: 1,
+        pageSize: 100,
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: 'job-transfer-poll-1',
+            code: 'JOB-POLL-001',
+            libraryId: 'photo',
+            jobFamily: 'TRANSFER',
+            jobIntent: 'REPLICATE',
+            routeType: 'UPLOAD',
+            status: 'RUNNING',
+            priority: 'NORMAL',
+            title: '同步到端点：115',
+            summary: '轮询后发现真实运行任务',
+            sourceDomain: 'FILE_CENTER',
+            progressPercent: 42,
+            totalItems: 1,
+            successItems: 0,
+            failedItems: 0,
+            skippedItems: 0,
+            issueCount: 0,
+            createdByType: 'USER',
+            createdAt: '2026-04-13T08:00:00Z',
+            updatedAt: '2026-04-13T08:00:03Z',
+          },
+        ],
+        total: 1,
+        page: 1,
+        pageSize: 100,
+      });
+
+    vi.mocked(jobsApi.detail).mockResolvedValue({
+      job: {
+        id: 'job-transfer-poll-1',
+        code: 'JOB-POLL-001',
+        libraryId: 'photo',
+        jobFamily: 'TRANSFER',
+        jobIntent: 'REPLICATE',
+        routeType: 'UPLOAD',
+        status: 'RUNNING',
+        priority: 'NORMAL',
+        title: '同步到端点：115',
+        summary: '轮询后发现真实运行任务',
+        sourceDomain: 'FILE_CENTER',
+        progressPercent: 42,
+        totalItems: 1,
+        successItems: 0,
+        failedItems: 0,
+        skippedItems: 0,
+        issueCount: 0,
+        createdByType: 'USER',
+        createdAt: '2026-04-13T08:00:00Z',
+        updatedAt: '2026-04-13T08:00:03Z',
+      },
+      items: [
+        {
+          id: 'job-item-poll-1',
+          jobId: 'job-transfer-poll-1',
+          itemKey: 'asset:poll',
+          itemType: 'ASSET_TRANSFER',
+          status: 'RUNNING',
+          title: 'codex_ui_poll_visible.bin',
+          summary: '同步到 115',
+          sourcePath: 'C:\\poll\\codex_ui_poll_visible.bin',
+          targetPath: '/115/codex_ui_poll_visible.bin',
+          progressPercent: 42,
+          externalTaskEngine: 'CD2_REMOTE_UPLOAD',
+          externalTaskId: 'poll-upload-1',
+          externalTaskStatus: 'Transfer',
+          attemptCount: 1,
+          issueCount: 0,
+          updatedAt: '2026-04-13T08:00:03Z',
+          createdAt: '2026-04-13T08:00:00Z',
+        },
+      ],
+      links: [],
+    });
+
+    render(
+      <TaskCenterWorkspace
+        activeTab="transfer"
+        visible
+        fileNodes={seed.fileNodes}
+        issues={[]}
+        libraries={[{ id: 'photo', name: '商业摄影资产库', rootLabel: '/', itemCount: '0', health: '100%', storagePolicy: '本地' }]}
+        preselectedTaskIds={null}
+        statusFilter="活跃中"
+        onConsumePreselectedTaskIds={() => {}}
+        onFeedback={() => {}}
+        onOpenFileCenterForTask={() => {}}
+        onOpenIssueCenterForIssue={() => {}}
+        onOpenIssueCenterForTask={() => {}}
+        onOpenStorageNodesForTask={() => {}}
+        onSetActiveTab={() => {}}
+        onSetTaskStatusFilter={() => {}}
+      />,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(screen.getByText('当前没有匹配的传输任务')).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3200);
+    });
+
+    expect(screen.getByText('codex_ui_poll_visible.bin')).toBeInTheDocument();
   });
 });

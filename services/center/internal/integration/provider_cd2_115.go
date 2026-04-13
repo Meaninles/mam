@@ -1182,18 +1182,28 @@ func buildProviderAuthResult(vendor string, api *cd2pb.CloudAPI) ProviderAuthRes
 }
 
 func joinCloudPath(root string, remoteRoot string, relativePath string) string {
-	parts := []string{root}
-	if strings.TrimSpace(remoteRoot) != "" && remoteRoot != "/" {
-		parts = append(parts, remoteRoot)
+	base := normalizeCloudAbsolutePath(root)
+	if trimmedRemoteRoot := strings.TrimSpace(strings.ReplaceAll(remoteRoot, "\\", "/")); trimmedRemoteRoot != "" && trimmedRemoteRoot != "." && trimmedRemoteRoot != "/" {
+		if strings.HasPrefix(trimmedRemoteRoot, "/") {
+			base = normalizeCloudAbsolutePath(trimmedRemoteRoot)
+		} else {
+			base = normalizeCloudAbsolutePath(path.Join(base, trimmedRemoteRoot))
+		}
 	}
-	if strings.TrimSpace(relativePath) != "" && relativePath != "." {
-		parts = append(parts, strings.ReplaceAll(relativePath, "\\", "/"))
+
+	trimmedRelativePath := strings.TrimSpace(strings.ReplaceAll(relativePath, "\\", "/"))
+	if trimmedRelativePath == "" || trimmedRelativePath == "." || trimmedRelativePath == "/" {
+		return base
 	}
-	full := path.Join(parts...)
-	if !strings.HasPrefix(full, "/") {
-		return "/" + full
+	if strings.HasPrefix(trimmedRelativePath, "/") {
+		absoluteRelativePath := normalizeCloudAbsolutePath(trimmedRelativePath)
+		if absoluteRelativePath == base || strings.HasPrefix(absoluteRelativePath, base+"/") {
+			return absoluteRelativePath
+		}
+		return normalizeCloudAbsolutePath(path.Join(base, strings.Trim(absoluteRelativePath, "/")))
 	}
-	return full
+
+	return normalizeCloudAbsolutePath(path.Join(base, trimmedRelativePath))
 }
 
 func splitPathSegments(value string) []string {
@@ -1202,6 +1212,18 @@ func splitPathSegments(value string) []string {
 		return nil
 	}
 	return strings.Split(clean, "/")
+}
+
+func normalizeCloudAbsolutePath(value string) string {
+	normalized := strings.TrimSpace(strings.ReplaceAll(value, "\\", "/"))
+	if normalized == "" || normalized == "." || normalized == "/" {
+		return "/"
+	}
+	cleaned := path.Clean("/" + strings.Trim(normalized, "/"))
+	if cleaned == "." {
+		return "/"
+	}
+	return cleaned
 }
 
 func buildGatewayDownloadURL(serverURL *url.URL, downloadPath string) string {
