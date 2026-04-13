@@ -387,6 +387,8 @@ func (d *CD2115Driver) AttachUpload(ctx context.Context, externalTaskID string, 
 	}
 	session.destPath = destinationPath
 	session.source = source
+	session.err = nil
+	session.firstReadAt = nil
 	if session.hashJobs == nil {
 		session.hashJobs = make(map[string]context.CancelFunc)
 	}
@@ -424,6 +426,9 @@ func (d *CD2115Driver) WaitUpload(ctx context.Context, externalTaskID string, de
 			session := d.uploads[externalTaskID]
 			d.mu.Unlock()
 			if session != nil {
+				if !d.hasUploadChannel() {
+					_ = d.ensureUploadChannel(ctx)
+				}
 				session.hashMu.Lock()
 				firstReadAt := session.firstReadAt
 				createdAt := session.createdAt
@@ -595,7 +600,6 @@ func (d *CD2115Driver) runUploadChannel(ctx context.Context, client *cd2Client, 
 		reply, err := stream.Recv()
 		if err != nil {
 			d.resetUploadChannel()
-			d.failAllUploads(err)
 			return
 		}
 		uploadID := reply.GetUploadId()
@@ -623,6 +627,12 @@ func (d *CD2115Driver) uploadSessionClient() (*cd2Client, error) {
 		return nil, fmt.Errorf("上传通道尚未建立")
 	}
 	return d.uploadClient, nil
+}
+
+func (d *CD2115Driver) hasUploadChannel() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.channelCtx != nil && d.uploadStream != nil && d.uploadClient != nil
 }
 
 func (d *CD2115Driver) resetUploadChannel() {
@@ -696,6 +706,8 @@ func (d *CD2115Driver) handleUploadStatusChanged(uploadID string, changed *cd2pb
 		session.err = buildCD2UploadStatusError(changed.GetStatus().String(), changed.GetErrorMessage())
 		closeSession(session)
 	case cd2pb.UploadFileInfo_Pause:
+		d.cancelHashJobs(session)
+		session.firstReadAt = nil
 	default:
 	}
 }

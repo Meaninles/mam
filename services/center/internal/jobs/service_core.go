@@ -19,6 +19,7 @@ type Service struct {
 	now              func() time.Time
 	broker           *Broker
 	executors        map[string]ItemExecutor
+	externalTasks    ExternalTaskController
 	issueSync        IssueSynchronizer
 	notificationSync NotificationSynchronizer
 	runningItems     map[string]context.CancelFunc
@@ -56,6 +57,10 @@ func (s *Service) Subscribe(jobID string) (<-chan jobdto.StreamEvent, func()) {
 
 func (s *Service) RegisterExecutor(jobIntent string, executor ItemExecutor) {
 	s.executors[jobIntent] = executor
+}
+
+func (s *Service) SetExternalTaskController(controller ExternalTaskController) {
+	s.externalTasks = controller
 }
 
 func (s *Service) SetIssueSynchronizer(sync IssueSynchronizer) {

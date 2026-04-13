@@ -2923,6 +2923,7 @@ export default function App() {
             <TaskCenterWorkspace
               key={`task-center-${workspaceRefreshTokens['task-center']}`}
               activeTab={taskTab}
+              visible={activeWorkspaceView === 'task-center'}
               fileNodes={persisted.fileNodes}
               issues={issueRecords}
               libraries={libraries}

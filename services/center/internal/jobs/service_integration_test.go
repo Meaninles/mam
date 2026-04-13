@@ -134,7 +134,6 @@ func TestServicePauseAndResumeJob(t *testing.T) {
 	if _, err := service.PauseJob(ctx, result.JobID); err != nil {
 		t.Fatalf("pause job: %v", err)
 	}
-	close(firstItemRelease)
 
 	paused := waitForJobStatus(t, ctx, service, result.JobID, jobs.StatusPaused)
 	assertItemStatus(t, paused.Items, "mount:first", jobs.ItemStatusPaused)
@@ -151,9 +150,245 @@ func TestServicePauseAndResumeJob(t *testing.T) {
 	if _, err := service.ResumeJob(ctx, result.JobID); err != nil {
 		t.Fatalf("resume job: %v", err)
 	}
+	close(firstItemRelease)
 	final := waitForJobStatus(t, ctx, service, result.JobID, jobs.StatusCompleted)
 	if final.Job.SuccessItems != 2 {
 		t.Fatalf("expected resumed job to finish, got %+v", final.Job)
+	}
+}
+
+func TestServicePauseAndResumeJobSyncsExternalTaskStatus(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	defer pool.Close()
+	resetSchema(t, ctx, pool)
+
+	migrator := db.NewMigrator()
+	if _, err := migrator.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	service := jobs.NewService(pool)
+	controller := &fakeExternalTaskController{
+		pauseStatuses:  map[string]string{"gid-aria2-1": "paused"},
+		resumeStatuses: map[string]string{"gid-aria2-1": "active"},
+	}
+	service.SetExternalTaskController(controller)
+
+	firstItemRelease := make(chan struct{})
+	service.RegisterExecutor(jobs.JobIntentScanDirectory, func(ctx context.Context, execution jobs.ExecutionContext) error {
+		if execution.Item.ItemKey == "mount:first" {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-firstItemRelease:
+			}
+		}
+		return nil
+	})
+	service.Start(ctx)
+
+	result, err := service.CreateJob(ctx, jobs.CreateJobInput{
+		JobFamily:     jobs.JobFamilyMaintenance,
+		JobIntent:     jobs.JobIntentScanDirectory,
+		Title:         "扫描目录：/",
+		Summary:       "外部任务状态同步测试",
+		SourceDomain:  jobs.SourceDomainFileCenter,
+		Priority:      jobs.PriorityNormal,
+		CreatedByType: jobs.CreatedByUser,
+		Items: []jobs.CreateItemInput{
+			{ItemKey: "mount:first", ItemType: jobs.ItemTypeDirectoryScan, Title: "扫描 first", Summary: "扫描 first"},
+			{ItemKey: "mount:second", ItemType: jobs.ItemTypeDirectoryScan, Title: "扫描 second", Summary: "扫描 second"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	runningDetail := waitForItemStatus(t, ctx, service, result.JobID, "mount:first", jobs.ItemStatusRunning)
+	firstItemID := findItemID(t, runningDetail.Items, "mount:first")
+	if err := service.UpdateExternalTask(ctx, result.JobID, firstItemID, "ARIA2", "gid-aria2-1", "active", nil, nil); err != nil {
+		t.Fatalf("seed external task state: %v", err)
+	}
+
+	if _, err := service.PauseJob(ctx, result.JobID); err != nil {
+		t.Fatalf("pause job: %v", err)
+	}
+
+	paused := waitForJobStatus(t, ctx, service, result.JobID, jobs.StatusPaused)
+	assertItemStatus(t, paused.Items, "mount:first", jobs.ItemStatusPaused)
+	pausedItem := findItemByKey(t, paused.Items, "mount:first")
+	if pausedItem.ExternalTaskStatus == nil || *pausedItem.ExternalTaskStatus != "paused" {
+		t.Fatalf("expected paused external status, got %+v", pausedItem.ExternalTaskStatus)
+	}
+	if len(controller.pausedCalls) != 1 || controller.pausedCalls[0] != "ARIA2:gid-aria2-1" {
+		t.Fatalf("expected external pause call, got %#v", controller.pausedCalls)
+	}
+
+	if _, err := service.ResumeJob(ctx, result.JobID); err != nil {
+		t.Fatalf("resume job: %v", err)
+	}
+	resumed := waitForItemStatus(t, ctx, service, result.JobID, "mount:first", jobs.ItemStatusRunning)
+	resumedItem := findItemByKey(t, resumed.Items, "mount:first")
+	if resumedItem.ExternalTaskStatus == nil || *resumedItem.ExternalTaskStatus != "active" {
+		t.Fatalf("expected resumed external status, got %+v", resumedItem.ExternalTaskStatus)
+	}
+	if len(controller.resumedCalls) != 1 || controller.resumedCalls[0] != "ARIA2:gid-aria2-1" {
+		t.Fatalf("expected external resume call, got %#v", controller.resumedCalls)
+	}
+	close(firstItemRelease)
+}
+
+func TestServiceCancelJobSyncsExternalTaskStatus(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	defer pool.Close()
+	resetSchema(t, ctx, pool)
+
+	migrator := db.NewMigrator()
+	if _, err := migrator.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	service := jobs.NewService(pool)
+	controller := &fakeExternalTaskController{
+		cancelStatuses: map[string]string{"gid-aria2-1": "removed"},
+	}
+	service.SetExternalTaskController(controller)
+
+	release := make(chan struct{})
+	service.RegisterExecutor(jobs.JobIntentScanDirectory, func(ctx context.Context, execution jobs.ExecutionContext) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-release:
+			return nil
+		}
+	})
+	service.Start(ctx)
+
+	result, err := service.CreateJob(ctx, jobs.CreateJobInput{
+		JobFamily:     jobs.JobFamilyMaintenance,
+		JobIntent:     jobs.JobIntentScanDirectory,
+		Title:         "扫描目录：/",
+		Summary:       "外部任务取消同步测试",
+		SourceDomain:  jobs.SourceDomainFileCenter,
+		Priority:      jobs.PriorityNormal,
+		CreatedByType: jobs.CreatedByUser,
+		Items: []jobs.CreateItemInput{
+			{ItemKey: "mount:first", ItemType: jobs.ItemTypeDirectoryScan, Title: "扫描 first", Summary: "扫描 first"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	runningDetail := waitForItemStatus(t, ctx, service, result.JobID, "mount:first", jobs.ItemStatusRunning)
+	itemID := findItemID(t, runningDetail.Items, "mount:first")
+	if err := service.UpdateExternalTask(ctx, result.JobID, itemID, "ARIA2", "gid-aria2-1", "active", nil, nil); err != nil {
+		t.Fatalf("seed external task state: %v", err)
+	}
+
+	if _, err := service.CancelJob(ctx, result.JobID); err != nil {
+		t.Fatalf("cancel job: %v", err)
+	}
+
+	canceled := waitForJobStatus(t, ctx, service, result.JobID, jobs.StatusCanceled)
+	item := findItemByKey(t, canceled.Items, "mount:first")
+	if item.ExternalTaskStatus == nil || *item.ExternalTaskStatus != "removed" {
+		t.Fatalf("expected removed external task status, got %+v", item.ExternalTaskStatus)
+	}
+	if len(controller.canceledCalls) != 1 || controller.canceledCalls[0] != "ARIA2:gid-aria2-1" {
+		t.Fatalf("expected external cancel call, got %#v", controller.canceledCalls)
+	}
+	close(release)
+}
+
+func TestServiceCancelJobAlsoStopsQueuedExternalTask(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	defer pool.Close()
+	resetSchema(t, ctx, pool)
+
+	migrator := db.NewMigrator()
+	if _, err := migrator.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	service := jobs.NewService(pool)
+	controller := &fakeExternalTaskController{
+		cancelStatuses: map[string]string{"gid-aria2-queued": "removed"},
+	}
+	service.SetExternalTaskController(controller)
+
+	result, err := service.CreateJob(ctx, jobs.CreateJobInput{
+		JobFamily:     jobs.JobFamilyMaintenance,
+		JobIntent:     jobs.JobIntentScanDirectory,
+		Title:         "扫描目录：/",
+		Summary:       "排队外部任务取消测试",
+		SourceDomain:  jobs.SourceDomainFileCenter,
+		Priority:      jobs.PriorityNormal,
+		CreatedByType: jobs.CreatedByUser,
+		Items: []jobs.CreateItemInput{
+			{ItemKey: "mount:first", ItemType: jobs.ItemTypeDirectoryScan, Title: "扫描 first", Summary: "扫描 first"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	detail, err := service.LoadJobDetail(ctx, result.JobID)
+	if err != nil {
+		t.Fatalf("load job detail: %v", err)
+	}
+	itemID := findItemID(t, detail.Items, "mount:first")
+	if _, err := pool.Exec(ctx, `
+		UPDATE jobs
+		SET status = 'QUEUED'
+		WHERE id = $1
+	`, result.JobID); err != nil {
+		t.Fatalf("seed queued job: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE job_items
+		SET status = 'QUEUED'
+		WHERE id = $1
+	`, itemID); err != nil {
+		t.Fatalf("seed queued item: %v", err)
+	}
+	if err := service.UpdateExternalTask(ctx, result.JobID, itemID, "ARIA2", "gid-aria2-queued", "active", nil, nil); err != nil {
+		t.Fatalf("seed external task state: %v", err)
+	}
+
+	if _, err := service.CancelJob(ctx, result.JobID); err != nil {
+		t.Fatalf("cancel job: %v", err)
+	}
+
+	canceled := waitForJobStatus(t, ctx, service, result.JobID, jobs.StatusCanceled)
+	item := findItemByKey(t, canceled.Items, "mount:first")
+	if item.ExternalTaskStatus == nil || *item.ExternalTaskStatus != "removed" {
+		t.Fatalf("expected removed external task status, got %+v", item.ExternalTaskStatus)
+	}
+	if len(controller.canceledCalls) != 1 || controller.canceledCalls[0] != "ARIA2:gid-aria2-queued" {
+		t.Fatalf("expected queued external cancel call, got %#v", controller.canceledCalls)
 	}
 }
 
@@ -666,8 +901,8 @@ func TestServicePauseAndResumeReplicateJobsAcrossCloudRoutes(t *testing.T) {
 				t.Fatalf("resume route %s job: %v", tc.name, err)
 			}
 
-			waitForItemStatus(t, ctx, service, result.JobID, itemKey, jobs.ItemStatusRunning)
 			close(release)
+			waitForItemStatus(t, ctx, service, result.JobID, itemKey, jobs.ItemStatusCompleted)
 			final := waitForJobStatus(t, ctx, service, result.JobID, jobs.StatusCompleted)
 			if final.Job.RouteType == nil || *final.Job.RouteType != tc.expectedRouteType {
 				t.Fatalf("expected completed job route type %s, got %#v", tc.expectedRouteType, final.Job)
@@ -763,6 +998,39 @@ func waitForJobStatus(t *testing.T, ctx context.Context, service *jobs.Service, 
 	}
 	t.Fatalf("expected job status %s, got %+v", expected, detail.Job)
 	return jobdto.Detail{}
+}
+
+type fakeExternalTaskController struct {
+	pauseStatuses  map[string]string
+	resumeStatuses map[string]string
+	cancelStatuses map[string]string
+	pausedCalls    []string
+	resumedCalls   []string
+	canceledCalls  []string
+}
+
+func (f *fakeExternalTaskController) PauseExternalTask(ctx context.Context, engine string, taskID string) (string, error) {
+	f.pausedCalls = append(f.pausedCalls, engine+":"+taskID)
+	if status, ok := f.pauseStatuses[taskID]; ok {
+		return status, nil
+	}
+	return "paused", nil
+}
+
+func (f *fakeExternalTaskController) ResumeExternalTask(ctx context.Context, engine string, taskID string) (string, error) {
+	f.resumedCalls = append(f.resumedCalls, engine+":"+taskID)
+	if status, ok := f.resumeStatuses[taskID]; ok {
+		return status, nil
+	}
+	return "active", nil
+}
+
+func (f *fakeExternalTaskController) CancelExternalTask(ctx context.Context, engine string, taskID string) (string, error) {
+	f.canceledCalls = append(f.canceledCalls, engine+":"+taskID)
+	if status, ok := f.cancelStatuses[taskID]; ok {
+		return status, nil
+	}
+	return "removed", nil
 }
 
 func createReplicatePlanForRoute(
@@ -1003,6 +1271,18 @@ func findItemID(t *testing.T, items []jobdto.ItemRecord, itemKey string) string 
 	}
 	t.Fatalf("expected item %s", itemKey)
 	return ""
+}
+
+func findItemByKey(t *testing.T, items []jobdto.ItemRecord, itemKey string) jobdto.ItemRecord {
+	t.Helper()
+
+	for _, item := range items {
+		if item.ItemKey == itemKey {
+			return item
+		}
+	}
+	t.Fatalf("expected item %s", itemKey)
+	return jobdto.ItemRecord{}
 }
 
 func assertItemStatus(t *testing.T, items []jobdto.ItemRecord, itemKey string, expected string) {

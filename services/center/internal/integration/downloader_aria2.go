@@ -102,16 +102,42 @@ func (a *Aria2Manager) Recover(ctx context.Context, taskID string, request Downl
 		return "", err
 	}
 	if strings.TrimSpace(taskID) != "" {
-		if _, found, err := a.tellStatus(ctx, taskID); err == nil && found {
-			return taskID, nil
+		if status, found, err := a.tellStatus(ctx, taskID); err == nil && found {
+			return recoverAria2Task(ctx, taskID, request, status, aria2RecoverOps{
+				changeURI: func(ctx context.Context, taskID string, oldURIs []string, newURI string) error {
+					return a.changeURI(ctx, taskID, oldURIs, newURI)
+				},
+				resume: func(ctx context.Context, taskID string) error {
+					return a.Resume(ctx, taskID)
+				},
+				cancel: func(ctx context.Context, taskID string) error {
+					return a.Cancel(ctx, taskID)
+				},
+				enqueue: func(ctx context.Context, request DownloadRequest) (string, error) {
+					return a.Enqueue(ctx, request)
+				},
+			})
 		}
 	}
-	gid, err := a.findTaskByDestination(ctx, request.DestinationPath)
+	task, err := a.findTaskByDestination(ctx, request.DestinationPath)
 	if err != nil {
 		return "", err
 	}
-	if strings.TrimSpace(gid) != "" {
-		return gid, nil
+	if task != nil {
+		return recoverAria2Task(ctx, task.GID, request, task.toStatusResponse(), aria2RecoverOps{
+			changeURI: func(ctx context.Context, taskID string, oldURIs []string, newURI string) error {
+				return a.changeURI(ctx, taskID, oldURIs, newURI)
+			},
+			resume: func(ctx context.Context, taskID string) error {
+				return a.Resume(ctx, taskID)
+			},
+			cancel: func(ctx context.Context, taskID string) error {
+				return a.Cancel(ctx, taskID)
+			},
+			enqueue: func(ctx context.Context, request DownloadRequest) (string, error) {
+				return a.Enqueue(ctx, request)
+			},
+		})
 	}
 	return a.Enqueue(ctx, request)
 }
@@ -165,6 +191,22 @@ func (a *Aria2Manager) Resume(ctx context.Context, taskID string) error {
 
 func (a *Aria2Manager) Cancel(ctx context.Context, taskID string) error {
 	return a.rpc(ctx, "aria2.forceRemove", []any{"token:" + a.rpcSecret, taskID}, nil)
+}
+
+func (a *Aria2Manager) TaskStatus(ctx context.Context, taskID string) (string, error) {
+	status, found, err := a.tellStatus(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", fmt.Errorf("aria2 任务不存在或已丢失")
+	}
+	return status.Status, nil
+}
+
+func (a *Aria2Manager) changeURI(ctx context.Context, taskID string, oldURIs []string, newURI string) error {
+	params := []any{"token:" + a.rpcSecret, taskID, 1, oldURIs, []string{newURI}}
+	return a.rpc(ctx, "aria2.changeUri", params, nil)
 }
 
 func (a *Aria2Manager) ensureReady(ctx context.Context) error {
@@ -380,7 +422,7 @@ func stopExistingAria2Processes() error {
 
 func (a *Aria2Manager) tellStatus(ctx context.Context, taskID string) (aria2TellStatusResponse, bool, error) {
 	var status aria2TellStatusResponse
-	err := a.rpc(ctx, "aria2.tellStatus", []any{"token:" + a.rpcSecret, taskID, []string{"status", "totalLength", "completedLength", "downloadSpeed", "errorMessage"}}, &status)
+	err := a.rpc(ctx, "aria2.tellStatus", []any{"token:" + a.rpcSecret, taskID, []string{"status", "totalLength", "completedLength", "downloadSpeed", "errorMessage", "files"}}, &status)
 	if err == nil {
 		return status, true, nil
 	}
@@ -390,28 +432,29 @@ func (a *Aria2Manager) tellStatus(ctx context.Context, taskID string) (aria2Tell
 	return aria2TellStatusResponse{}, false, err
 }
 
-func (a *Aria2Manager) findTaskByDestination(ctx context.Context, destinationPath string) (string, error) {
+func (a *Aria2Manager) findTaskByDestination(ctx context.Context, destinationPath string) (*aria2TaskRecord, error) {
 	target := filepath.Clean(destinationPath)
 	lists := []struct {
 		method string
 		params []any
 	}{
-		{method: "aria2.tellActive", params: []any{"token:" + a.rpcSecret, []string{"gid", "dir", "files"}}},
-		{method: "aria2.tellWaiting", params: []any{"token:" + a.rpcSecret, 0, 1000, []string{"gid", "dir", "files"}}},
-		{method: "aria2.tellStopped", params: []any{"token:" + a.rpcSecret, 0, 1000, []string{"gid", "dir", "files"}}},
+		{method: "aria2.tellActive", params: []any{"token:" + a.rpcSecret, []string{"gid", "dir", "files", "status", "errorMessage"}}},
+		{method: "aria2.tellWaiting", params: []any{"token:" + a.rpcSecret, 0, 1000, []string{"gid", "dir", "files", "status", "errorMessage"}}},
+		{method: "aria2.tellStopped", params: []any{"token:" + a.rpcSecret, 0, 1000, []string{"gid", "dir", "files", "status", "errorMessage"}}},
 	}
 	for _, call := range lists {
 		var tasks []aria2TaskRecord
 		if err := a.rpc(ctx, call.method, call.params, &tasks); err != nil {
-			return "", err
+			return nil, err
 		}
 		for _, task := range tasks {
 			if filepath.Clean(task.destinationPath()) == target {
-				return task.GID, nil
+				taskCopy := task
+				return &taskCopy, nil
 			}
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
 func (a *Aria2Manager) rpc(ctx context.Context, method string, params []any, result any) error {
@@ -481,19 +524,27 @@ func (a *Aria2Manager) setStatus(status string, message string, errorCode string
 }
 
 type aria2TellStatusResponse struct {
-	Status          string `json:"status"`
-	TotalLength     string `json:"totalLength"`
-	CompletedLength string `json:"completedLength"`
-	DownloadSpeed   string `json:"downloadSpeed"`
-	ErrorMessage    string `json:"errorMessage"`
+	Status          string            `json:"status"`
+	TotalLength     string            `json:"totalLength"`
+	CompletedLength string            `json:"completedLength"`
+	DownloadSpeed   string            `json:"downloadSpeed"`
+	ErrorMessage    string            `json:"errorMessage"`
+	Files           []aria2FileRecord `json:"files"`
 }
 
 type aria2TaskRecord struct {
-	GID   string `json:"gid"`
-	Dir   string `json:"dir"`
-	Files []struct {
-		Path string `json:"path"`
-	} `json:"files"`
+	GID          string            `json:"gid"`
+	Dir          string            `json:"dir"`
+	Status       string            `json:"status"`
+	ErrorMessage string            `json:"errorMessage"`
+	Files        []aria2FileRecord `json:"files"`
+}
+
+type aria2FileRecord struct {
+	Path string `json:"path"`
+	URIs []struct {
+		URI string `json:"uri"`
+	} `json:"uris"`
 }
 
 func (t aria2TaskRecord) destinationPath() string {
@@ -503,6 +554,14 @@ func (t aria2TaskRecord) destinationPath() string {
 	return t.Dir
 }
 
+func (t aria2TaskRecord) toStatusResponse() aria2TellStatusResponse {
+	return aria2TellStatusResponse{
+		Status:       t.Status,
+		ErrorMessage: t.ErrorMessage,
+		Files:        t.Files,
+	}
+}
+
 func parseAria2Int(value string) int64 {
 	if strings.TrimSpace(value) == "" {
 		return 0
@@ -510,6 +569,68 @@ func parseAria2Int(value string) int64 {
 	var result int64
 	_, _ = fmt.Sscan(value, &result)
 	return result
+}
+
+func shouldReuseAria2TaskStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "active", "waiting", "paused", "complete":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s aria2TellStatusResponse) currentURIs() []string {
+	if len(s.Files) == 0 {
+		return nil
+	}
+	results := make([]string, 0, len(s.Files[0].URIs))
+	for _, item := range s.Files[0].URIs {
+		if strings.TrimSpace(item.URI) != "" {
+			results = append(results, item.URI)
+		}
+	}
+	return results
+}
+
+type aria2RecoverOps struct {
+	changeURI func(ctx context.Context, taskID string, oldURIs []string, newURI string) error
+	resume    func(ctx context.Context, taskID string) error
+	cancel    func(ctx context.Context, taskID string) error
+	enqueue   func(ctx context.Context, request DownloadRequest) (string, error)
+}
+
+func recoverAria2Task(ctx context.Context, taskID string, request DownloadRequest, status aria2TellStatusResponse, ops aria2RecoverOps) (string, error) {
+	if shouldReuseAria2TaskStatus(status.Status) {
+		return taskID, nil
+	}
+
+	switch strings.TrimSpace(status.Status) {
+	case "error":
+		oldURIs := status.currentURIs()
+		if ops.changeURI != nil && len(oldURIs) > 0 && strings.TrimSpace(request.URL) != "" {
+			if err := ops.changeURI(ctx, taskID, oldURIs, request.URL); err == nil {
+				if ops.resume == nil {
+					return taskID, nil
+				}
+				if err := ops.resume(ctx, taskID); err == nil {
+					return taskID, nil
+				}
+			}
+		}
+		if ops.cancel != nil {
+			_ = ops.cancel(ctx, taskID)
+		}
+	case "removed":
+		if ops.cancel != nil {
+			_ = ops.cancel(ctx, taskID)
+		}
+	}
+
+	if ops.enqueue == nil {
+		return "", fmt.Errorf("aria2 recover enqueue unavailable")
+	}
+	return ops.enqueue(ctx, request)
 }
 
 func randomBytes(size int) []byte {

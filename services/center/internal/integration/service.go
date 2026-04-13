@@ -62,6 +62,97 @@ func (s *Service) Downloader(name string) (DownloadEngine, error) {
 	return engine, nil
 }
 
+func (s *Service) PauseExternalTask(ctx context.Context, engine string, taskID string) (string, error) {
+	switch strings.ToUpper(strings.TrimSpace(engine)) {
+	case "ARIA2":
+		downloader, err := s.Downloader("ARIA2")
+		if err != nil {
+			return "", err
+		}
+		if err := downloader.Pause(ctx, taskID); err != nil {
+			return "", err
+		}
+		if reporter, ok := downloader.(interface {
+			TaskStatus(ctx context.Context, taskID string) (string, error)
+		}); ok {
+			status, err := reporter.TaskStatus(ctx, taskID)
+			if err == nil && strings.TrimSpace(status) != "" {
+				return status, nil
+			}
+		}
+		return "paused", nil
+	case "CD2_REMOTE_UPLOAD":
+		driver, err := s.Provider("115")
+		if err != nil {
+			return "", err
+		}
+		if err := driver.PauseUpload(ctx, taskID); err != nil {
+			return "", err
+		}
+		return "Pause", nil
+	default:
+		return "", apperrors.BadRequest("当前外部任务引擎暂不支持暂停")
+	}
+}
+
+func (s *Service) ResumeExternalTask(ctx context.Context, engine string, taskID string) (string, error) {
+	switch strings.ToUpper(strings.TrimSpace(engine)) {
+	case "ARIA2":
+		downloader, err := s.Downloader("ARIA2")
+		if err != nil {
+			return "", err
+		}
+		if err := downloader.Resume(ctx, taskID); err != nil {
+			return "", err
+		}
+		if reporter, ok := downloader.(interface {
+			TaskStatus(ctx context.Context, taskID string) (string, error)
+		}); ok {
+			status, err := reporter.TaskStatus(ctx, taskID)
+			if err == nil && strings.TrimSpace(status) != "" {
+				return status, nil
+			}
+		}
+		return "active", nil
+	case "CD2_REMOTE_UPLOAD":
+		driver, err := s.Provider("115")
+		if err != nil {
+			return "", err
+		}
+		if err := driver.ResumeUpload(ctx, taskID); err != nil {
+			return "", err
+		}
+		return "Transfer", nil
+	default:
+		return "", apperrors.BadRequest("当前外部任务引擎暂不支持继续")
+	}
+}
+
+func (s *Service) CancelExternalTask(ctx context.Context, engine string, taskID string) (string, error) {
+	switch strings.ToUpper(strings.TrimSpace(engine)) {
+	case "ARIA2":
+		downloader, err := s.Downloader("ARIA2")
+		if err != nil {
+			return "", err
+		}
+		if err := downloader.Cancel(ctx, taskID); err != nil {
+			return "", err
+		}
+		return "removed", nil
+	case "CD2_REMOTE_UPLOAD":
+		driver, err := s.Provider("115")
+		if err != nil {
+			return "", err
+		}
+		if err := driver.CancelUpload(ctx, taskID); err != nil {
+			return "", err
+		}
+		return "Cancelled", nil
+	default:
+		return "", apperrors.BadRequest("当前外部任务引擎暂不支持取消")
+	}
+}
+
 func (s *Service) ListGateways(ctx context.Context) (integrationdto.GatewayListResponse, error) {
 	row, err := s.loadCD2Gateway(ctx)
 	if err != nil {

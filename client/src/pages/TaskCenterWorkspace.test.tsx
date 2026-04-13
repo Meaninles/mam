@@ -158,6 +158,7 @@ describe('TaskCenterWorkspace', () => {
     render(
       <TaskCenterWorkspace
         activeTab="other"
+        visible
         fileNodes={seed.fileNodes}
         issues={[]}
         libraries={[{ id: 'photo', name: '商业摄影资产库', rootLabel: '/', itemCount: '0', health: '100%', storagePolicy: '本地' }]}
@@ -280,6 +281,7 @@ describe('TaskCenterWorkspace', () => {
     render(
       <TaskCenterWorkspace
         activeTab="transfer"
+        visible
         fileNodes={seed.fileNodes}
         issues={[]}
         libraries={[{ id: 'photo', name: '商业摄影资产库', rootLabel: '/', itemCount: '0', health: '100%', storagePolicy: '本地' }]}
@@ -405,6 +407,7 @@ describe('TaskCenterWorkspace', () => {
     render(
       <TaskCenterWorkspace
         activeTab="transfer"
+        visible
         fileNodes={seed.fileNodes}
         issues={[]}
         libraries={[{ id: 'photo', name: '商业摄影资产库', rootLabel: '/', itemCount: '0', health: '100%', storagePolicy: '本地' }]}
@@ -519,6 +522,7 @@ describe('TaskCenterWorkspace', () => {
     render(
       <TaskCenterWorkspace
         activeTab="transfer"
+        visible
         fileNodes={seed.fileNodes}
         issues={[]}
         libraries={[{ id: 'photo', name: '商业摄影资产库', rootLabel: '/', itemCount: '0', health: '100%', storagePolicy: '本地' }]}
@@ -539,5 +543,135 @@ describe('TaskCenterWorkspace', () => {
     expect(row).not.toBeNull();
     expect(within(row as HTMLElement).getByText('当前阶段：缓存写入完成，等待云端上传')).toBeInTheDocument();
     expect(within(row as HTMLElement).queryByText('已完成')).not.toBeInTheDocument();
+  });
+
+  it('重新显示任务中心时会主动刷新真实任务数据，而不是停留在旧快照', async () => {
+    vi.mocked(jobsApi.list)
+      .mockResolvedValueOnce({
+        items: [],
+        total: 0,
+        page: 1,
+        pageSize: 100,
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: 'job-transfer-live-1',
+            code: 'JOB-LIVE-001',
+            libraryId: 'photo',
+            jobFamily: 'TRANSFER',
+            jobIntent: 'REPLICATE',
+            routeType: 'UPLOAD',
+            status: 'RUNNING',
+            priority: 'NORMAL',
+            title: '同步到端点：115',
+            summary: '真实任务已进入执行中',
+            sourceDomain: 'FILE_CENTER',
+            progressPercent: 15,
+            totalItems: 1,
+            successItems: 0,
+            failedItems: 0,
+            skippedItems: 0,
+            issueCount: 0,
+            createdByType: 'USER',
+            createdAt: '2026-04-13T07:00:00Z',
+            updatedAt: '2026-04-13T07:00:10Z',
+          },
+        ],
+        total: 1,
+        page: 1,
+        pageSize: 100,
+      });
+
+    vi.mocked(jobsApi.detail).mockResolvedValueOnce({
+      job: {
+        id: 'job-transfer-live-1',
+        code: 'JOB-LIVE-001',
+        libraryId: 'photo',
+        jobFamily: 'TRANSFER',
+        jobIntent: 'REPLICATE',
+        routeType: 'UPLOAD',
+        status: 'RUNNING',
+        priority: 'NORMAL',
+        title: '同步到端点：115',
+        summary: '真实任务已进入执行中',
+        sourceDomain: 'FILE_CENTER',
+        progressPercent: 15,
+        totalItems: 1,
+        successItems: 0,
+        failedItems: 0,
+        skippedItems: 0,
+        issueCount: 0,
+        createdByType: 'USER',
+        createdAt: '2026-04-13T07:00:00Z',
+        updatedAt: '2026-04-13T07:00:10Z',
+      },
+      items: [
+        {
+          id: 'job-item-live-1',
+          jobId: 'job-transfer-live-1',
+          itemKey: 'asset:live',
+          itemType: 'ASSET_TRANSFER',
+          status: 'RUNNING',
+          title: 'codex_ui_2gb_20260413_145603.bin',
+          summary: '同步到 115',
+          sourcePath: 'C:\\live\\codex_ui_2gb_20260413_145603.bin',
+          targetPath: '/115/codex_ui_2gb_20260413_145603.bin',
+          progressPercent: 15,
+          externalTaskEngine: 'CD2_REMOTE_UPLOAD',
+          externalTaskId: 'live-upload-1',
+          externalTaskStatus: 'Transfer',
+          attemptCount: 1,
+          issueCount: 0,
+          updatedAt: '2026-04-13T07:00:10Z',
+          createdAt: '2026-04-13T07:00:00Z',
+        },
+      ],
+      links: [],
+    });
+
+    const { rerender } = render(
+      <TaskCenterWorkspace
+        activeTab="transfer"
+        visible={false}
+        fileNodes={seed.fileNodes}
+        issues={[]}
+        libraries={[{ id: 'photo', name: '商业摄影资产库', rootLabel: '/', itemCount: '0', health: '100%', storagePolicy: '本地' }]}
+        preselectedTaskIds={null}
+        statusFilter="活跃中"
+        onConsumePreselectedTaskIds={() => {}}
+        onFeedback={() => {}}
+        onOpenFileCenterForTask={() => {}}
+        onOpenIssueCenterForIssue={() => {}}
+        onOpenIssueCenterForTask={() => {}}
+        onOpenStorageNodesForTask={() => {}}
+        onSetActiveTab={() => {}}
+        onSetTaskStatusFilter={() => {}}
+      />,
+    );
+
+    expect(await screen.findByText('当前没有匹配的传输任务')).toBeInTheDocument();
+
+    rerender(
+      <TaskCenterWorkspace
+        activeTab="transfer"
+        visible
+        fileNodes={seed.fileNodes}
+        issues={[]}
+        libraries={[{ id: 'photo', name: '商业摄影资产库', rootLabel: '/', itemCount: '0', health: '100%', storagePolicy: '本地' }]}
+        preselectedTaskIds={null}
+        statusFilter="活跃中"
+        onConsumePreselectedTaskIds={() => {}}
+        onFeedback={() => {}}
+        onOpenFileCenterForTask={() => {}}
+        onOpenIssueCenterForIssue={() => {}}
+        onOpenIssueCenterForTask={() => {}}
+        onOpenStorageNodesForTask={() => {}}
+        onSetActiveTab={() => {}}
+        onSetTaskStatusFilter={() => {}}
+      />,
+    );
+
+    expect(await screen.findByText('codex_ui_2gb_20260413_145603.bin')).toBeInTheDocument();
   });
 });

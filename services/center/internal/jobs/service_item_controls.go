@@ -32,6 +32,14 @@ func (s *Service) PauseJobItem(ctx context.Context, itemID string) (jobdto.ItemM
 		return jobdto.ItemMutationResponse{}, apperrors.BadRequest("当前作业状态不允许暂停子任务")
 	}
 
+	var externalUpdate *externalTaskUpdate
+	if item.Status == ItemStatusRunning {
+		externalUpdate, err = s.pauseExternalTaskForItem(ctx, tx, itemID)
+		if err != nil {
+			return jobdto.ItemMutationResponse{}, err
+		}
+	}
+
 	if _, err := tx.Exec(ctx, `
 		UPDATE job_items
 		SET status = $2,
@@ -76,6 +84,14 @@ func (s *Service) PauseJobItem(ctx context.Context, itemID string) (jobdto.ItemM
 	if err != nil {
 		return jobdto.ItemMutationResponse{}, err
 	}
+	var externalEvent *jobdto.StreamEvent
+	if externalUpdate != nil {
+		event, err := s.insertExternalTaskUpdateEvent(ctx, tx, item.JobID, *externalUpdate, now)
+		if err != nil {
+			return jobdto.ItemMutationResponse{}, err
+		}
+		externalEvent = &event
+	}
 
 	if item.Status == ItemStatusRunning {
 		if _, err := tx.Exec(ctx, `
@@ -98,6 +114,9 @@ func (s *Service) PauseJobItem(ctx context.Context, itemID string) (jobdto.ItemM
 	}
 	s.publish(jobEvent)
 	s.publish(itemEvent)
+	if externalEvent != nil {
+		s.publish(*externalEvent)
+	}
 	return s.loadItemMutationResponse(ctx, item.JobID, itemID, "子任务已暂停")
 }
 
@@ -122,6 +141,11 @@ func (s *Service) ResumeJobItem(ctx context.Context, itemID string) (jobdto.Item
 	}
 	if containsStatus([]string{StatusCompleted, StatusFailed, StatusCanceled}, job.Status) {
 		return jobdto.ItemMutationResponse{}, apperrors.BadRequest("当前作业状态不允许继续子任务")
+	}
+
+	externalUpdate, err := s.resumeExternalTaskForItem(ctx, tx, itemID)
+	if err != nil {
+		return jobdto.ItemMutationResponse{}, err
 	}
 
 	if _, err := tx.Exec(ctx, `
@@ -170,6 +194,14 @@ func (s *Service) ResumeJobItem(ctx context.Context, itemID string) (jobdto.Item
 	if err != nil {
 		return jobdto.ItemMutationResponse{}, err
 	}
+	var externalEvent *jobdto.StreamEvent
+	if externalUpdate != nil {
+		event, err := s.insertExternalTaskUpdateEvent(ctx, tx, item.JobID, *externalUpdate, now)
+		if err != nil {
+			return jobdto.ItemMutationResponse{}, err
+		}
+		externalEvent = &event
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return jobdto.ItemMutationResponse{}, err
@@ -177,6 +209,9 @@ func (s *Service) ResumeJobItem(ctx context.Context, itemID string) (jobdto.Item
 
 	s.publish(jobEvent)
 	s.publish(itemEvent)
+	if externalEvent != nil {
+		s.publish(*externalEvent)
+	}
 	s.wake()
 	return s.loadItemMutationResponse(ctx, item.JobID, itemID, "子任务已恢复")
 }
@@ -202,6 +237,14 @@ func (s *Service) CancelJobItem(ctx context.Context, itemID string) (jobdto.Item
 	}
 	if containsStatus([]string{StatusCompleted, StatusFailed, StatusCanceled}, job.Status) {
 		return jobdto.ItemMutationResponse{}, apperrors.BadRequest("当前作业状态不允许取消子任务")
+	}
+
+	var externalUpdate *externalTaskUpdate
+	if item.Status != ItemStatusCompleted && item.Status != ItemStatusCanceled {
+		externalUpdate, err = s.cancelExternalTaskForItem(ctx, tx, itemID)
+		if err != nil {
+			return jobdto.ItemMutationResponse{}, err
+		}
 	}
 
 	if _, err := tx.Exec(ctx, `
@@ -243,6 +286,14 @@ func (s *Service) CancelJobItem(ctx context.Context, itemID string) (jobdto.Item
 	if err != nil {
 		return jobdto.ItemMutationResponse{}, err
 	}
+	var externalEvent *jobdto.StreamEvent
+	if externalUpdate != nil {
+		event, err := s.insertExternalTaskUpdateEvent(ctx, tx, item.JobID, *externalUpdate, now)
+		if err != nil {
+			return jobdto.ItemMutationResponse{}, err
+		}
+		externalEvent = &event
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return jobdto.ItemMutationResponse{}, err
@@ -252,6 +303,9 @@ func (s *Service) CancelJobItem(ctx context.Context, itemID string) (jobdto.Item
 		s.interruptRunningItem(itemID)
 	}
 	s.publish(itemEvent)
+	if externalEvent != nil {
+		s.publish(*externalEvent)
+	}
 	if job.Status == StatusPending || job.Status == StatusQueued || job.Status == StatusWaitingRetry {
 		s.wake()
 	}

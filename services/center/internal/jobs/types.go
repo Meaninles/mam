@@ -165,6 +165,12 @@ type NotificationSynchronizer interface {
 	SyncJobNotifications(ctx context.Context, jobID string) error
 }
 
+type ExternalTaskController interface {
+	PauseExternalTask(ctx context.Context, engine string, taskID string) (string, error)
+	ResumeExternalTask(ctx context.Context, engine string, taskID string) (string, error)
+	CancelExternalTask(ctx context.Context, engine string, taskID string) (string, error)
+}
+
 type jobRow struct {
 	ID                 string
 	Code               string

@@ -77,9 +77,9 @@ func (s *Service) UpdateItemTransferProgress(ctx context.Context, jobID string, 
 
 	if _, err := tx.Exec(ctx, `
 		UPDATE job_items
-		SET bytes_done = $2,
-		    bytes_total = CASE WHEN $3 > 0 THEN $3 ELSE bytes_total END,
-		    speed_bps = CASE WHEN $4 > 0 THEN $4 ELSE NULL END,
+		SET bytes_done = $2::bigint,
+		    bytes_total = CASE WHEN $3::bigint > 0 THEN $3::bigint ELSE bytes_total END,
+		    speed_bps = CASE WHEN $4::bigint > 0 THEN $4::bigint ELSE NULL END,
 		    progress_percent = CASE WHEN $5 > progress_percent THEN $5 ELSE progress_percent END,
 		    updated_at = $6
 		WHERE id = $1
@@ -89,8 +89,12 @@ func (s *Service) UpdateItemTransferProgress(ctx context.Context, jobID string, 
 
 	if _, err := tx.Exec(ctx, `
 		UPDATE jobs
-		SET speed_bps = CASE WHEN $2 > 0 THEN $2 ELSE NULL END,
-		    eta_seconds = CASE WHEN $2 > 0 AND $3 > $4 THEN (($3 - $4) / $2)::integer ELSE NULL END,
+		SET speed_bps = CASE WHEN $2::bigint > 0 THEN $2::bigint ELSE NULL END,
+		    eta_seconds = CASE
+		    	WHEN $2::bigint > 0 AND $3::bigint > $4::bigint
+		    		THEN (($3::bigint - $4::bigint) / $2::bigint)::integer
+		    	ELSE NULL
+		    END,
 		    updated_at = $5
 		WHERE id = $1
 	`, jobID, speedBPS, bytesTotal, bytesDone, now); err != nil {
@@ -127,6 +131,18 @@ func (s *Service) UpdateItemTransferProgress(ctx context.Context, jobID string, 
 }
 
 func (s *Service) LoadExternalTaskState(ctx context.Context, itemID string) (string, *string, *string, *string, *string, error) {
+	return s.loadExternalTaskStateWithQuerier(ctx, s.pool, itemID)
+}
+
+type externalTaskStateQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+func (s *Service) loadExternalTaskStateTx(ctx context.Context, tx pgx.Tx, itemID string) (string, *string, *string, *string, *string, error) {
+	return s.loadExternalTaskStateWithQuerier(ctx, tx, itemID)
+}
+
+func (s *Service) loadExternalTaskStateWithQuerier(ctx context.Context, querier externalTaskStateQuerier, itemID string) (string, *string, *string, *string, *string, error) {
 	var (
 		status             string
 		taskEngine         *string
@@ -134,7 +150,7 @@ func (s *Service) LoadExternalTaskState(ctx context.Context, itemID string) (str
 		externalTaskStatus *string
 		resumeToken        *string
 	)
-	err := s.pool.QueryRow(ctx, `
+	err := querier.QueryRow(ctx, `
 		SELECT
 			ji.status,
 			ext.payload->>'externalTaskEngine',

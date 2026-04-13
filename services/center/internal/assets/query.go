@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -19,6 +20,8 @@ type Service struct {
 	pool             *pgxpool.Pool
 	now              func() time.Time
 	executorResolver func(nodeType string) (mountPathExecutor, error)
+	progressMu       sync.Mutex
+	progressState    map[string]transferProgressState
 	cloudResolver    interface {
 		Provider(vendor string) (integration.CloudProviderDriver, error)
 		Downloader(name string) (integration.DownloadEngine, error)
@@ -29,6 +32,12 @@ type Service struct {
 		UpdateItemTransferProgress(ctx context.Context, jobID string, itemID string, status string, bytesDone int64, bytesTotal int64, speedBPS int64, message string) error
 		LoadExternalTaskState(ctx context.Context, itemID string) (string, *string, *string, *string, *string, error)
 	}
+}
+
+type transferProgressState struct {
+	LastPersistAt time.Time
+	BytesDone     int64
+	BytesTotal    int64
 }
 
 type libraryModel struct {
@@ -73,7 +82,12 @@ type mountModel struct {
 }
 
 func NewService(pool *pgxpool.Pool) *Service {
-	return &Service{pool: pool, now: time.Now, executorResolver: executorForNodeType}
+	return &Service{
+		pool:             pool,
+		now:              time.Now,
+		executorResolver: executorForNodeType,
+		progressState:    make(map[string]transferProgressState),
+	}
 }
 
 func (s *Service) SetCloudResolver(resolver interface {

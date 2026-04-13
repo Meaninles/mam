@@ -68,6 +68,7 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 	localFolderService.SetIntegrationService(integrationService)
 	assetService.SetCloudResolver(integrationService)
 	assetService.SetJobRuntime(jobService)
+	jobService.SetExternalTaskController(integrationService)
 	cloudNodeService := storage.NewCloudNodeService(pool, integrationService)
 	importService := importing.NewService(pool, importing.NewHTTPAgentBridge(30*time.Second), jobService, assetService)
 	issueService := issues.NewService(pool, jobService)

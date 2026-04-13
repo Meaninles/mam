@@ -26,6 +26,7 @@ type WorkspaceFeedback = {
 
 type TaskCenterWorkspaceProps = {
   activeTab: TaskTab;
+  visible: boolean;
   fileNodes: FileNode[];
   issues: IssueRecord[];
   libraries: Library[];
@@ -46,6 +47,7 @@ const PAGE_SIZE = 100;
 export function TaskCenterWorkspace(props: TaskCenterWorkspaceProps) {
   const {
     activeTab,
+    visible,
     fileNodes,
     issues,
     libraries,
@@ -66,6 +68,8 @@ export function TaskCenterWorkspace(props: TaskCenterWorkspaceProps) {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [taskDetailId, setTaskDetailId] = useState<string | null>(null);
   const refreshTimeoutRef = useRef<number | null>(null);
+  const loadWorkspaceRef = useRef<(showLoading: boolean) => Promise<void>>(async () => {});
+  const previousVisibleRef = useRef(visible);
 
   useEffect(() => {
     let cancelled = false;
@@ -107,6 +111,8 @@ export function TaskCenterWorkspace(props: TaskCenterWorkspaceProps) {
       }
     };
 
+    loadWorkspaceRef.current = loadWorkspace;
+
     void loadWorkspace(true);
 
     const unsubscribe = jobsApi.subscribe((_event: JobStreamEvent) => {
@@ -127,6 +133,17 @@ export function TaskCenterWorkspace(props: TaskCenterWorkspaceProps) {
       }
     };
   }, []);
+
+  useEffect(() => {
+    const wasVisible = previousVisibleRef.current;
+    previousVisibleRef.current = visible;
+
+    if (!visible || wasVisible === visible) {
+      return;
+    }
+
+    void loadWorkspaceRef.current(false);
+  }, [visible]);
 
   const workspace = useMemo(() => {
     const tasks = jobDetails.map((detail) => mapJobDetailToTask(detail));

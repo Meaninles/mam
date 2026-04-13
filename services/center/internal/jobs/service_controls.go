@@ -25,12 +25,14 @@ func (s *Service) PauseJob(ctx context.Context, id string) (jobdto.MutationRespo
 	}
 
 	runningItems := []string{}
-	if current.Status == StatusRunning {
+	externalUpdates := make([]externalTaskUpdate, 0)
+	if containsStatus([]string{StatusRunning, StatusPaused, StatusQueued, StatusPending, StatusWaitingRetry}, current.Status) {
 		rows, queryErr := tx.Query(ctx, `
 			SELECT id
 			FROM job_items
 			WHERE job_id = $1
-			  AND status = 'RUNNING'
+			  AND status <> 'COMPLETED'
+			  AND status <> 'CANCELED'
 			ORDER BY created_at ASC
 		`, id)
 		if queryErr != nil {
@@ -46,6 +48,16 @@ func (s *Service) PauseJob(ctx context.Context, id string) (jobdto.MutationRespo
 		}
 		if err := rows.Err(); err != nil {
 			return jobdto.MutationResponse{}, err
+		}
+
+		for _, itemID := range runningItems {
+			update, err := s.pauseExternalTaskForItem(ctx, tx, itemID)
+			if err != nil {
+				return jobdto.MutationResponse{}, err
+			}
+			if update != nil {
+				externalUpdates = append(externalUpdates, *update)
+			}
 		}
 
 		if len(runningItems) > 0 {
@@ -110,6 +122,14 @@ func (s *Service) PauseJob(ctx context.Context, id string) (jobdto.MutationRespo
 		}
 		itemEvents = append(itemEvents, event)
 	}
+	externalEvents := make([]jobdto.StreamEvent, 0, len(externalUpdates))
+	for _, update := range externalUpdates {
+		event, err := s.insertExternalTaskUpdateEvent(ctx, tx, id, update, now)
+		if err != nil {
+			return jobdto.MutationResponse{}, err
+		}
+		externalEvents = append(externalEvents, event)
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return jobdto.MutationResponse{}, err
@@ -120,6 +140,9 @@ func (s *Service) PauseJob(ctx context.Context, id string) (jobdto.MutationRespo
 	}
 	s.publish(jobEvent)
 	for _, event := range itemEvents {
+		s.publish(event)
+	}
+	for _, event := range externalEvents {
 		s.publish(event)
 	}
 	s.syncJobNotifications(ctx, id)
@@ -148,6 +171,7 @@ func (s *Service) ResumeJob(ctx context.Context, id string) (jobdto.MutationResp
 	}
 
 	pausedItems := []string{}
+	externalUpdates := make([]externalTaskUpdate, 0)
 	rows, queryErr := tx.Query(ctx, `
 		SELECT id
 		FROM job_items
@@ -168,6 +192,16 @@ func (s *Service) ResumeJob(ctx context.Context, id string) (jobdto.MutationResp
 	}
 	if err := rows.Err(); err != nil {
 		return jobdto.MutationResponse{}, err
+	}
+
+	for _, itemID := range pausedItems {
+		update, err := s.resumeExternalTaskForItem(ctx, tx, itemID)
+		if err != nil {
+			return jobdto.MutationResponse{}, err
+		}
+		if update != nil {
+			externalUpdates = append(externalUpdates, *update)
+		}
 	}
 
 	if len(pausedItems) > 0 {
@@ -224,6 +258,14 @@ func (s *Service) ResumeJob(ctx context.Context, id string) (jobdto.MutationResp
 		}
 		itemEvents = append(itemEvents, event)
 	}
+	externalEvents := make([]jobdto.StreamEvent, 0, len(externalUpdates))
+	for _, update := range externalUpdates {
+		event, err := s.insertExternalTaskUpdateEvent(ctx, tx, id, update, now)
+		if err != nil {
+			return jobdto.MutationResponse{}, err
+		}
+		externalEvents = append(externalEvents, event)
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return jobdto.MutationResponse{}, err
@@ -231,6 +273,9 @@ func (s *Service) ResumeJob(ctx context.Context, id string) (jobdto.MutationResp
 
 	s.publish(jobEvent)
 	for _, event := range itemEvents {
+		s.publish(event)
+	}
+	for _, event := range externalEvents {
 		s.publish(event)
 	}
 	s.syncJobNotifications(ctx, id)
@@ -260,12 +305,15 @@ func (s *Service) CancelJob(ctx context.Context, id string) (jobdto.MutationResp
 	}
 
 	runningItems := []string{}
-	if current.Status == StatusRunning {
+	externalItemIDs := []string{}
+	externalUpdates := make([]externalTaskUpdate, 0)
+	if containsStatus([]string{StatusPending, StatusQueued, StatusRunning, StatusWaitingRetry, StatusPaused}, current.Status) {
 		rows, queryErr := tx.Query(ctx, `
 			SELECT id
 			FROM job_items
 			WHERE job_id = $1
-			  AND status = 'RUNNING'
+			  AND status <> 'COMPLETED'
+			  AND status <> 'CANCELED'
 			ORDER BY created_at ASC
 		`, id)
 		if queryErr != nil {
@@ -277,10 +325,23 @@ func (s *Service) CancelJob(ctx context.Context, id string) (jobdto.MutationResp
 			if err := rows.Scan(&itemID); err != nil {
 				return jobdto.MutationResponse{}, err
 			}
-			runningItems = append(runningItems, itemID)
+			externalItemIDs = append(externalItemIDs, itemID)
+			if current.Status == StatusRunning {
+				runningItems = append(runningItems, itemID)
+			}
 		}
 		if err := rows.Err(); err != nil {
 			return jobdto.MutationResponse{}, err
+		}
+
+		for _, itemID := range externalItemIDs {
+			update, err := s.cancelExternalTaskForItem(ctx, tx, itemID)
+			if err != nil {
+				return jobdto.MutationResponse{}, err
+			}
+			if update != nil {
+				externalUpdates = append(externalUpdates, *update)
+			}
 		}
 	}
 
@@ -349,6 +410,14 @@ func (s *Service) CancelJob(ctx context.Context, id string) (jobdto.MutationResp
 		}
 		itemEvents = append(itemEvents, itemEvent)
 	}
+	externalEvents := make([]jobdto.StreamEvent, 0, len(externalUpdates))
+	for _, update := range externalUpdates {
+		event, err := s.insertExternalTaskUpdateEvent(ctx, tx, id, update, now)
+		if err != nil {
+			return jobdto.MutationResponse{}, err
+		}
+		externalEvents = append(externalEvents, event)
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return jobdto.MutationResponse{}, err
@@ -359,6 +428,9 @@ func (s *Service) CancelJob(ctx context.Context, id string) (jobdto.MutationResp
 	}
 	s.publish(event)
 	for _, itemEvent := range itemEvents {
+		s.publish(itemEvent)
+	}
+	for _, itemEvent := range externalEvents {
 		s.publish(itemEvent)
 	}
 	s.syncJobIssues(ctx, id)

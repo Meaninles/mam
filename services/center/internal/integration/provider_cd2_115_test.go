@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/metadata"
 	cd2pb "mare/services/center/internal/integration/cd2/pb"
@@ -11,6 +12,7 @@ import (
 type stubUploadSource struct{}
 
 type stubRemoteUploadChannelClient struct{}
+type failingRemoteUploadChannelClient struct{}
 
 func (stubUploadSource) Size() int64 { return 0 }
 func (stubUploadSource) ReadChunk(context.Context, int64, int64) ([]byte, bool, error) {
@@ -26,6 +28,16 @@ func (stubRemoteUploadChannelClient) SendMsg(any) error            { return nil 
 func (stubRemoteUploadChannelClient) RecvMsg(any) error            { return nil }
 func (stubRemoteUploadChannelClient) Recv() (*cd2pb.RemoteUploadChannelReply, error) {
 	return nil, context.Canceled
+}
+
+func (failingRemoteUploadChannelClient) Header() (metadata.MD, error) { return metadata.MD{}, nil }
+func (failingRemoteUploadChannelClient) Trailer() metadata.MD         { return metadata.MD{} }
+func (failingRemoteUploadChannelClient) CloseSend() error             { return nil }
+func (failingRemoteUploadChannelClient) Context() context.Context     { return context.Background() }
+func (failingRemoteUploadChannelClient) SendMsg(any) error            { return nil }
+func (failingRemoteUploadChannelClient) RecvMsg(any) error            { return nil }
+func (failingRemoteUploadChannelClient) Recv() (*cd2pb.RemoteUploadChannelReply, error) {
+	return nil, context.DeadlineExceeded
 }
 
 func TestResolveCD2UploadStatusFallsBackToStatusString(t *testing.T) {
@@ -127,5 +139,74 @@ func TestAttachUploadRegistersRecoveredSession(t *testing.T) {
 	}
 	if session.source == nil {
 		t.Fatalf("expected upload source to be attached")
+	}
+}
+
+func TestRunUploadChannelDisconnectDoesNotFailExistingSessions(t *testing.T) {
+	driver := &CD2115Driver{
+		deviceID:     "test-device",
+		qrSessions:   map[string]*qrSessionState{},
+		uploads:      map[string]*cd2UploadSession{},
+		channelCtx:   context.Background(),
+		uploadStream: failingRemoteUploadChannelClient{},
+		uploadClient: &cd2Client{},
+	}
+	session := &cd2UploadSession{
+		id:        "upload-1",
+		destPath:  "/cloud/file.bin",
+		source:    stubUploadSource{},
+		done:      make(chan struct{}),
+		hashJobs:  map[string]context.CancelFunc{},
+		createdAt: time.Now().UTC(),
+	}
+	driver.uploads[session.id] = session
+
+	driver.runUploadChannel(context.Background(), &cd2Client{}, failingRemoteUploadChannelClient{})
+
+	select {
+	case <-session.done:
+		t.Fatalf("expected session to remain open after channel disconnect")
+	default:
+	}
+	if session.err != nil {
+		t.Fatalf("expected session error to stay nil, got %v", session.err)
+	}
+	if driver.uploadStream != nil || driver.uploadClient != nil || driver.channelCtx != nil {
+		t.Fatalf("expected upload channel to be reset after disconnect")
+	}
+}
+
+func TestHandleUploadStatusChangedPauseClearsHashJobsAndReadState(t *testing.T) {
+	canceled := 0
+	now := time.Now().UTC()
+	session := &cd2UploadSession{
+		id:          "upload-1",
+		source:      stubUploadSource{},
+		done:        make(chan struct{}),
+		createdAt:   now,
+		firstReadAt: &now,
+		hashJobs: map[string]context.CancelFunc{
+			"md5": func() { canceled++ },
+		},
+	}
+	driver := &CD2115Driver{
+		qrSessions: map[string]*qrSessionState{},
+		uploads: map[string]*cd2UploadSession{
+			session.id: session,
+		},
+	}
+
+	driver.handleUploadStatusChanged("upload-1", &cd2pb.RemoteUploadStatusChanged{
+		Status: cd2pb.UploadFileInfo_Pause,
+	})
+
+	if canceled != 1 {
+		t.Fatalf("expected existing hash jobs to be canceled, got %d", canceled)
+	}
+	if len(session.hashJobs) != 0 {
+		t.Fatalf("expected hash job registry to be cleared, got %+v", session.hashJobs)
+	}
+	if session.firstReadAt != nil {
+		t.Fatalf("expected firstReadAt to be reset after pause")
 	}
 }
