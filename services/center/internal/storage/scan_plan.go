@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
+	"mare/services/center/internal/assets"
 	apperrors "mare/services/center/internal/errors"
+	"mare/services/center/internal/integration"
 )
 
 type MountScanPlan struct {
@@ -60,6 +63,7 @@ func (s *LocalFolderService) runMountScan(ctx context.Context, id string) (strin
 	authStatus := initialMountAuthStatus(mount.NodeType)
 	capacityBytes := int64(0)
 	availableBytes := int64(0)
+	cloudEntries := make([]assets.CloudMountEntry, 0)
 
 	switch mount.NodeType {
 	case "LOCAL":
@@ -101,17 +105,105 @@ func (s *LocalFolderService) runMountScan(ctx context.Context, id string) (strin
 		} else {
 			summary = fmt.Sprintf("%s 扫描完成，NAS 路径可读取。", mount.Name)
 		}
+	case "CLOUD":
+		if s.integration == nil {
+			scanStatus = "FAILED"
+			summary = fmt.Sprintf("%s 扫描失败：云端集成服务尚未启用。", mount.Name)
+			healthStatus = "ERROR"
+			authStatus = "FAILED"
+			lastErrorCode = "integration_unavailable"
+			lastErrorMessage = "云端集成服务尚未启用"
+			break
+		}
+		cloudService := NewCloudNodeService(s.pool, s.integration)
+		profile, profileErr := cloudService.loadCloudProfile(ctx, mount.NodeID)
+		if profileErr != nil {
+			scanStatus = "FAILED"
+			summary = fmt.Sprintf("%s 扫描失败：网盘配置读取失败。", mount.Name)
+			healthStatus = "ERROR"
+			authStatus = "FAILED"
+			lastErrorCode = "cloud_profile_unavailable"
+			lastErrorMessage = profileErr.Error()
+			break
+		}
+		driver, driverErr := s.integration.Provider(profile.ProviderVendor)
+		if driverErr != nil {
+			scanStatus = "FAILED"
+			summary = fmt.Sprintf("%s 扫描失败：云端驱动不可用。", mount.Name)
+			healthStatus = "ERROR"
+			authStatus = "FAILED"
+			lastErrorCode = "cloud_driver_unavailable"
+			lastErrorMessage = driverErr.Error()
+			break
+		}
+		if ensureErr := driver.EnsureRemoteRoot(ctx, profile.Payload, mount.SourcePath); ensureErr != nil {
+			scanStatus = "FAILED"
+			summary = fmt.Sprintf("%s 扫描失败：挂载目录不可访问。", mount.Name)
+			healthStatus = "ERROR"
+			authStatus = "AUTHORIZED"
+			lastErrorCode = "mount_path_unavailable"
+			lastErrorMessage = ensureErr.Error()
+			break
+		}
+
+		lister, ok := driver.(interface {
+			ListRemoteEntries(ctx context.Context, payload integration.CloudProviderPayload, remoteRootPath string) ([]integration.CloudFileEntry, error)
+		})
+		if !ok {
+			scanStatus = "FAILED"
+			summary = fmt.Sprintf("%s 扫描失败：当前云端驱动暂不支持目录扫描。", mount.Name)
+			healthStatus = "ERROR"
+			authStatus = "AUTHORIZED"
+			lastErrorCode = "cloud_list_not_supported"
+			lastErrorMessage = "当前云端驱动暂不支持目录扫描"
+			break
+		}
+		listResult, listErr := lister.ListRemoteEntries(ctx, profile.Payload, mount.SourcePath)
+		if listErr != nil {
+			scanStatus = "FAILED"
+			summary = fmt.Sprintf("%s 扫描失败：读取网盘目录失败。", mount.Name)
+			healthStatus = "ERROR"
+			authStatus = "AUTHORIZED"
+			lastErrorCode = "cloud_list_failed"
+			lastErrorMessage = listErr.Error()
+			break
+		}
+		cloudEntries = make([]assets.CloudMountEntry, 0, len(listResult))
+		for _, item := range listResult {
+			if strings.TrimSpace(item.Name) == "" {
+				continue
+			}
+			cloudEntries = append(cloudEntries, assets.CloudMountEntry{
+				Name:        item.Name,
+				IsDirectory: item.IsDirectory,
+				SizeBytes:   item.SizeBytes,
+				ModifiedAt:  item.ModifiedAt,
+			})
+		}
+		summary = fmt.Sprintf("%s 扫描完成，网盘挂载目录可读取，发现 %d 个直接子项。", mount.Name, len(cloudEntries))
+		healthStatus = "ONLINE"
+		authStatus = "AUTHORIZED"
 	default:
-		return "", fmt.Errorf("当前挂载类型暂不支持扫描")
+		return "", fmt.Errorf("当前挂载类型暂不支持扫描: %s", mount.NodeType)
 	}
 
 	if scanStatus == "SUCCESS" && s.assetService != nil {
-		if syncErr := s.assetService.SyncMount(ctx, id); syncErr != nil {
-			scanStatus = "FAILED"
-			summary = fmt.Sprintf("%s 扫描失败：资产索引写入失败", mount.Name)
-			lastErrorCode = "asset_index_failed"
-			lastErrorMessage = syncErr.Error()
-			healthStatus = "ERROR"
+		if mount.NodeType == "CLOUD" {
+			if syncErr := s.assetService.SyncCloudMountFirstLevel(ctx, id, cloudEntries); syncErr != nil {
+				scanStatus = "FAILED"
+				summary = fmt.Sprintf("%s 扫描失败：资产索引写入失败", mount.Name)
+				lastErrorCode = "asset_index_failed"
+				lastErrorMessage = syncErr.Error()
+				healthStatus = "ERROR"
+			}
+		} else {
+			if syncErr := s.assetService.SyncMount(ctx, id); syncErr != nil {
+				scanStatus = "FAILED"
+				summary = fmt.Sprintf("%s 扫描失败：资产索引写入失败", mount.Name)
+				lastErrorCode = "asset_index_failed"
+				lastErrorMessage = syncErr.Error()
+				healthStatus = "ERROR"
+			}
 		}
 	}
 

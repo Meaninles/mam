@@ -66,6 +66,23 @@ func (f *fakeCloudProviderDriver) EnsureRemoteRoot(context.Context, integration.
 	return nil
 }
 
+func (f *fakeCloudProviderDriver) ListRemoteEntries(_ context.Context, _ integration.CloudProviderPayload, _ string) ([]integration.CloudFileEntry, error) {
+	now := time.Now().UTC()
+	return []integration.CloudFileEntry{
+		{
+			Name:        "拍摄样片",
+			IsDirectory: true,
+			ModifiedAt:  &now,
+		},
+		{
+			Name:        "封面.jpg",
+			IsDirectory: false,
+			SizeBytes:   1024,
+			ModifiedAt:  &now,
+		},
+	}, nil
+}
+
 func (f *fakeCloudProviderDriver) StartUpload(context.Context, integration.CloudProviderPayload, string, string, integration.UploadSource) (string, string, error) {
 	return "", "", nil
 }

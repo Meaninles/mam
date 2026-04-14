@@ -12,6 +12,13 @@ type CloudProviderPayload struct {
 	Extra         map[string]string `json:"extra,omitempty"`
 }
 
+type CloudFileEntry struct {
+	Name        string
+	IsDirectory bool
+	SizeBytes   int64
+	ModifiedAt  *time.Time
+}
+
 type ProviderAuthResult struct {
 	ProviderVendor string
 	DisplayName    string

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path"
@@ -313,6 +314,60 @@ func (d *CD2115Driver) EnsureRemoteRoot(ctx context.Context, payload CloudProvid
 		current = path.Join(current, segment)
 	}
 	return nil
+}
+
+func (d *CD2115Driver) ListRemoteEntries(ctx context.Context, payload CloudProviderPayload, remoteRootPath string) ([]CloudFileEntry, error) {
+	client, err := d.openClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	authCtx, err := client.authContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	checkExpires := false
+	stream, err := client.client.GetSubFiles(authCtx, &cd2pb.ListSubFileRequest{
+		Path:         joinCloudPath(payload.CloudPath, remoteRootPath, ""),
+		ForceRefresh: true,
+		CheckExpires: &checkExpires,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("读取 CloudDrive2 目录失败: %w", err)
+	}
+
+	items := make([]CloudFileEntry, 0, 64)
+	for {
+		reply, recvErr := stream.Recv()
+		if recvErr != nil {
+			if recvErr == io.EOF {
+				break
+			}
+			return nil, fmt.Errorf("读取 CloudDrive2 目录失败: %w", recvErr)
+		}
+		for _, file := range reply.GetSubFiles() {
+			if file == nil {
+				continue
+			}
+			name := strings.TrimSpace(file.GetName())
+			if name == "" {
+				continue
+			}
+			var modifiedAt *time.Time
+			if writeTime := file.GetWriteTime(); writeTime != nil {
+				value := writeTime.AsTime().UTC()
+				modifiedAt = &value
+			}
+			items = append(items, CloudFileEntry{
+				Name:        name,
+				IsDirectory: file.GetIsDirectory(),
+				SizeBytes:   file.GetSize(),
+				ModifiedAt:  modifiedAt,
+			})
+		}
+	}
+	return items, nil
 }
 
 func (d *CD2115Driver) StartUpload(ctx context.Context, payload CloudProviderPayload, remoteRootPath string, relativePath string, source UploadSource) (string, string, error) {

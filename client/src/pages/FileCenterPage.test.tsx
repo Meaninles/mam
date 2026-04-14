@@ -325,7 +325,7 @@ describe('FileCenterPage', () => {
     expect(onSetStatusFilter).toHaveBeenCalledWith('全部');
   });
 
-  it('当 CloudDrive2 不可用时会禁用 115 同步并显示前置原因', () => {
+  it('当 CloudDrive2 不可用时会禁用 115 同步且不展示顶部受限提示', () => {
     render(
       <FileCenterPage
         breadcrumbs={[{ id: null, label: '商业摄影资产库' }]}
@@ -396,7 +396,7 @@ describe('FileCenterPage', () => {
       />,
     );
 
-    expect(screen.getByText('115 云端动作暂不可用：CloudDrive2 当前异常。')).toBeInTheDocument();
+    expect(screen.queryByText('115 云端动作暂不可用：CloudDrive2 当前异常。')).not.toBeInTheDocument();
     const button = screen.getByRole('button', { name: '115 未同步' });
     expect(button).toBeDisabled();
     expect(button).toHaveAttribute('data-tooltip', 'CloudDrive2 当前不可用，请先前往设置页处理');

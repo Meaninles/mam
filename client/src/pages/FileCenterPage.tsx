@@ -160,7 +160,6 @@ export function FileCenterPage(props: {
     statusFilter,
     theme,
     total,
-    cloudActionNotice,
     integrationHealth = {
       cd2Online: true,
       aria2Online: true,
@@ -179,8 +178,6 @@ export function FileCenterPage(props: {
     onOpenBatchTagEditor,
     onOpenItemDetail,
     onOpenTagEditor,
-    onOpenCloudDependencySettings,
-    onOpenStorageNodes,
     onRefreshIndex,
     onUploadFiles,
     onUploadFolder,
@@ -255,22 +252,6 @@ export function FileCenterPage(props: {
 
   return (
     <section className="page-stack file-center-page">
-      {cloudActionNotice ? (
-        <div className={`toolbar-card file-center-cloud-notice ${cloudActionNotice.tone}`} role="status">
-          <div className="file-center-cloud-notice-copy">
-            <strong>云端动作受限</strong>
-            <p className="muted-paragraph">{cloudActionNotice.message}</p>
-          </div>
-          <div className="toolbar-group">
-            {cloudActionNotice.actions.includes('settings') ? (
-              <ActionButton onClick={() => onOpenCloudDependencySettings?.()}>打开设置页</ActionButton>
-            ) : null}
-            {cloudActionNotice.actions.includes('storage-nodes') ? (
-              <ActionButton onClick={() => onOpenStorageNodes?.()}>打开存储节点</ActionButton>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
       <div className="toolbar-card explorer-toolbar file-center-toolbar">
         <div className="toolbar-group">
           <IconButton active={canGoBack} ariaLabel="后退" tooltip="后退" onClick={onGoBack}>

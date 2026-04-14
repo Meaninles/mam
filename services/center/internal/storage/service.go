@@ -18,16 +18,17 @@ import (
 )
 
 type LocalFolderService struct {
-	pool         *pgxpool.Pool
-	now          func() time.Time
-	nas          nasConnector
-	cloud        *http.Client
-	cipher       credentialCipher
-	integration  interface {
+	pool        *pgxpool.Pool
+	now         func() time.Time
+	nas         nasConnector
+	cloud       *http.Client
+	cipher      credentialCipher
+	integration interface {
 		Provider(vendor string) (integration.CloudProviderDriver, error)
 	}
 	assetService interface {
 		SyncMount(ctx context.Context, mountID string) error
+		SyncCloudMountFirstLevel(ctx context.Context, mountID string, entries []assets.CloudMountEntry) error
 	}
 }
 
@@ -50,6 +51,7 @@ func (s *LocalFolderService) SetIntegrationService(service interface {
 
 func (s *LocalFolderService) SetAssetService(service interface {
 	SyncMount(ctx context.Context, mountID string) error
+	SyncCloudMountFirstLevel(ctx context.Context, mountID string, entries []assets.CloudMountEntry) error
 }) {
 	s.assetService = service
 }
