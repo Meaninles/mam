@@ -1,10 +1,10 @@
 package storage
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,10 +25,10 @@ import (
 )
 
 type CloudNodeService struct {
-	pool   *pgxpool.Pool
-	now    func() time.Time
-	cipher credentialCipher
-	client *http.Client
+	pool        *pgxpool.Pool
+	now         func() time.Time
+	cipher      credentialCipher
+	client      *http.Client
 	integration interface {
 		Provider(vendor string) (integration.CloudProviderDriver, error)
 	}
@@ -55,10 +55,10 @@ func NewCloudNodeService(pool *pgxpool.Pool, integrations ...interface {
 		integrationService = integrations[0]
 	}
 	return &CloudNodeService{
-		pool:   pool,
-		now:    time.Now,
-		cipher: newSystemCredentialCipher(),
-		client: &http.Client{Timeout: 10 * time.Second},
+		pool:        pool,
+		now:         time.Now,
+		cipher:      newSystemCredentialCipher(),
+		client:      &http.Client{Timeout: 10 * time.Second},
 		integration: integrationService,
 	}
 }
@@ -74,9 +74,13 @@ func (s *CloudNodeService) ListCloudNodes(ctx context.Context) ([]storagedto.Clo
 			COALESCE(cp.remote_root_path, COALESCE(sn.address, '')),
 			COALESCE(snc.token_status, 'UNKNOWN'),
 			COALESCE(snc.secret_ciphertext, ''),
+			COALESCE(sn.account_alias, ''),
+			cp.last_auth_at,
 			snr.last_check_at,
 			COALESCE(snr.auth_status, 'UNKNOWN'),
 			COALESCE(snr.health_status, 'UNKNOWN'),
+			COALESCE(NULLIF(snr.last_error_code, ''), NULLIF(cp.last_auth_error_code, ''), ''),
+			COALESCE(NULLIF(snr.last_error_message, ''), NULLIF(cp.last_auth_error_message, ''), ''),
 			COALESCE(sn.description, ''),
 			COUNT(m.id) FILTER (WHERE m.deleted_at IS NULL)
 		FROM storage_nodes sn
@@ -88,8 +92,10 @@ func (s *CloudNodeService) ListCloudNodes(ctx context.Context) ([]storagedto.Clo
 		  AND sn.deleted_at IS NULL
 		GROUP BY
 			sn.id, sn.name, cp.provider_vendor, cp.auth_method, snc.secret_ref,
-			cp.remote_root_path, snc.token_status, snc.secret_ciphertext, snr.last_check_at,
-			snr.auth_status, snr.health_status, sn.description
+			cp.remote_root_path, snc.token_status, snc.secret_ciphertext, sn.account_alias,
+			cp.last_auth_at, snr.last_check_at, snr.auth_status, snr.health_status,
+			snr.last_error_code, snr.last_error_message, cp.last_auth_error_code,
+			cp.last_auth_error_message, sn.description
 		ORDER BY sn.created_at DESC
 	`)
 	if err != nil {
@@ -100,21 +106,43 @@ func (s *CloudNodeService) ListCloudNodes(ctx context.Context) ([]storagedto.Clo
 	items := make([]storagedto.CloudNodeRecord, 0)
 	for rows.Next() {
 		var (
-			id           string
-			name         string
-			vendor       string
-			accessMode   string
-			qrChannel    string
-			mountPath    string
-			tokenStatus  string
-			ciphertext   string
-			lastCheckAt  *time.Time
-			authStatus   string
-			healthStatus string
-			notes        string
-			mountCount   int
+			id               string
+			name             string
+			vendor           string
+			accessMode       string
+			qrChannel        string
+			mountPath        string
+			tokenStatus      string
+			ciphertext       string
+			accountAlias     string
+			lastAuthAt       *time.Time
+			lastCheckAt      *time.Time
+			authStatus       string
+			healthStatus     string
+			lastErrorCode    string
+			lastErrorMessage string
+			notes            string
+			mountCount       int
 		)
-		if err := rows.Scan(&id, &name, &vendor, &accessMode, &qrChannel, &mountPath, &tokenStatus, &ciphertext, &lastCheckAt, &authStatus, &healthStatus, &notes, &mountCount); err != nil {
+		if err := rows.Scan(
+			&id,
+			&name,
+			&vendor,
+			&accessMode,
+			&qrChannel,
+			&mountPath,
+			&tokenStatus,
+			&ciphertext,
+			&accountAlias,
+			&lastAuthAt,
+			&lastCheckAt,
+			&authStatus,
+			&healthStatus,
+			&lastErrorCode,
+			&lastErrorMessage,
+			&notes,
+			&mountCount,
+		); err != nil {
 			return nil, err
 		}
 		savedToken := ""
@@ -126,19 +154,24 @@ func (s *CloudNodeService) ListCloudNodes(ctx context.Context) ([]storagedto.Clo
 		}
 
 		items = append(items, storagedto.CloudNodeRecord{
-			ID:           id,
-			Name:         name,
-			Vendor:       vendor,
-			AccessMethod: uiCloudAccessMethod(accessMode),
-			QRChannel:    qrChannel,
-			MountPath:    mountPath,
-			TokenStatus:  uiCloudTokenStatus(tokenStatus),
-			Token:        savedToken,
-			LastTestAt:   uiNodeLastCheckAt(lastCheckAt),
-			Status:       uiCloudStatus(authStatus, healthStatus, tokenStatus),
-			Tone:         uiCloudTone(authStatus, healthStatus, tokenStatus),
-			MountCount:   mountCount,
-			Notes:        notes,
+			ID:               id,
+			Name:             name,
+			Vendor:           vendor,
+			AccessMethod:     uiCloudAccessMethod(accessMode),
+			QRChannel:        qrChannel,
+			MountPath:        mountPath,
+			TokenStatus:      uiCloudTokenStatus(tokenStatus),
+			Token:            savedToken,
+			AccountAlias:     accountAlias,
+			LastAuthAt:       uiNodeLastCheckAt(lastAuthAt),
+			LastAuthResult:   uiCloudStatus(authStatus, healthStatus, tokenStatus),
+			LastErrorCode:    lastErrorCode,
+			LastErrorMessage: lastErrorMessage,
+			LastTestAt:       uiNodeLastCheckAt(lastCheckAt),
+			Status:           uiCloudStatus(authStatus, healthStatus, tokenStatus),
+			Tone:             uiCloudTone(authStatus, healthStatus, tokenStatus),
+			MountCount:       mountCount,
+			Notes:            notes,
 		})
 	}
 
@@ -574,10 +607,10 @@ func (s *CloudNodeService) loadCloudProfile(ctx context.Context, nodeID string) 
 		return cloudProfile{}, nil
 	}
 	var (
-		vendor string
+		vendor     string
 		authMethod string
 		remoteRoot string
-		payload []byte
+		payload    []byte
 	)
 	err := s.pool.QueryRow(ctx, `
 		SELECT provider_vendor, auth_method, remote_root_path, provider_payload
@@ -994,11 +1027,11 @@ func (s *CloudNodeService) createCloudQRCodeSessionLegacy(ctx context.Context, c
 		return storagedto.CloudQRCodeSession{}, err
 	}
 	return storagedto.CloudQRCodeSession{
-		UID:     payload.Data.UID,
-		Time:    payload.Data.Time,
-		Sign:    payload.Data.Sign,
-		QRCode:  payload.Data.QRCode,
-		Channel: channel,
+		UID:          payload.Data.UID,
+		Time:         payload.Data.Time,
+		Sign:         payload.Data.Sign,
+		QRCode:       payload.Data.QRCode,
+		Channel:      channel,
 		CodeVerifier: codeVerifier,
 	}, nil
 }
@@ -1137,8 +1170,8 @@ func (s *CloudNodeService) loadCloudCredential(ctx context.Context, id string) (
 
 func (s *CloudNodeService) loadCloudCredentialEnvelope(ctx context.Context, id string) (string, string, string, error) {
 	var (
-		ciphertext string
-		secretRef string
+		ciphertext  string
+		secretRef   string
 		tokenStatus string
 	)
 	if err := s.pool.QueryRow(ctx, `

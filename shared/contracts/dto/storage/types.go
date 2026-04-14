@@ -82,31 +82,36 @@ type DeleteNasNodeResponse struct {
 }
 
 type CloudNodeRecord struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	Vendor       string `json:"vendor"`
-	AccessMethod string `json:"accessMethod"`
-	QRChannel    string `json:"qrChannel,omitempty"`
-	MountPath    string `json:"mountPath"`
-	TokenStatus  string `json:"tokenStatus"`
-	Token        string `json:"token,omitempty"`
-	LastTestAt   string `json:"lastTestAt,omitempty"`
-	Status       string `json:"status"`
-	Tone         string `json:"tone"`
-	MountCount   int    `json:"mountCount"`
-	Notes        string `json:"notes"`
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Vendor           string `json:"vendor"`
+	AccessMethod     string `json:"accessMethod"`
+	QRChannel        string `json:"qrChannel,omitempty"`
+	MountPath        string `json:"mountPath"`
+	TokenStatus      string `json:"tokenStatus"`
+	Token            string `json:"token,omitempty"`
+	AccountAlias     string `json:"accountAlias,omitempty"`
+	LastAuthAt       string `json:"lastAuthAt,omitempty"`
+	LastAuthResult   string `json:"lastAuthResult,omitempty"`
+	LastErrorCode    string `json:"lastErrorCode,omitempty"`
+	LastErrorMessage string `json:"lastErrorMessage,omitempty"`
+	LastTestAt       string `json:"lastTestAt,omitempty"`
+	Status           string `json:"status"`
+	Tone             string `json:"tone"`
+	MountCount       int    `json:"mountCount"`
+	Notes            string `json:"notes"`
 }
 
 type SaveCloudNodeRequest struct {
-	ID           string `json:"id,omitempty"`
-	Name         string `json:"name"`
-	Vendor       string `json:"vendor"`
-	AccessMethod string `json:"accessMethod"`
-	QRChannel    string `json:"qrChannel,omitempty"`
-	MountPath    string `json:"mountPath"`
-	Token        string `json:"token"`
+	ID           string              `json:"id,omitempty"`
+	Name         string              `json:"name"`
+	Vendor       string              `json:"vendor"`
+	AccessMethod string              `json:"accessMethod"`
+	QRChannel    string              `json:"qrChannel,omitempty"`
+	MountPath    string              `json:"mountPath"`
+	Token        string              `json:"token"`
 	QRSession    *CloudQRCodeSession `json:"qrSession,omitempty"`
-	Notes        string `json:"notes"`
+	Notes        string              `json:"notes"`
 }
 
 type SaveCloudNodeResponse struct {
@@ -132,11 +137,11 @@ type CloudQRCodeSessionRequest struct {
 }
 
 type CloudQRCodeSession struct {
-	UID     string `json:"uid"`
-	Time    int64  `json:"time"`
-	Sign    string `json:"sign"`
-	QRCode  string `json:"qrcode"`
-	Channel string `json:"channel"`
+	UID          string `json:"uid"`
+	Time         int64  `json:"time"`
+	Sign         string `json:"sign"`
+	QRCode       string `json:"qrcode"`
+	Channel      string `json:"channel"`
 	CodeVerifier string `json:"codeVerifier,omitempty"`
 }
 

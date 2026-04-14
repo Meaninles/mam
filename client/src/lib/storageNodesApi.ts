@@ -77,6 +77,11 @@ export type CloudRecord = {
   mountDirectory: string;
   tokenStatus: string;
   token?: string;
+  accountAlias?: string;
+  lastAuthAt?: string;
+  lastAuthResult?: string;
+  lastErrorCode?: string;
+  lastErrorMessage?: string;
   lastTestAt?: string;
   status: string;
   tone: StorageTone;
@@ -154,6 +159,15 @@ export type CloudDraft = {
   qrChannel: StorageCloudQrChannel;
   mountDirectory: string;
   token: string;
+  tokenStatus?: string;
+  accountAlias?: string;
+  lastAuthAt?: string;
+  lastAuthResult?: string;
+  lastErrorCode?: string;
+  lastErrorMessage?: string;
+  lastTestAt?: string;
+  status?: string;
+  tone?: StorageTone;
   qrSession?: CloudQRCodeSession;
   notes: string;
 };

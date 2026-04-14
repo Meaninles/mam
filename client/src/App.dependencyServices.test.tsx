@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
@@ -41,12 +41,14 @@ describe('设置页依赖服务', () => {
         status: 'ONLINE',
         message: 'CloudDrive2 连接正常',
         lastCheckedAt: '2026-04-12T09:10:00+08:00',
+        lastErrorCode: '',
       },
       {
         name: 'aria2',
         status: 'ERROR',
         message: 'aria2 启动失败',
         lastCheckedAt: '2026-04-12T09:12:00+08:00',
+        lastErrorCode: 'rpc_healthcheck_failed',
         lastErrorMessage: 'RPC 健康检查未通过',
       },
     ]);
@@ -69,10 +71,13 @@ describe('设置页依赖服务', () => {
     );
     expect(screen.getByText('已保存凭据')).toBeInTheDocument();
     expect(screen.getByText('RPC 健康检查未通过')).toBeInTheDocument();
-    expect(screen.getAllByText('今天 09:10').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText('今天 09:12').length).toBeGreaterThanOrEqual(1);
-    expect(screen.queryByRole('button', { name: 'CloudDrive2 启用状态' })).not.toBeInTheDocument();
+    expect(screen.getByText('rpc_healthcheck_failed')).toBeInTheDocument();
+    expect(screen.getAllByText('最近检测').length).toBeGreaterThanOrEqual(2);
     expect(screen.queryByText('在线服务数')).not.toBeInTheDocument();
+
+    const cd2Card = screen.getAllByText('CloudDrive2')[0]?.closest('section');
+    expect(cd2Card).not.toBeNull();
+    expect(within(cd2Card as HTMLElement).queryByText('最近错误代码')).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: '导入与归档' }));
     expect(await screen.findByText('导入会话示例')).toBeInTheDocument();

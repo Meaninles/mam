@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -175,11 +176,11 @@ func TestCloudNodeServiceSaveQRCodeNodePersistsValidatedCookie(t *testing.T) {
 		QRChannel:    "微信小程序",
 		MountPath:    "/MareArchive",
 		QRSession: &storagedto.CloudQRCodeSession{
-			UID:     "uid-1",
-			Time:    123,
-			Sign:    "sign-1",
-			QRCode:  "https://115.com/scan/mock",
-			Channel: "微信小程序",
+			UID:          "uid-1",
+			Time:         123,
+			Sign:         "sign-1",
+			QRCode:       "https://115.com/scan/mock",
+			Channel:      "微信小程序",
 			CodeVerifier: "code-verifier-1",
 		},
 	})
@@ -246,11 +247,11 @@ func TestCloudNodeServiceSaveQRCodeNodeViaCD2WrapperReturnsSavedToken(t *testing
 		QRChannel:    "微信小程序",
 		MountPath:    "/MareArchive",
 		QRSession: &storagedto.CloudQRCodeSession{
-			UID:     "uid-1",
-			Time:    123,
-			Sign:    "sign-1",
-			QRCode:  "https://115.com/scan/mock",
-			Channel: "微信小程序",
+			UID:          "uid-1",
+			Time:         123,
+			Sign:         "sign-1",
+			QRCode:       "https://115.com/scan/mock",
+			Channel:      "微信小程序",
 			CodeVerifier: "code-verifier-1",
 		},
 	})
@@ -500,5 +501,85 @@ func TestCloudNodeServiceSaveCloudNodeCreatesMountPathRecursively(t *testing.T) 
 	expected := []string{"0:Mare", "100:Archive", "101:2026"}
 	if strings.Join(created, ",") != strings.Join(expected, ",") {
 		t.Fatalf("unexpected created folders: %+v", created)
+	}
+}
+
+func TestCloudNodeServiceListCloudNodesIncludesGovernanceFields(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	conn, err := net.DialTimeout("tcp", "127.0.0.1:5432", time.Second)
+	if err != nil {
+		t.Skip("postgres is not available in current environment")
+	}
+	_ = conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	pool := openStorageTestPool(t, ctx)
+	defer pool.Close()
+	resetStorageSchema(t, ctx, pool)
+
+	migrator := db.NewMigrator()
+	if _, err := migrator.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	driver := &fakeCloudProviderDriver{}
+	service := NewCloudNodeService(pool, fakeCloudIntegration{driver: driver})
+	service.cipher = fakeCredentialCipher{}
+
+	created, err := service.SaveCloudNode(ctx, storagedto.SaveCloudNodeRequest{
+		Name:         "115 云归档",
+		Vendor:       "115",
+		AccessMethod: "TOKEN",
+		MountPath:    "/MareArchive",
+		Token:        "UID=uid-1; CID=cid-1",
+	})
+	if err != nil {
+		t.Fatalf("save cloud node: %v", err)
+	}
+
+	authAt := time.Date(2026, 4, 14, 10, 20, 0, 0, time.UTC)
+	if _, err := pool.Exec(ctx, `
+		UPDATE cloud_node_profiles
+		SET last_auth_at = $2
+		WHERE storage_node_id = $1
+	`, created.Record.ID, authAt); err != nil {
+		t.Fatalf("update cloud node profile: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE storage_node_runtime
+		SET last_error_code = 'cookie_rejected',
+		    last_error_message = '115 返回 cookie 失效'
+		WHERE storage_node_id = $1
+	`, created.Record.ID); err != nil {
+		t.Fatalf("update cloud node runtime: %v", err)
+	}
+
+	items, err := service.ListCloudNodes(ctx)
+	if err != nil {
+		t.Fatalf("list cloud nodes: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 cloud node, got %d", len(items))
+	}
+
+	record := items[0]
+	if record.AccountAlias != "115 云归档" {
+		t.Fatalf("expected account alias to be projected, got %q", record.AccountAlias)
+	}
+	if record.LastAuthAt == "" {
+		t.Fatal("expected last auth time to be projected")
+	}
+	if record.LastAuthResult == "" {
+		t.Fatal("expected last auth result to be projected")
+	}
+	if record.LastErrorCode != "cookie_rejected" {
+		t.Fatalf("expected last error code cookie_rejected, got %q", record.LastErrorCode)
+	}
+	if record.LastErrorMessage != "115 返回 cookie 失效" {
+		t.Fatalf("expected last error message to be projected, got %q", record.LastErrorMessage)
 	}
 }

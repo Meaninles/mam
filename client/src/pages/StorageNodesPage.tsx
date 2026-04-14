@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import QRCode from 'qrcode';
 import {
@@ -15,6 +15,7 @@ import {
 import type { Library } from '../data';
 import {
   ActionButton,
+  DenseRow,
   EmptyState,
   IconButton,
   ProgressBar,
@@ -1007,6 +1008,17 @@ export function StorageNodesPage({
                   ))}
                 </div>
               </Field>
+              {cloudForm.draft.tokenStatus || cloudForm.draft.accountAlias || cloudForm.draft.lastAuthAt || cloudForm.draft.lastAuthResult || cloudForm.draft.lastErrorCode || cloudForm.draft.lastErrorMessage ? (
+                <div className="dialog-card page-stack">
+                  <strong>当前凭据状态</strong>
+                  {cloudForm.draft.tokenStatus ? <DenseRow label="Token 状态" value={cloudForm.draft.tokenStatus} /> : null}
+                  {cloudForm.draft.accountAlias ? <DenseRow label="账号别名" value={cloudForm.draft.accountAlias} /> : null}
+                  {cloudForm.draft.lastAuthAt ? <DenseRow label="最近鉴权时间" value={cloudForm.draft.lastAuthAt} /> : null}
+                  {cloudForm.draft.lastAuthResult ? <DenseRow label="最近鉴权结果" value={cloudForm.draft.lastAuthResult} /> : null}
+                  {cloudForm.draft.lastErrorCode ? <DenseRow label="最近错误代码" tone="critical" value={cloudForm.draft.lastErrorCode} /> : null}
+                  {cloudForm.draft.lastErrorMessage ? <DenseRow label="最近失败原因" tone="critical" value={cloudForm.draft.lastErrorMessage} /> : null}
+                </div>
+              ) : null}
               {cloudForm.draft.accessMethod === '扫码登录获取 Token' ? (
                 <>
                   <Field label="扫码登录类型">
@@ -1624,84 +1636,98 @@ function CloudTable({
 
   return (
     <>
-    <div className="storage-table-wrap">
-      <table className="file-table storage-table storage-simple-table">
-        <thead>
-          <tr>
-            <th>名称</th>
-            <th>网盘类型</th>
-            <th>接入方式</th>
-            <th>挂载目录</th>
-            <th>鉴权状态</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((item) => (
-            <tr key={item.id}>
-              <td>{item.name}</td>
-              <td>{item.vendor}</td>
-              <td>{item.accessMethod}{item.qrChannel ? ` / ${item.qrChannel}` : ''}</td>
-              <td>{item.mountDirectory}</td>
-              <td>
-                <div className="row-main">
-                  <TonePill tone={item.tone}>{item.status}</TonePill>
-                  <span>{item.lastTestAt ?? '尚未测试'}</span>
-                </div>
-              </td>
-              <td>
-                <div className="row-actions storage-row-actions">
-                  <IconButton ariaLabel={`连接测试 ${item.name}`} tooltip="连接测试" onClick={() => onRunConnectionTest(item.id)}>
-                    {testingIds.includes(item.id) ? <LoaderCircle className="spin" size={15} /> : <Radar size={15} />}
-                  </IconButton>
-                  <IconButton ariaLabel={`编辑 ${item.name}`} tooltip="编辑" onClick={() => onEdit(item)}>
-                    <Pencil size={15} />
-                  </IconButton>
-                  <div className="storage-menu-anchor">
-                    <IconButton
-                      ariaLabel={`更多操作 ${item.name}`}
-                      tooltip="更多操作"
-                      onClick={(event) => {
-                        const rect = event.currentTarget.getBoundingClientRect();
-                        onMenuChange(
-                          menuState?.id === item.id
-                            ? null
-                            : {
-                                type: 'cloud',
-                                id: item.id,
-                                top: resolveFloatingMenuTop(rect, ROW_MENU_ESTIMATED_HEIGHT),
-                                right: Math.max(12, window.innerWidth - rect.right),
-                              },
-                        );
-                      }}
-                    >
-                      <CircleEllipsis size={15} />
-                    </IconButton>
-                    {menuState?.type === 'cloud' && menuState.id === item.id
-                      ? createPortal(
-                      <div className="context-menu storage-menu-inline" style={{ position: 'fixed', top: menuState.top, right: menuState.right }}>
-                        <button className="danger-text" type="button" onClick={() => onDelete(item.id)}>
-                          删除
-                        </button>
-                      </div>,
-                      document.body,
-                    ) : null}
-                  </div>
-                </div>
-              </td>
+      <div className="storage-table-wrap">
+        <table className="file-table storage-table storage-simple-table">
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>网盘类型</th>
+              <th>接入方式</th>
+              <th>挂载目录</th>
+              <th>凭据治理</th>
+              <th>操作</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-    <StoragePagination
-      page={page}
-      pageCount={pageCount}
-      pageSize={pageSize}
-      total={total}
-      onPageChange={onPageChange}
-      onPageSizeChange={onPageSizeChange}
-    />
+          </thead>
+          <tbody>
+            {items.map((item) => (
+              <tr key={item.id}>
+                <td>{item.name}</td>
+                <td>{item.vendor}</td>
+                <td>{item.accessMethod}{item.qrChannel ? ` / ${item.qrChannel}` : ''}</td>
+                <td>{item.mountDirectory}</td>
+                <td>
+                  <div className="page-stack">
+                    <div className="row-main">
+                      <TonePill tone={item.tone}>{item.status}</TonePill>
+                      <span>{item.lastTestAt ?? '尚未测试'}</span>
+                    </div>
+                    <div className="endpoint-row">
+                      <span>{item.tokenStatus}</span>
+                      <span>{item.accountAlias ?? '未识别账号'}</span>
+                    </div>
+                    {item.lastAuthAt || item.lastAuthResult ? (
+                      <div className="endpoint-row">
+                        <span>{item.lastAuthAt ?? '尚无鉴权时间'}</span>
+                        <span>{item.lastAuthResult ?? item.status}</span>
+                      </div>
+                    ) : null}
+                    {item.lastErrorMessage ? <span className="selection-caption">{item.lastErrorMessage}</span> : null}
+                  </div>
+                </td>
+                <td>
+                  <div className="row-actions storage-row-actions">
+                    <IconButton ariaLabel={`连接测试 ${item.name}`} tooltip="连接测试" onClick={() => onRunConnectionTest(item.id)}>
+                      {testingIds.includes(item.id) ? <LoaderCircle className="spin" size={15} /> : <Radar size={15} />}
+                    </IconButton>
+                    <IconButton ariaLabel={`编辑 ${item.name}`} tooltip="编辑" onClick={() => onEdit(item)}>
+                      <Pencil size={15} />
+                    </IconButton>
+                    <div className="storage-menu-anchor">
+                      <IconButton
+                        ariaLabel={`更多操作 ${item.name}`}
+                        tooltip="更多操作"
+                        onClick={(event) => {
+                          const rect = event.currentTarget.getBoundingClientRect();
+                          onMenuChange(
+                            menuState?.id === item.id
+                              ? null
+                              : {
+                                  type: 'cloud',
+                                  id: item.id,
+                                  top: resolveFloatingMenuTop(rect, ROW_MENU_ESTIMATED_HEIGHT),
+                                  right: Math.max(12, window.innerWidth - rect.right),
+                                },
+                          );
+                        }}
+                      >
+                        <CircleEllipsis size={15} />
+                      </IconButton>
+                      {menuState?.type === 'cloud' && menuState.id === item.id
+                        ? createPortal(
+                            <div className="context-menu storage-menu-inline" style={{ position: 'fixed', top: menuState.top, right: menuState.right }}>
+                              <button className="danger-text" type="button" onClick={() => onDelete(item.id)}>
+                                删除
+                              </button>
+                            </div>,
+                            document.body,
+                          )
+                        : null}
+                    </div>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <StoragePagination
+        page={page}
+        pageCount={pageCount}
+        pageSize={pageSize}
+        total={total}
+        onPageChange={onPageChange}
+        onPageSizeChange={onPageSizeChange}
+      />
     </>
   );
 }
@@ -1999,6 +2025,15 @@ function cloudRecordToDraft(item: CloudRecord): CloudDraft {
     qrChannel: item.qrChannel ?? '微信小程序',
     mountDirectory: item.mountDirectory,
     token: item.token ?? '',
+    tokenStatus: item.tokenStatus,
+    accountAlias: item.accountAlias,
+    lastAuthAt: item.lastAuthAt,
+    lastAuthResult: item.lastAuthResult,
+    lastErrorCode: item.lastErrorCode,
+    lastErrorMessage: item.lastErrorMessage,
+    lastTestAt: item.lastTestAt,
+    status: item.status,
+    tone: item.tone,
     notes: item.notes,
   };
 }

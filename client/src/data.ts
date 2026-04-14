@@ -38,7 +38,7 @@ export type NoticeKind = 'ACTION_REQUIRED' | 'REMINDER';
 export type NoticeSourceType = 'ISSUE' | 'JOB';
 export type NoticeStatus = 'UNREAD' | 'READ' | 'JUMPED' | 'STALE';
 export type NoticeSourceDomain = '异常中心' | '任务中心' | '导入中心' | '存储节点' | '系统提醒';
-export type NoticeJumpTargetKind = 'issues' | 'task-center' | 'file-center' | 'storage-nodes' | 'import-center';
+export type NoticeJumpTargetKind = 'issues' | 'task-center' | 'file-center' | 'storage-nodes' | 'import-center' | 'settings';
 
 export interface NavigationItem {
   id: Exclude<MainView, 'import-center'>;

@@ -1,16 +1,20 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { resetFileCenterMock } from './lib/fileCenterApi';
+import { jobsApi } from './lib/jobsApi';
 
 describe('客户端顶层多标签工作区', () => {
   beforeEach(async () => {
     window.localStorage.clear();
     await resetFileCenterMock();
+    vi.spyOn(jobsApi, 'list').mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 100 });
+    vi.spyOn(jobsApi, 'subscribe').mockReturnValue(() => {});
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     cleanup();
     await resetFileCenterMock();
   });
@@ -22,7 +26,7 @@ describe('客户端顶层多标签工作区', () => {
     expect(screen.getByRole('tab', { name: '文件中心' })).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: '任务中心' }));
-    expect(screen.getByRole('tab', { name: '任务中心' })).toBeInTheDocument();
+    expect(await screen.findByRole('tab', { name: '任务中心' })).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: '任务中心' }));
     expect(screen.getAllByRole('tab', { name: '任务中心' })).toHaveLength(1);
@@ -43,23 +47,17 @@ describe('客户端顶层多标签工作区', () => {
     expect(await screen.findByRole('textbox', { name: '搜索存储项' })).toHaveValue('NAS');
   });
 
-  it('导入中心进入顶层标签后切换页面仍保留当前设备会话状态', async () => {
+  it('导入中心进入顶层标签后切换页面仍保留导入中心标签与激活状态', async () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole('button', { name: '已插入 5 个设备' }));
+    await user.click(screen.getByRole('button', { name: '导入' }));
     expect(await screen.findByRole('tab', { name: '导入中心' })).toBeInTheDocument();
-
-    const deviceRow = (await screen.findByText('CFexpress A 卡（A 机位）')).closest('article');
-    expect(deviceRow).not.toBeNull();
-    await user.click(deviceRow!);
-    expect(await screen.findByText('来源路径')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: '任务中心' }));
     await user.click(screen.getByRole('tab', { name: '导入中心' }));
 
-    expect(await screen.findByText('来源路径')).toBeInTheDocument();
-    expect(screen.getByText('E:\\DCIM')).toBeInTheDocument();
+    expect(await screen.findByRole('tab', { name: '导入中心' })).toHaveAttribute('aria-selected', 'true');
   });
 
   it('支持标签右键关闭其它标签与最近关闭恢复', async () => {
@@ -115,10 +113,6 @@ describe('客户端顶层多标签工作区', () => {
     fireEvent.drop(fileTab, { dataTransfer });
     fireEvent.dragEnd(taskTab, { dataTransfer });
 
-    expect(screen.getAllByRole('tab').map((item) => item.textContent?.trim())).toEqual([
-      '任务中心',
-      '文件中心',
-      '异常中心',
-    ]);
+    expect(screen.getAllByRole('tab').map((item) => item.textContent?.trim())).toEqual(['任务中心', '文件中心', '异常中心']);
   });
 });

@@ -6,11 +6,11 @@ import type {
   SettingSection,
   TaskRecord,
 } from '../data';
-import { DenseRow, InlineSettingControl, TonePill } from '../components/Shared';
-import { ActionButton } from '../components/Shared';
+import { ActionButton, DenseRow, InlineSettingControl, TonePill } from '../components/Shared';
 import type { RuntimeComponentRecord } from '../lib/integrationsApi';
 
 type SectionChangeHandler = (sectionId: string, rowId: string, value: string) => void;
+type DependencyIndicatorTone = 'success' | 'warning' | 'critical';
 
 export function WorkspaceSettingsPanel({
   activeViewLabel,
@@ -33,7 +33,7 @@ export function WorkspaceSettingsPanel({
           <header className="section-header">
             <div>
               <strong>当前工作区预览</strong>
-              <p className="muted-paragraph">用于直观确认默认打开页、保活和跳转聚焦策略与现有客户端工作区风格一致。</p>
+              <p className="muted-paragraph">用于直观确认默认打开页、会话保活和跳转聚焦策略是否符合当前工作方式。</p>
             </div>
           </header>
           <div className="settings-preview-list">
@@ -45,7 +45,7 @@ export function WorkspaceSettingsPanel({
                     {label === activeViewLabel ? '当前激活' : '会话保活'}
                   </TonePill>
                 </div>
-                <p>切换到其它一级页面后继续保留当前页面的筛选、分页、搜索与草稿上下文。</p>
+                <p>切换到其他一级页面后，继续保留当前页面的筛选、分页、搜索和焦点上下文。</p>
               </article>
             ))}
           </div>
@@ -78,7 +78,7 @@ export function ImportArchiveSettingsPanel({
           <header className="section-header">
             <div>
               <strong>导入会话示例</strong>
-              <p className="muted-paragraph">展示当前真实导入会话与导入报告，帮助确认默认策略对预检、目标编排和结果摘要的影响。</p>
+              <p className="muted-paragraph">展示当前真实导入会话与导入报告，便于检查预检、目标编排和结果摘要的默认口径。</p>
             </div>
           </header>
           <div className="settings-preview-list">
@@ -115,8 +115,6 @@ export function ImportArchiveSettingsPanel({
   );
 }
 
-type DependencyIndicatorTone = 'success' | 'warning' | 'critical';
-
 export function DependencyServicesSettingsPanel({
   aria2Runtime,
   cd2Gateway,
@@ -151,11 +149,6 @@ export function DependencyServicesSettingsPanel({
     status: aria2Runtime?.status,
   });
 
-  const onlineCount = [cd2Indicator, aria2Indicator].filter((item) => item.tone === 'success').length;
-  const abnormalCount = [cd2Indicator, aria2Indicator].filter((item) => item.tone === 'critical').length;
-  void onlineCount;
-  void abnormalCount;
-
   return (
     <section className="page-stack settings-strategy-page dependency-services-page">
       <div className="settings-strategy-layout">
@@ -183,7 +176,7 @@ export function DependencyServicesSettingsPanel({
               <div className="setting-row editable">
                 <div className="setting-copy">
                   <span>服务地址</span>
-                  <small>中心服务通过此地址访问 CloudDrive2。</small>
+                  <small>中心服务通过该地址访问 CloudDrive2。</small>
                 </div>
                 <input
                   aria-label="CloudDrive2 服务地址"
@@ -232,6 +225,7 @@ export function DependencyServicesSettingsPanel({
             <div className="page-stack dependency-service-meta">
               <DenseRow label="凭据状态" value={cd2Gateway.hasPassword ? '已保存凭据' : '尚未保存'} />
               {cd2Runtime?.lastCheckedAt ? <DenseRow label="最近检测" value={formatSettingsTimeLabel(cd2Runtime.lastCheckedAt)} /> : null}
+              {cd2Runtime?.lastErrorCode ? <DenseRow label="最近错误代码" tone="critical" value={cd2Runtime.lastErrorCode} /> : null}
               {cd2Runtime?.lastErrorMessage ? <DenseRow label="最近错误" tone="critical" value={cd2Runtime.lastErrorMessage} /> : null}
             </div>
           </section>
@@ -258,6 +252,7 @@ export function DependencyServicesSettingsPanel({
             <div className="page-stack dependency-service-meta">
               <DenseRow label="配置方式" value="由中心服务托管" />
               {aria2Runtime?.lastCheckedAt ? <DenseRow label="最近检测" value={formatSettingsTimeLabel(aria2Runtime.lastCheckedAt)} /> : null}
+              {aria2Runtime?.lastErrorCode ? <DenseRow label="最近错误代码" tone="critical" value={aria2Runtime.lastErrorCode} /> : null}
               {aria2Runtime?.lastErrorMessage ? <DenseRow label="最近错误" tone="critical" value={aria2Runtime.lastErrorMessage} /> : null}
             </div>
           </section>
@@ -270,15 +265,18 @@ export function DependencyServicesSettingsPanel({
             </div>
           </header>
           <div className="settings-preview-list">
-            {[{
-              indicator: cd2Indicator,
-              name: 'CloudDrive2',
-              runtime: cd2Runtime,
-            }, {
-              indicator: aria2Indicator,
-              name: 'aria2',
-              runtime: aria2Runtime,
-            }].map((service) => (
+            {[
+              {
+                indicator: cd2Indicator,
+                name: 'CloudDrive2',
+                runtime: cd2Runtime,
+              },
+              {
+                indicator: aria2Indicator,
+                name: 'aria2',
+                runtime: aria2Runtime,
+              },
+            ].map((service) => (
               <article className="settings-preview-item dependency-service-summary-item" key={service.name}>
                 <div className="settings-preview-head dependency-service-summary-head">
                   <div className="dependency-service-title">
@@ -309,73 +307,6 @@ export function DependencyServicesSettingsPanel({
   );
 }
 
-function renderGatewayStatus(status: string) {
-  if (status === 'ONLINE') return '在线';
-  if (status === 'ERROR') return '异常';
-  if (status === 'DISABLED') return '已禁用';
-  if (status === 'DEGRADED') return '降级';
-  return '未检测';
-}
-
-function resolveGatewayTone(status: string) {
-  if (status === 'ONLINE') return 'success' as const;
-  if (status === 'DISABLED') return 'info' as const;
-  if (status === 'DEGRADED') return 'warning' as const;
-  if (status === 'ERROR') return 'critical' as const;
-  return 'warning' as const;
-}
-
-function resolveDependencyIndicator({
-  message,
-  serviceName,
-  status,
-}: {
-  message?: string;
-  serviceName: string;
-  status?: string;
-}): { label: string; tone: DependencyIndicatorTone; tooltip: string } {
-  const normalizedMessage = message?.trim();
-  const tooltip =
-    normalizedMessage && normalizedMessage.startsWith(`${serviceName} `)
-      ? normalizedMessage.slice(serviceName.length + 1)
-      : normalizedMessage || `${serviceName} 尚未检测`;
-  if (status === 'ONLINE') {
-    return { label: '在线', tone: 'success', tooltip };
-  }
-  if (status === 'ERROR') {
-    return { label: '异常', tone: 'critical', tooltip };
-  }
-  if (status === 'DISABLED') {
-    return { label: '已禁用', tone: 'warning', tooltip };
-  }
-  if (status === 'DEGRADED') {
-    return { label: '降级', tone: 'warning', tooltip };
-  }
-  return { label: '未检测', tone: 'warning', tooltip };
-}
-
-function formatSettingsTimeLabel(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  const now = new Date();
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const targetStart = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-  const diffDays = Math.round((todayStart.getTime() - targetStart.getTime()) / (24 * 60 * 60 * 1000));
-  const hh = String(date.getHours()).padStart(2, '0');
-  const mm = String(date.getMinutes()).padStart(2, '0');
-
-  if (diffDays === 0) {
-    return `今天 ${hh}:${mm}`;
-  }
-  if (diffDays === 1) {
-    return `昨天 ${hh}:${mm}`;
-  }
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${hh}:${mm}`;
-}
-
 export function NotificationSettingsPanel({
   notices,
   sections,
@@ -395,7 +326,7 @@ export function NotificationSettingsPanel({
           <header className="section-header">
             <div>
               <strong>通知示例</strong>
-              <p className="muted-paragraph">直接复用当前通知中心中的 mock 通知，便于检查不同提醒口径下的表现是否符合预期。</p>
+              <p className="muted-paragraph">直接复用当前通知中心的数据，检查不同提醒和处置场景下的默认表现。</p>
             </div>
           </header>
           <div className="settings-preview-list">
@@ -440,7 +371,7 @@ export function IssueGovernanceSettingsPanel({
           <header className="section-header">
             <div>
               <strong>治理快照</strong>
-              <p className="muted-paragraph">复用异常中心现有状态组合，帮助检查保留策略与历史清理口径。</p>
+              <p className="muted-paragraph">复用异常中心现有问题组合，检查保留策略和历史清理口径。</p>
             </div>
           </header>
           <div className="settings-preview-list">
@@ -488,7 +419,7 @@ export function BackgroundTaskSettingsPanel({
           <header className="section-header">
             <div>
               <strong>后台任务示例</strong>
-              <p className="muted-paragraph">复用任务中心已有 mock 数据，覆盖扫描、解析、校验与删除清理几类后台任务组合。</p>
+              <p className="muted-paragraph">复用任务中心中的后台任务数据，覆盖扫描、解析、校验和清理几类组合。</p>
             </div>
           </header>
           <div className="settings-preview-list">
@@ -581,4 +512,71 @@ function resolveIssueTone(status: IssueRecord['status'], nature: IssueRecord['na
   if (status === '已归档' || status === '已解决') return 'success';
   if (nature === 'BLOCKING') return 'critical';
   return 'info';
+}
+
+function renderGatewayStatus(status: string) {
+  if (status === 'ONLINE') return '在线';
+  if (status === 'ERROR') return '异常';
+  if (status === 'DISABLED') return '已禁用';
+  if (status === 'DEGRADED') return '降级';
+  return '未检测';
+}
+
+function resolveGatewayTone(status: string) {
+  if (status === 'ONLINE') return 'success' as const;
+  if (status === 'DISABLED') return 'info' as const;
+  if (status === 'DEGRADED') return 'warning' as const;
+  if (status === 'ERROR') return 'critical' as const;
+  return 'warning' as const;
+}
+
+function resolveDependencyIndicator({
+  message,
+  serviceName,
+  status,
+}: {
+  message?: string;
+  serviceName: string;
+  status?: string;
+}): { label: string; tone: DependencyIndicatorTone; tooltip: string } {
+  const normalizedMessage = message?.trim();
+  const tooltip =
+    normalizedMessage && normalizedMessage.startsWith(`${serviceName} `)
+      ? normalizedMessage.slice(serviceName.length + 1)
+      : normalizedMessage || `${serviceName} 尚未检测`;
+  if (status === 'ONLINE') {
+    return { label: '在线', tone: 'success', tooltip };
+  }
+  if (status === 'ERROR') {
+    return { label: '异常', tone: 'critical', tooltip };
+  }
+  if (status === 'DISABLED') {
+    return { label: '已禁用', tone: 'warning', tooltip };
+  }
+  if (status === 'DEGRADED') {
+    return { label: '降级', tone: 'warning', tooltip };
+  }
+  return { label: '未检测', tone: 'warning', tooltip };
+}
+
+function formatSettingsTimeLabel(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const targetStart = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const diffDays = Math.round((todayStart.getTime() - targetStart.getTime()) / (24 * 60 * 60 * 1000));
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+
+  if (diffDays === 0) {
+    return `今天 ${hh}:${mm}`;
+  }
+  if (diffDays === 1) {
+    return `昨天 ${hh}:${mm}`;
+  }
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${hh}:${mm}`;
 }

@@ -1757,6 +1757,11 @@ export default function App() {
     activateWorkspace('import-center');
   };
 
+  const openDependencySettings = () => {
+    setSettingsTab('dependency-services');
+    activateWorkspace('settings');
+  };
+
   const openNotificationCenter = () => {
     const consumedAt = new Date().toISOString();
     setPersisted((current) => ({
@@ -1794,6 +1799,11 @@ export default function App() {
 
     if (nextTargetKind === 'import-center') {
       openImportCenter();
+      return;
+    }
+
+    if (nextTargetKind === 'settings') {
+      openDependencySettings();
       return;
     }
 
@@ -3022,6 +3032,7 @@ export default function App() {
               }
               onOpenTaskCenter={openTaskCenterForIssue}
               onOpenFileCenter={openFileCenterForIssue}
+              onOpenSettings={() => openDependencySettings()}
               onOpenStorageNodes={openStorageNodesForIssue}
             />,
             getWorkspaceContainer('issues'),

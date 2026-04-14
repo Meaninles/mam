@@ -1499,24 +1499,24 @@ func (s *Service) loadDevices(
 		}
 		reportID, _ := s.loadLatestReportIDBySession(ctx, row.ID)
 		items = append(items, importdto.DeviceSessionRecord{
-			ID:                        row.ID,
-			DeviceKey:                 row.DeviceKey,
-			DeviceLabel:               row.DeviceLabel,
-			DeviceType:                row.DeviceType,
-			LibraryID:                 libraryID,
-			MountPath:                 row.MountPath,
-			ConnectedAt:               formatRelativeTimestamp(row.ConnectedAt),
-			ConnectedAtSortKey:        row.ConnectedAt.UnixMilli(),
-			LastSeenAt:                formatRelativeTimestamp(row.LastSeenAt),
-			CapacitySummary:           buildCapacitySummary(row.CapacityBytes, row.AvailableBytes),
-			ScanStatus:                mapScanStatus(row.ScanStatus),
-			SessionStatus:             mapSessionStatus(row.SessionStatus),
-			ActiveDraftID:             activeDraftID,
-			LatestReportID:            reportID,
-			IssueIDs:                  []string{},
-			DuplicateCount:            0,
-			ExceptionCount:            0,
-			Description:               row.MountPath,
+			ID:                         row.ID,
+			DeviceKey:                  row.DeviceKey,
+			DeviceLabel:                row.DeviceLabel,
+			DeviceType:                 row.DeviceType,
+			LibraryID:                  libraryID,
+			MountPath:                  row.MountPath,
+			ConnectedAt:                formatRelativeTimestamp(row.ConnectedAt),
+			ConnectedAtSortKey:         row.ConnectedAt.UnixMilli(),
+			LastSeenAt:                 formatRelativeTimestamp(row.LastSeenAt),
+			CapacitySummary:            buildCapacitySummary(row.CapacityBytes, row.AvailableBytes),
+			ScanStatus:                 mapScanStatus(row.ScanStatus),
+			SessionStatus:              mapSessionStatus(row.SessionStatus),
+			ActiveDraftID:              activeDraftID,
+			LatestReportID:             reportID,
+			IssueIDs:                   []string{},
+			DuplicateCount:             0,
+			ExceptionCount:             0,
+			Description:                row.MountPath,
 			AvailableTargetEndpointIDs: targetIDs,
 		})
 	}
@@ -1597,7 +1597,7 @@ func (s *Service) loadTargetEndpoints(ctx context.Context) ([]importdto.TargetEn
 		  AND sn.deleted_at IS NULL
 		  AND m.enabled = true
 		  AND m.mount_mode = 'READ_WRITE'
-		  AND sn.node_type IN ('LOCAL')
+		  AND sn.node_type IN ('LOCAL', 'CLOUD')
 		ORDER BY m.created_at ASC
 	`)
 	if err != nil {
@@ -1635,7 +1635,7 @@ func (s *Service) loadTargetsForLibrary(ctx context.Context, libraryID string) (
 		  AND sn.deleted_at IS NULL
 		  AND m.enabled = true
 		  AND m.mount_mode = 'READ_WRITE'
-		  AND sn.node_type IN ('LOCAL')
+		  AND sn.node_type IN ('LOCAL', 'CLOUD')
 		  AND m.library_id = $1
 	`, libraryID)
 	if err != nil {
@@ -1663,7 +1663,7 @@ func (s *Service) loadTargetsByIDs(ctx context.Context, ids []string) ([]targetE
 		INNER JOIN storage_nodes sn ON sn.id = m.storage_node_id
 		LEFT JOIN mount_runtime mr ON mr.mount_id = m.id
 		WHERE m.id = ANY($1)
-		  AND sn.node_type IN ('LOCAL')
+		  AND sn.node_type IN ('LOCAL', 'CLOUD')
 	`, ids)
 	if err != nil {
 		return nil, err
@@ -2029,6 +2029,9 @@ func mapSelectionTitleType(entryType string) string {
 }
 
 func mapTargetType(nodeType string) string {
+	if nodeType == "CLOUD" {
+		return "115网盘"
+	}
 	if nodeType == "NAS" {
 		return "NAS/SMB"
 	}

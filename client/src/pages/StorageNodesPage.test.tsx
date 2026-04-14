@@ -45,31 +45,36 @@ const libraries = [
   { id: 'video', name: '视频工作流资产库', rootLabel: '', itemCount: '', health: '', storagePolicy: '' },
 ];
 
+function createDashboard(overrides?: Partial<Awaited<ReturnType<typeof storageNodesApi.loadDashboard>>>) {
+  return {
+    localNodes: [
+      {
+        id: 'local-node-1',
+        name: '本地素材根目录',
+        rootPath: 'D:\\Assets',
+        enabled: true,
+        healthStatus: '可用',
+        healthTone: 'success' as const,
+        lastCheckAt: '今天 09:12',
+        capacitySummary: '已用 64% / 可用 3.4 TB',
+        freeSpaceSummary: '3.4 TB 可用',
+        capacityPercent: 64,
+        mountCount: 1,
+        notes: '',
+      },
+    ],
+    nasNodes: [],
+    cloudNodes: [],
+    mounts: [],
+    mountFolders: [],
+    ...overrides,
+  };
+}
+
 describe('StorageNodesPage', () => {
   beforeEach(() => {
     mockedQRCode.toDataURL.mockImplementation(async () => 'data:image/png;base64,qr-preview');
-    mockedApi.loadDashboard.mockResolvedValue({
-      localNodes: [
-        {
-          id: 'local-node-1',
-          name: '本地素材根目录',
-          rootPath: 'D:\\Assets',
-          enabled: true,
-          healthStatus: '可用',
-          healthTone: 'success',
-          lastCheckAt: '今天 09:12',
-          capacitySummary: '已用 64% / 可用 3.4 TB',
-          freeSpaceSummary: '3.4 TB 可用',
-          capacityPercent: 64,
-          mountCount: 1,
-          notes: '',
-        },
-      ],
-      nasNodes: [],
-      cloudNodes: [],
-      mounts: [],
-      mountFolders: [],
-    });
+    mockedApi.loadDashboard.mockResolvedValue(createDashboard());
     mockedApi.createCloudQrSession.mockResolvedValue({
       uid: 'uid-1',
       time: 123,
@@ -117,44 +122,27 @@ describe('StorageNodesPage', () => {
 
   it('编辑已保存的扫码登录网盘时，切换到 Token 方式会预填已保存 token', async () => {
     const user = userEvent.setup();
-    mockedApi.loadDashboard.mockResolvedValueOnce({
-      localNodes: [
-        {
-          id: 'local-node-1',
-          name: '本地素材根目录',
-          rootPath: 'D:\\Assets',
-          enabled: true,
-          healthStatus: '可用',
-          healthTone: 'success',
-          lastCheckAt: '今天 09:12',
-          capacitySummary: '已用 64% / 可用 3.4 TB',
-          freeSpaceSummary: '3.4 TB 可用',
-          capacityPercent: 64,
-          mountCount: 1,
-          notes: '',
-        },
-      ],
-      nasNodes: [],
-      cloudNodes: [
-        {
-          id: 'cloud-node-1',
-          name: '115 云归档',
-          vendor: '115',
-          accessMethod: '扫码登录获取 Token',
-          qrChannel: '微信小程序',
-          mountDirectory: '/MareArchive',
-          tokenStatus: '已配置',
-          token: 'UID=uid-1; CID=cid-1',
-          lastTestAt: '今天 10:20',
-          status: '鉴权正常',
-          tone: 'success',
-          mountCount: 1,
-          notes: '',
-        },
-      ],
-      mounts: [],
-      mountFolders: [],
-    });
+    mockedApi.loadDashboard.mockResolvedValueOnce(
+      createDashboard({
+        cloudNodes: [
+          {
+            id: 'cloud-node-1',
+            name: '115 云归档',
+            vendor: '115',
+            accessMethod: '扫码登录获取 Token',
+            qrChannel: '微信小程序',
+            mountDirectory: '/MareArchive',
+            tokenStatus: '已配置',
+            token: 'UID=uid-1; CID=cid-1',
+            lastTestAt: '今天 10:20',
+            status: '鉴权正常',
+            tone: 'success',
+            mountCount: 1,
+            notes: '',
+          },
+        ],
+      }),
+    );
 
     render(<StorageNodesPage libraries={libraries as any} />);
 
@@ -163,11 +151,97 @@ describe('StorageNodesPage', () => {
 
     const row = (await screen.findByText('115 云归档')).closest('tr');
     expect(row).not.toBeNull();
-    await user.click(within(row!).getByRole('button', { name: '编辑 115 云归档' }));
+    await user.click(within(row as HTMLElement).getByRole('button', { name: '编辑 115 云归档' }));
 
     const sheet = await screen.findByRole('region', { name: '编辑网盘' });
     await user.click(within(sheet).getByText('填入 Token'));
 
     expect(within(sheet).getByLabelText('网盘 Token')).toHaveValue('UID=uid-1; CID=cid-1');
+  });
+
+  it('网盘列表展示 Token 状态、账号别名、最近鉴权结果和失败原因', async () => {
+    const user = userEvent.setup();
+    mockedApi.loadDashboard.mockResolvedValueOnce(
+      createDashboard({
+        cloudNodes: [
+          {
+            id: 'cloud-node-1',
+            name: '115 云归档',
+            vendor: '115',
+            accessMethod: '填入 Token',
+            mountDirectory: '/MareArchive',
+            tokenStatus: '即将过期',
+            token: 'UID=uid-1; CID=cid-1',
+            accountAlias: 'mare-user',
+            lastAuthAt: '今天 10:20',
+            lastAuthResult: '鉴权异常',
+            lastErrorCode: 'cookie_rejected',
+            lastErrorMessage: '115 返回 cookie 失效',
+            lastTestAt: '今天 10:21',
+            status: '鉴权异常',
+            tone: 'warning',
+            mountCount: 1,
+            notes: '主归档空间',
+          },
+        ],
+      }),
+    );
+
+    render(<StorageNodesPage libraries={libraries as any} />);
+
+    await screen.findByText('本地素材根目录');
+    await user.click(screen.getByRole('button', { name: '网盘管理' }));
+
+    const row = (await screen.findByText('115 云归档')).closest('tr');
+    expect(row).not.toBeNull();
+    expect(within(row as HTMLElement).getByText('即将过期')).toBeInTheDocument();
+    expect(within(row as HTMLElement).getByText('mare-user')).toBeInTheDocument();
+    expect(within(row as HTMLElement).getAllByText('鉴权异常').length).toBeGreaterThanOrEqual(1);
+    expect(within(row as HTMLElement).getByText('115 返回 cookie 失效')).toBeInTheDocument();
+  });
+
+  it('编辑网盘时展示当前凭据状态、账号别名和最近失败原因', async () => {
+    const user = userEvent.setup();
+    mockedApi.loadDashboard.mockResolvedValueOnce(
+      createDashboard({
+        cloudNodes: [
+          {
+            id: 'cloud-node-1',
+            name: '115 云归档',
+            vendor: '115',
+            accessMethod: '填入 Token',
+            mountDirectory: '/MareArchive',
+            tokenStatus: '即将过期',
+            token: 'UID=uid-1; CID=cid-1',
+            accountAlias: 'mare-user',
+            lastAuthAt: '今天 10:20',
+            lastAuthResult: '鉴权异常',
+            lastErrorCode: 'cookie_rejected',
+            lastErrorMessage: '115 返回 cookie 失效',
+            lastTestAt: '今天 10:21',
+            status: '鉴权异常',
+            tone: 'warning',
+            mountCount: 1,
+            notes: '主归档空间',
+          },
+        ],
+      }),
+    );
+
+    render(<StorageNodesPage libraries={libraries as any} />);
+
+    await screen.findByText('本地素材根目录');
+    await user.click(screen.getByRole('button', { name: '网盘管理' }));
+
+    const row = (await screen.findByText('115 云归档')).closest('tr');
+    expect(row).not.toBeNull();
+    await user.click(within(row as HTMLElement).getByRole('button', { name: '编辑 115 云归档' }));
+
+    const sheet = await screen.findByRole('region', { name: '编辑网盘' });
+    expect(within(sheet).getByText('当前凭据状态')).toBeInTheDocument();
+    expect(within(sheet).getByText('即将过期')).toBeInTheDocument();
+    expect(within(sheet).getByText('mare-user')).toBeInTheDocument();
+    expect(within(sheet).getByText('cookie_rejected')).toBeInTheDocument();
+    expect(within(sheet).getByText('115 返回 cookie 失效')).toBeInTheDocument();
   });
 });

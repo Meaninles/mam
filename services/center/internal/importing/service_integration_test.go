@@ -3,6 +3,7 @@ package importing_test
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -225,8 +226,150 @@ func TestServiceRefreshesSessionsAndCompletesImportJob(t *testing.T) {
 	}
 }
 
+func TestServiceLoadDashboardIncludesCloudTargets(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	conn, err := net.DialTimeout("tcp", "127.0.0.1:5432", time.Second)
+	if err != nil {
+		t.Skip("postgres is not available in current environment")
+	}
+	_ = conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	defer pool.Close()
+	resetSchema(t, ctx, pool)
+
+	migrator := db.NewMigrator()
+	if _, err := migrator.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	targetRoot := t.TempDir()
+	localFolders := storage.NewLocalFolderService(pool)
+	node, err := localFolders.SaveLocalNode(ctx, storagedto.SaveLocalNodeRequest{
+		Name:     "导入目标本地节点",
+		RootPath: targetRoot,
+		Notes:    "integration",
+	})
+	if err != nil {
+		t.Fatalf("save local node: %v", err)
+	}
+	if _, err := localFolders.SaveLocalFolder(ctx, storagedto.SaveLocalFolderRequest{
+		Name:            "本地入库",
+		LibraryID:       "photo",
+		LibraryName:     "商业摄影资产库",
+		NodeID:          node.Record.ID,
+		MountMode:       "可写",
+		HeartbeatPolicy: "从不",
+		RelativePath:    "originals",
+		Notes:           "integration",
+	}); err != nil {
+		t.Fatalf("save local folder: %v", err)
+	}
+
+	now := time.Now().UTC()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO storage_nodes (
+			id, code, name, node_type, vendor, address, access_mode, account_alias, enabled, created_at, updated_at
+		) VALUES (
+			'cloud-node-1', 'cloud-node-1', '115 云归档', 'CLOUD', '115', '/MareArchive', 'QR', '115 云归档', true, $1, $1
+		)
+	`, now); err != nil {
+		t.Fatalf("insert cloud node: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO mounts (
+			id, code, library_id, library_name, storage_node_id, name, mount_source_type, mount_mode,
+			source_path, relative_root_path, heartbeat_policy, enabled, capacity_bytes, created_at, updated_at
+		) VALUES (
+			'mount-cloud-1', 'mount-cloud-1', 'photo', '商业摄影资产库', 'cloud-node-1', '115 云归档', 'CLOUD_FOLDER',
+			'READ_WRITE', '/MareArchive', '/', 'NEVER', true, 0, $1, $1
+		)
+	`, now); err != nil {
+		t.Fatalf("insert cloud mount: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO mount_runtime (
+			id, mount_id, scan_status, auth_status, health_status, created_at, updated_at
+		) VALUES (
+			'mount-runtime-cloud-1', 'mount-cloud-1', 'IDLE', 'AUTHORIZED', 'ONLINE', $1, $1
+		)
+	`, now); err != nil {
+		t.Fatalf("insert cloud mount runtime: %v", err)
+	}
+
+	bridge := &fakeAgentBridge{
+		sources: []importdto.SourceDescriptor{
+			{
+				DeviceKey:   "device-local-1",
+				SourceType:  "LOCAL_DIRECTORY",
+				DeviceLabel: "测试素材目录",
+				DeviceType:  "本地目录",
+				SourcePath:  targetRoot,
+				MountPath:   targetRoot,
+				ConnectedAt: now.Format(time.RFC3339),
+				LastSeenAt:  now.Format(time.RFC3339),
+			},
+		},
+		browse: importdto.BrowseResponse{
+			Entries:   []importdto.BrowseEntry{},
+			Total:     0,
+			Limit:     50,
+			Offset:    0,
+			HasMore:   false,
+			ScannedAt: now.Format(time.RFC3339),
+		},
+	}
+
+	service := importing.NewService(pool, bridge, jobs.NewService(pool), assets.NewService(pool))
+	dashboard, err := service.RefreshDashboard(ctx)
+	if err != nil {
+		t.Fatalf("refresh dashboard: %v", err)
+	}
+
+	if len(dashboard.TargetEndpoints) < 2 {
+		t.Fatalf("expected local and cloud targets, got %+v", dashboard.TargetEndpoints)
+	}
+
+	foundCloudTarget := false
+	for _, target := range dashboard.TargetEndpoints {
+		if target.ID == "mount-cloud-1" {
+			foundCloudTarget = true
+			if target.Type != "115网盘" {
+				t.Fatalf("expected cloud target type 115网盘, got %+v", target)
+			}
+			if target.StatusLabel != "可用" {
+				t.Fatalf("expected cloud target status 可用, got %+v", target)
+			}
+		}
+	}
+	if !foundCloudTarget {
+		t.Fatalf("expected cloud target to be listed, got %+v", dashboard.TargetEndpoints)
+	}
+
+	if len(dashboard.Devices) != 1 {
+		t.Fatalf("expected one device session, got %+v", dashboard.Devices)
+	}
+	if !containsString(dashboard.Devices[0].AvailableTargetEndpointIDs, "mount-cloud-1") {
+		t.Fatalf("expected cloud target to be available for device session, got %+v", dashboard.Devices[0].AvailableTargetEndpointIDs)
+	}
+}
+
 func ptr[T any](value T) *T {
 	return &value
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
 
 type fakeAgentBridge struct {
@@ -281,14 +424,14 @@ func (f *fakeAgentBridge) ExecuteImport(_ context.Context, _ string, request imp
 			return importdto.ExecuteImportResponse{}, err
 		}
 		results = append(results, importdto.ExecuteImportTargetResult{
-			TargetID:     target.TargetID,
-			PhysicalPath: target.PhysicalPath,
-			BytesWritten: int64(len(data)),
-			ModifiedAt:   info.ModTime().UTC().Format(time.RFC3339),
-			Status:       "SUCCEEDED",
-			VerifyMode:   "LIGHT",
-			VerifyStatus: "PASSED",
-			VerifySummary:"轻校验通过",
+			TargetID:      target.TargetID,
+			PhysicalPath:  target.PhysicalPath,
+			BytesWritten:  int64(len(data)),
+			ModifiedAt:    info.ModTime().UTC().Format(time.RFC3339),
+			Status:        "SUCCEEDED",
+			VerifyMode:    "LIGHT",
+			VerifyStatus:  "PASSED",
+			VerifySummary: "轻校验通过",
 		})
 	}
 	return importdto.ExecuteImportResponse{Targets: results}, nil

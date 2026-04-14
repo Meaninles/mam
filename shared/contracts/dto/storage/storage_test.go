@@ -43,6 +43,50 @@ func TestNasRecordJSONShape(t *testing.T) {
 	}
 }
 
+func TestCloudNodeRecordJSONShape(t *testing.T) {
+	t.Parallel()
+
+	payload := CloudNodeRecord{
+		ID:               "cloud-node-1",
+		Name:             "115 云归档",
+		Vendor:           "115",
+		AccessMethod:     "填入 Token",
+		MountPath:        "/MareArchive",
+		TokenStatus:      "即将过期",
+		Token:            "UID=uid-1; CID=cid-1",
+		AccountAlias:     "mare-user",
+		LastAuthAt:       "2026-04-14 10:20",
+		LastAuthResult:   "鉴权异常",
+		LastErrorCode:    "cookie_rejected",
+		LastErrorMessage: "115 返回 cookie 失效",
+		LastTestAt:       "2026-04-14 10:21",
+		Status:           "鉴权异常",
+		Tone:             "warning",
+		MountCount:       1,
+		Notes:            "主归档空间",
+	}
+
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal cloud node record: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal cloud node record: %v", err)
+	}
+
+	if decoded["accountAlias"] != "mare-user" {
+		t.Fatalf("expected accountAlias to be present, got %#v", decoded["accountAlias"])
+	}
+	if decoded["lastErrorCode"] != "cookie_rejected" {
+		t.Fatalf("expected lastErrorCode to be present, got %#v", decoded["lastErrorCode"])
+	}
+	if decoded["lastErrorMessage"] != "115 返回 cookie 失效" {
+		t.Fatalf("expected lastErrorMessage to be present, got %#v", decoded["lastErrorMessage"])
+	}
+}
+
 func TestLocalFolderRecordJSONShape(t *testing.T) {
 	t.Parallel()
 

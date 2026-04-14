@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CircleEllipsis, Search } from 'lucide-react';
+import { CircleEllipsis, Search, Settings2 } from 'lucide-react';
 import type { NoticeJumpTargetKind, NoticeRecord } from '../data';
 import { ActionButton, EmptyState, IconButton, SelectPill } from '../components/Shared';
+import { resolveCloudIssueTargetKind, resolveNoticeCloudKind } from '../lib/cloudIssueRouting';
 import { getNoticeKindLabel, getNoticePrimaryActionLabel, getNoticeStatusLabel, getVisibleNoticeRecords } from '../lib/noticeCenter';
 
 type NoticeFilterValue = 'ALL' | 'UNCONSUMED' | 'ACTION_REQUIRED' | 'REMINDER';
@@ -103,6 +104,7 @@ export function NotificationCenterSheet({
           filteredRecords.map((record) => {
             const primaryActionLabel = getNoticePrimaryActionLabel(record);
             const isMenuOpen = menuNoticeId === record.id;
+            const preferredTarget = resolveNoticePreferredTarget(record);
 
             return (
               <article className={`notification-center-card${record.status === 'UNREAD' ? ' unread' : ''}`} key={record.id}>
@@ -138,7 +140,7 @@ export function NotificationCenterSheet({
                     <ActionButton
                       ariaLabel={`${primaryActionLabel} ${record.title}`}
                       tone={record.kind === 'ACTION_REQUIRED' ? 'primary' : 'default'}
-                      onClick={() => onOpenTarget(record)}
+                      onClick={() => onOpenTarget(record, preferredTarget)}
                     >
                       {primaryActionLabel}
                     </ActionButton>
@@ -163,6 +165,17 @@ export function NotificationCenterSheet({
                               }}
                             >
                               标记已读
+                            </button>
+                          ) : null}
+                          {shouldOpenSettingsForNotice(record) ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setMenuNoticeId(null);
+                                onOpenTarget(record, 'settings');
+                              }}
+                            >
+                              打开设置页
                             </button>
                           ) : null}
                           {record.capabilities.canOpenIssueCenter ? (
@@ -198,7 +211,7 @@ export function NotificationCenterSheet({
                               打开文件中心
                             </button>
                           ) : null}
-                          {record.capabilities.canOpenStorageNodes ? (
+                          {record.capabilities.canOpenStorageNodes || preferredTarget === 'storage-nodes' ? (
                             <button
                               type="button"
                               onClick={() => {
@@ -232,4 +245,13 @@ export function NotificationCenterSheet({
       </div>
     </div>
   );
+}
+
+function resolveNoticePreferredTarget(record: NoticeRecord): NoticeJumpTargetKind {
+  const kind = resolveNoticeCloudKind(record);
+  return resolveCloudIssueTargetKind(kind, record.jumpParams.kind);
+}
+
+function shouldOpenSettingsForNotice(record: NoticeRecord) {
+  return resolveNoticePreferredTarget(record) === 'settings';
 }

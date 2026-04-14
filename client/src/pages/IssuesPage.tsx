@@ -1,11 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import {
-  ArrowRightLeft,
-  FolderOpen,
-  HardDrive,
-  Repeat2,
-  Search,
-} from 'lucide-react';
+import { ArrowRightLeft, FolderOpen, HardDrive, Repeat2, Search, Settings2 } from 'lucide-react';
 import type {
   IssueCapabilities,
   IssueNature,
@@ -16,6 +10,7 @@ import type {
   Severity,
 } from '../data';
 import { ActionButton, DenseRow, EmptyState, SelectPill, Sheet, TonePill } from '../components/Shared';
+import { resolveIssueCloudKind } from '../lib/cloudIssueRouting';
 
 const CATEGORY_OPTIONS = ['全部', '冲突', '传输', '校验', '节点与权限', '容量与资源', '扫描与解析', '清理与治理'] as const;
 const NATURE_OPTIONS = ['全部问题', '阻塞型异常', '提醒型风险'] as const;
@@ -54,6 +49,7 @@ export function IssuesPage({
   onIssueAction,
   onClearHistory,
   onOpenFileCenter,
+  onOpenSettings,
   onOpenStorageNodes,
   onOpenTaskCenter,
 }: {
@@ -65,6 +61,7 @@ export function IssuesPage({
   onIssueAction: (ids: string[], action: IssueActionType) => void;
   onClearHistory: (ids: string[]) => void;
   onOpenFileCenter: (issue: IssueRecord) => void;
+  onOpenSettings?: (issue: IssueRecord) => void;
   onOpenStorageNodes: (issue: IssueRecord) => void;
   onOpenTaskCenter: (issue: IssueRecord) => void;
 }) {
@@ -81,11 +78,7 @@ export function IssuesPage({
   const [menuIssueId, setMenuIssueId] = useState<string | null>(null);
   const [contextFilter, setContextFilter] = useState<IssueFilterContext>(null);
 
-  const libraryNameMap = useMemo(
-    () => new Map(libraries.map((library) => [library.id, library.name])),
-    [libraries],
-  );
-
+  const libraryNameMap = useMemo(() => new Map(libraries.map((library) => [library.id, library.name])), [libraries]);
   const libraryOptions = useMemo(() => ['全部资产库', ...libraries.map((library) => library.name)], [libraries]);
   const issueOrder = useMemo(() => new Map(issues.map((issue, index) => [issue.id, index])), [issues]);
 
@@ -101,9 +94,7 @@ export function IssuesPage({
     setSortValue('默认排序');
     setSearchText('');
     setSourceFilter(focusRequest.sourceDomain ?? '全部来源');
-    setLibraryFilter(
-      focusRequest.libraryId ? (libraryNameMap.get(focusRequest.libraryId) ?? '全部资产库') : '全部资产库',
-    );
+    setLibraryFilter(focusRequest.libraryId ? (libraryNameMap.get(focusRequest.libraryId) ?? '全部资产库') : '全部资产库');
     setContextFilter({
       issueId: focusRequest.issueId,
       taskId: focusRequest.taskId,
@@ -146,17 +137,16 @@ export function IssuesPage({
   const filteredIssues = useMemo(() => {
     const keyword = searchText.trim().toLowerCase();
     const filtered = issues.filter((issue) => {
-      const matchesCategory = categoryFilter === '全部' ? true : issue.category === categoryFilter;
+      const matchesCategory = categoryFilter === '全部' || issue.category === categoryFilter;
       const matchesNature =
         natureFilter === '全部问题'
           ? true
           : natureFilter === '阻塞型异常'
             ? issue.nature === 'BLOCKING'
             : issue.nature === 'RISK';
-      const matchesSource = sourceFilter === '全部来源' ? true : issue.sourceDomain === sourceFilter;
-      const matchesLibrary =
-        libraryFilter === '全部资产库' ? true : libraryNameMap.get(issue.libraryId) === libraryFilter;
-      const matchesStatus = statusFilter === '全部' ? true : issue.status === statusFilter;
+      const matchesSource = sourceFilter === '全部来源' || issue.sourceDomain === sourceFilter;
+      const matchesLibrary = libraryFilter === '全部资产库' || libraryNameMap.get(issue.libraryId) === libraryFilter;
+      const matchesStatus = statusFilter === '全部' || issue.status === statusFilter;
       const matchesSeverity = matchSeverityFilter(issue.severity, severityFilter);
       const matchesContext = matchContextFilter(issue, contextFilter);
       const matchesSearch = keyword ? createIssueSearchText(issue, libraryNameMap).includes(keyword) : true;
@@ -196,9 +186,7 @@ export function IssuesPage({
 
   const selectedIssues = filteredIssues.filter((issue) => selectedIds.includes(issue.id));
   const batchActions = useMemo(() => buildBatchActions(selectedIssues), [selectedIssues]);
-  const visibleHistoryIds = filteredIssues
-    .filter((issue) => isHistoricalStatus(issue.status))
-    .map((issue) => issue.id);
+  const visibleHistoryIds = filteredIssues.filter((issue) => isHistoricalStatus(issue.status)).map((issue) => issue.id);
   const blockingCount = filteredIssues.filter((issue) => issue.nature === 'BLOCKING').length;
   const riskCount = filteredIssues.filter((issue) => issue.nature === 'RISK').length;
   const historyCount = filteredIssues.filter((issue) => isHistoricalStatus(issue.status)).length;
@@ -207,43 +195,13 @@ export function IssuesPage({
     <section className="page-stack issues-page">
       <div className="toolbar-card action-toolbar issue-toolbar">
         <div className="toolbar-group wrap issue-toolbar-main">
-          <SelectPill
-            ariaLabel="异常类型筛选"
-            options={[...CATEGORY_OPTIONS]}
-            value={categoryFilter}
-            onChange={(value) => setCategoryFilter(value as (typeof CATEGORY_OPTIONS)[number])}
-          />
-          <SelectPill
-            ariaLabel="问题性质筛选"
-            options={[...NATURE_OPTIONS]}
-            value={natureFilter}
-            onChange={(value) => setNatureFilter(value as (typeof NATURE_OPTIONS)[number])}
-          />
-          <SelectPill
-            ariaLabel="来源域筛选"
-            options={[...SOURCE_OPTIONS]}
-            value={sourceFilter}
-            onChange={(value) => setSourceFilter(value as (typeof SOURCE_OPTIONS)[number])}
-          />
+          <SelectPill ariaLabel="异常类型筛选" options={[...CATEGORY_OPTIONS]} value={categoryFilter} onChange={(value) => setCategoryFilter(value as (typeof CATEGORY_OPTIONS)[number])} />
+          <SelectPill ariaLabel="问题性质筛选" options={[...NATURE_OPTIONS]} value={natureFilter} onChange={(value) => setNatureFilter(value as (typeof NATURE_OPTIONS)[number])} />
+          <SelectPill ariaLabel="来源域筛选" options={[...SOURCE_OPTIONS]} value={sourceFilter} onChange={(value) => setSourceFilter(value as (typeof SOURCE_OPTIONS)[number])} />
           <SelectPill ariaLabel="资产库筛选" options={libraryOptions} value={libraryFilter} onChange={setLibraryFilter} />
-          <SelectPill
-            ariaLabel="异常状态筛选"
-            options={[...STATUS_OPTIONS]}
-            value={statusFilter}
-            onChange={(value) => setStatusFilter(value as (typeof STATUS_OPTIONS)[number])}
-          />
-          <SelectPill
-            ariaLabel="严重级别筛选"
-            options={[...SEVERITY_OPTIONS]}
-            value={severityFilter}
-            onChange={(value) => setSeverityFilter(value as (typeof SEVERITY_OPTIONS)[number])}
-          />
-          <SelectPill
-            ariaLabel="排序方式"
-            options={[...SORT_OPTIONS]}
-            value={sortValue}
-            onChange={(value) => setSortValue(value as (typeof SORT_OPTIONS)[number])}
-          />
+          <SelectPill ariaLabel="异常状态筛选" options={[...STATUS_OPTIONS]} value={statusFilter} onChange={(value) => setStatusFilter(value as (typeof STATUS_OPTIONS)[number])} />
+          <SelectPill ariaLabel="严重级别筛选" options={[...SEVERITY_OPTIONS]} value={severityFilter} onChange={(value) => setSeverityFilter(value as (typeof SEVERITY_OPTIONS)[number])} />
+          <SelectPill ariaLabel="排序方式" options={[...SORT_OPTIONS]} value={sortValue} onChange={(value) => setSortValue(value as (typeof SORT_OPTIONS)[number])} />
           <label className="search-field issue-search-field" htmlFor="issue-search">
             <Search size={14} />
             <input
@@ -395,9 +353,7 @@ export function IssuesPage({
                       <ActionButton onClick={() => onIssueAction([issue.id], primaryAction.id)}>{primaryAction.label}</ActionButton>
                     ) : null}
                     <div className="issue-action-anchor">
-                      <ActionButton onClick={() => setMenuIssueId((current) => (current === issue.id ? null : issue.id))}>
-                        更多
-                      </ActionButton>
+                      <ActionButton onClick={() => setMenuIssueId((current) => (current === issue.id ? null : issue.id))}>更多</ActionButton>
                       {menuIssueId === issue.id ? (
                         <div className="context-menu issue-action-menu">
                           {relatedActions.map((action) =>
@@ -421,6 +377,7 @@ export function IssuesPage({
                                   if (action.id === 'open-task') onOpenTaskCenter(issue);
                                   if (action.id === 'open-file') onOpenFileCenter(issue);
                                   if (action.id === 'open-storage') onOpenStorageNodes(issue);
+                                  if (action.id === 'open-settings') onOpenSettings?.(issue);
                                 }}
                               >
                                 {action.label}
@@ -445,6 +402,7 @@ export function IssuesPage({
           onAction={onIssueAction}
           onClose={() => setDetailIssueId(null)}
           onOpenFileCenter={onOpenFileCenter}
+          onOpenSettings={onOpenSettings}
           onOpenStorageNodes={onOpenStorageNodes}
           onOpenTaskCenter={onOpenTaskCenter}
         />
@@ -459,6 +417,7 @@ function IssueDetailSheet({
   onAction,
   onClose,
   onOpenFileCenter,
+  onOpenSettings,
   onOpenStorageNodes,
   onOpenTaskCenter,
 }: {
@@ -467,10 +426,12 @@ function IssueDetailSheet({
   onAction: (ids: string[], action: IssueActionType) => void;
   onClose: () => void;
   onOpenFileCenter: (issue: IssueRecord) => void;
+  onOpenSettings?: (issue: IssueRecord) => void;
   onOpenStorageNodes: (issue: IssueRecord) => void;
   onOpenTaskCenter: (issue: IssueRecord) => void;
 }) {
   const actions = buildIssueMenuActions(issue);
+  const cloudIssueKind = resolveIssueCloudKind(issue);
 
   return (
     <Sheet onClose={onClose} title={issue.title}>
@@ -492,6 +453,7 @@ function IssueDetailSheet({
         <DenseRow label="问题性质" value={getNatureLabel(issue.nature)} />
         <DenseRow label="严重级别" tone={issue.severity} value={getSeverityLabel(issue.severity)} />
         <DenseRow label="当前状态" tone={resolveStatusTone(issue.status)} value={issue.status} />
+        {cloudIssueKind ? <DenseRow label="云端问题类型" value={cloudIssueKind} /> : null}
         <DenseRow label="所属资产库" value={libraryLabel} />
         <DenseRow label="首次发现时间" value={issue.createdAt} />
         <DenseRow label="最近更新时间" value={issue.updatedAt} />
@@ -550,6 +512,12 @@ function IssueDetailSheet({
             打开存储节点
           </ActionButton>
         ) : null}
+        {shouldOpenSettingsForIssue(issue) ? (
+          <ActionButton onClick={() => onOpenSettings?.(issue)}>
+            <Settings2 size={14} />
+            打开设置页
+          </ActionButton>
+        ) : null}
         {issue.capabilities.canOpenFileCenter ? (
           <ActionButton onClick={() => onOpenFileCenter(issue)}>
             <FolderOpen size={14} />
@@ -577,18 +545,10 @@ function buildBatchActions(issues: IssueRecord[]) {
 
   const actions: Array<{ id: IssueActionType; label: string }> = [];
 
-  if (allCan((capabilities, issue) => canRetryIssue(issue, capabilities))) {
-    actions.push({ id: 'retry', label: '批量重试' });
-  }
-  if (allCan((capabilities, issue) => canConfirmIssue(issue, capabilities))) {
-    actions.push({ id: 'confirm', label: '批量标记已确认' });
-  }
-  if (allCan((capabilities, issue) => canIgnoreIssue(issue, capabilities))) {
-    actions.push({ id: 'ignore', label: '批量忽略' });
-  }
-  if (allCan((capabilities, issue) => canArchiveIssue(issue, capabilities))) {
-    actions.push({ id: 'archive', label: '批量归档' });
-  }
+  if (allCan((capabilities, issue) => canRetryIssue(issue, capabilities))) actions.push({ id: 'retry', label: '批量重试' });
+  if (allCan((capabilities, issue) => canConfirmIssue(issue, capabilities))) actions.push({ id: 'confirm', label: '批量标记已确认' });
+  if (allCan((capabilities, issue) => canIgnoreIssue(issue, capabilities))) actions.push({ id: 'ignore', label: '批量忽略' });
+  if (allCan((capabilities, issue) => canArchiveIssue(issue, capabilities))) actions.push({ id: 'archive', label: '批量归档' });
 
   return actions;
 }
@@ -596,18 +556,24 @@ function buildBatchActions(issues: IssueRecord[]) {
 function buildIssueMenuActions(issue: IssueRecord) {
   const actions: Array<
     | { kind: 'command'; id: IssueActionType; label: string }
-    | { kind: 'link'; id: 'open-task' | 'open-file' | 'open-storage'; label: string }
+    | { kind: 'link'; id: 'open-task' | 'open-file' | 'open-storage' | 'open-settings'; label: string }
   > = [];
 
   if (canRetryIssue(issue, issue.capabilities)) actions.push({ kind: 'command', id: 'retry', label: '重试' });
   if (canConfirmIssue(issue, issue.capabilities)) actions.push({ kind: 'command', id: 'confirm', label: '标记已确认' });
   if (canIgnoreIssue(issue, issue.capabilities)) actions.push({ kind: 'command', id: 'ignore', label: '忽略' });
   if (canArchiveIssue(issue, issue.capabilities)) actions.push({ kind: 'command', id: 'archive', label: '归档' });
+  if (shouldOpenSettingsForIssue(issue)) actions.push({ kind: 'link', id: 'open-settings', label: '打开设置页' });
   if (issue.capabilities.canOpenTaskCenter) actions.push({ kind: 'link', id: 'open-task', label: '打开任务中心' });
   if (issue.capabilities.canOpenFileCenter) actions.push({ kind: 'link', id: 'open-file', label: '打开文件中心' });
   if (issue.capabilities.canOpenStorageNodes) actions.push({ kind: 'link', id: 'open-storage', label: '打开存储节点' });
 
   return actions;
+}
+
+function shouldOpenSettingsForIssue(issue: IssueRecord) {
+  const kind = resolveIssueCloudKind(issue);
+  return kind === 'CloudDrive2 网关问题' || kind === 'aria2 下载器问题';
 }
 
 function resolvePrimaryAction(issue: IssueRecord) {
@@ -689,22 +655,11 @@ function matchContextFilter(issue: IssueRecord, contextFilter: IssueFilterContex
   if (!contextFilter) {
     return true;
   }
-
-  if (contextFilter.issueId && issue.id !== contextFilter.issueId) {
-    return false;
-  }
-  if (contextFilter.taskId && issue.taskId !== contextFilter.taskId && issue.source.taskId !== contextFilter.taskId) {
-    return false;
-  }
-  if (contextFilter.endpointId && issue.source.endpointId !== contextFilter.endpointId) {
-    return false;
-  }
-  if (contextFilter.fileNodeId && issue.source.fileNodeId !== contextFilter.fileNodeId) {
-    return false;
-  }
-  if (contextFilter.path && !(issue.source.path ?? '').toLowerCase().includes(contextFilter.path.toLowerCase())) {
-    return false;
-  }
+  if (contextFilter.issueId && issue.id !== contextFilter.issueId) return false;
+  if (contextFilter.taskId && issue.taskId !== contextFilter.taskId && issue.source.taskId !== contextFilter.taskId) return false;
+  if (contextFilter.endpointId && issue.source.endpointId !== contextFilter.endpointId) return false;
+  if (contextFilter.fileNodeId && issue.source.fileNodeId !== contextFilter.fileNodeId) return false;
+  if (contextFilter.path && !(issue.source.path ?? '').toLowerCase().includes(contextFilter.path.toLowerCase())) return false;
   return true;
 }
 
@@ -720,9 +675,7 @@ function compareIssues(
 
   if (sortValue === '严重级别') {
     const severityDelta = severityOrder(left.severity) - severityOrder(right.severity);
-    if (severityDelta !== 0) {
-      return severityDelta;
-    }
+    if (severityDelta !== 0) return severityDelta;
     return left.title.localeCompare(right.title, 'zh-CN');
   }
 
@@ -731,24 +684,16 @@ function compareIssues(
   }
 
   const natureDelta = natureOrder(left.nature) - natureOrder(right.nature);
-  if (natureDelta !== 0) {
-    return natureDelta;
-  }
+  if (natureDelta !== 0) return natureDelta;
 
   const statusDelta = statusOrder(left.status) - statusOrder(right.status);
-  if (statusDelta !== 0) {
-    return statusDelta;
-  }
+  if (statusDelta !== 0) return statusDelta;
 
   const severityDelta = severityOrder(left.severity) - severityOrder(right.severity);
-  if (severityDelta !== 0) {
-    return severityDelta;
-  }
+  if (severityDelta !== 0) return severityDelta;
 
   const updatedDelta = getTimestampRank(right.updatedAt) - getTimestampRank(left.updatedAt);
-  if (updatedDelta !== 0) {
-    return updatedDelta;
-  }
+  if (updatedDelta !== 0) return updatedDelta;
 
   return (issueOrder.get(left.id) ?? 0) - (issueOrder.get(right.id) ?? 0);
 }
@@ -776,20 +721,14 @@ function severityOrder(severity: Severity) {
 function getTimestampRank(value: string) {
   if (value === '刚刚') return 10_000_000_000;
 
-  const minuteMatch = value.match(/^(\d+)\s*分钟前$/);
-  if (minuteMatch) {
-    return 9_000_000_000 - Number(minuteMatch[1]);
-  }
+  const minuteMatch = value.match(/^(\\d+)\\s*分钟前/);
+  if (minuteMatch) return 9_000_000_000 - Number(minuteMatch[1]);
 
-  const todayMatch = value.match(/^今天\s+(\d{2}):(\d{2})$/);
-  if (todayMatch) {
-    return 8_000_000_000 + Number(todayMatch[1]) * 60 + Number(todayMatch[2]);
-  }
+  const todayMatch = value.match(/^今天\\s+(\\d{2}):(\\d{2})$/);
+  if (todayMatch) return 8_000_000_000 + Number(todayMatch[1]) * 60 + Number(todayMatch[2]);
 
-  const yesterdayMatch = value.match(/^昨天\s+(\d{2}):(\d{2})$/);
-  if (yesterdayMatch) {
-    return 7_000_000_000 + Number(yesterdayMatch[1]) * 60 + Number(yesterdayMatch[2]);
-  }
+  const yesterdayMatch = value.match(/^昨天\\s+(\\d{2}):(\\d{2})$/);
+  if (yesterdayMatch) return 7_000_000_000 + Number(yesterdayMatch[1]) * 60 + Number(yesterdayMatch[2]);
 
   const parsed = Date.parse(value.replace(' ', 'T'));
   return Number.isFinite(parsed) ? parsed : 0;
