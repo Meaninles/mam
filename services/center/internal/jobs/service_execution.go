@@ -157,6 +157,14 @@ func (s *Service) executeJob(ctx context.Context, job jobRow) {
 					_ = s.failJobWithError(ctx, job.ID, "resolve_item_interruption_failed", handleErr.Error())
 					return
 				}
+				interruptedItem, reloadErr := s.loadJobItemRecord(ctx, item.ID)
+				if reloadErr != nil {
+					_ = s.failJobWithError(ctx, job.ID, "reload_interrupted_item_failed", reloadErr.Error())
+					return
+				}
+				if interruptedItem.Status == ItemStatusQueued || interruptedItem.Status == ItemStatusPending || interruptedItem.Status == ItemStatusWaitingRetry {
+					return
+				}
 				continue
 			}
 			_ = s.finishItemFailed(ctx, job.ID, item.ID, jobAttemptID, execErr)
@@ -244,6 +252,8 @@ func (s *Service) handleItemExecutionInterruption(ctx context.Context, jobID str
 		if err := s.refreshJobAggregate(ctx, jobID, s.now().UTC()); err != nil {
 			return true, err
 		}
+		return true, nil
+	case ItemStatusQueued, ItemStatusPending, ItemStatusWaitingRetry:
 		return true, nil
 	default:
 		return false, nil
@@ -491,16 +501,24 @@ func (s *Service) finalizeJob(ctx context.Context, jobID string) error {
 	var failed int
 	var canceled int
 	var waitingRetry int
+	var activeItems int
 	if err := tx.QueryRow(ctx, `
 		SELECT
 			COUNT(*) FILTER (WHERE status = 'COMPLETED'),
 			COUNT(*) FILTER (WHERE status = 'FAILED'),
 			COUNT(*) FILTER (WHERE status = 'CANCELED'),
-			COUNT(*) FILTER (WHERE status = 'WAITING_RETRY')
+			COUNT(*) FILTER (WHERE status = 'WAITING_RETRY'),
+			COUNT(*) FILTER (WHERE status IN ('PENDING', 'QUEUED', 'RUNNING', 'PAUSED'))
 		FROM job_items
 		WHERE job_id = $1
-	`, jobID).Scan(&completed, &failed, &canceled, &waitingRetry); err != nil {
+	`, jobID).Scan(&completed, &failed, &canceled, &waitingRetry, &activeItems); err != nil {
 		return err
+	}
+	if activeItems > 0 {
+		if err := s.refreshJobAggregateTx(ctx, tx, jobID, now); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
 	}
 
 	status := StatusCompleted

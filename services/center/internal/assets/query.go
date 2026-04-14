@@ -85,6 +85,8 @@ type mountModel struct {
 	NodeType string
 }
 
+const riskTagMissingReplica = "未找到副本"
+
 func NewService(pool *pgxpool.Pool) *Service {
 	return &Service{
 		pool:             pool,
@@ -457,6 +459,10 @@ func (s *Service) buildDirectoryEntry(ctx context.Context, library libraryModel,
 	if err != nil {
 		return assetdto.EntryRecord{}, err
 	}
+	riskTags, err := s.loadDirectoryRiskTags(ctx, directory.ID)
+	if err != nil {
+		return assetdto.EntryRecord{}, err
+	}
 
 	return assetdto.EntryRecord{
 		ID:             directory.ID,
@@ -477,7 +483,7 @@ func (s *Service) buildDirectoryEntry(ctx context.Context, library libraryModel,
 		Rating:         0,
 		ColorLabel:     "无",
 		Badges:         []string{},
-		RiskTags:       []string{},
+		RiskTags:       riskTags,
 		Tags:           tags,
 		Endpoints:      endpoints,
 	}, nil
@@ -495,6 +501,10 @@ func (s *Service) buildAssetEntry(ctx context.Context, library libraryModel, ass
 		return assetdto.EntryRecord{}, err
 	}
 	lastTaskText, lastTaskTone, err := s.loadLatestTaskStatusForAsset(ctx, asset.ID)
+	if err != nil {
+		return assetdto.EntryRecord{}, err
+	}
+	riskTags, err := s.loadAssetRiskTags(ctx, asset.ID)
 	if err != nil {
 		return assetdto.EntryRecord{}, err
 	}
@@ -517,10 +527,47 @@ func (s *Service) buildAssetEntry(ctx context.Context, library libraryModel, ass
 		Rating:         int(asset.Rating),
 		ColorLabel:     mapColorLabel(asset.ColorLabel),
 		Badges:         []string{},
-		RiskTags:       []string{},
+		RiskTags:       riskTags,
 		Tags:           tags,
 		Endpoints:      endpoints,
 	}, nil
+}
+
+func (s *Service) loadDirectoryRiskTags(ctx context.Context, directoryID string) ([]string, error) {
+	var missingCount int
+	var presentCount int
+	if err := s.pool.QueryRow(ctx, `
+		SELECT
+			COUNT(*) FILTER (WHERE presence_state = 'MISSING') AS missing_count,
+			COUNT(*) FILTER (WHERE presence_state = 'PRESENT') AS present_count
+		FROM directory_presences
+		WHERE directory_id = $1
+	`, directoryID).Scan(&missingCount, &presentCount); err != nil {
+		return nil, err
+	}
+	if missingCount > 0 && presentCount == 0 {
+		return []string{riskTagMissingReplica}, nil
+	}
+	return []string{}, nil
+}
+
+func (s *Service) loadAssetRiskTags(ctx context.Context, assetID string) ([]string, error) {
+	var missingCount int
+	var availableCount int
+	if err := s.pool.QueryRow(ctx, `
+		SELECT
+			COUNT(*) FILTER (WHERE replica_state = 'MISSING') AS missing_count,
+			COUNT(*) FILTER (WHERE replica_state = 'AVAILABLE') AS available_count
+		FROM asset_replicas
+		WHERE asset_id = $1
+		  AND replica_state <> 'DELETED'
+	`, assetID).Scan(&missingCount, &availableCount); err != nil {
+		return nil, err
+	}
+	if missingCount > 0 && availableCount == 0 {
+		return []string{riskTagMissingReplica}, nil
+	}
+	return []string{}, nil
 }
 
 func (s *Service) countActiveAssets(ctx context.Context, libraryID string) (int, error) {

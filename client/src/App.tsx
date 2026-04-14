@@ -605,6 +605,7 @@ export default function App() {
   const issueRefreshInFlightRef = useRef(false);
   const issueRefreshDirtyRef = useRef(true);
   const taskBadgeRefreshTimeoutRef = useRef<number | null>(null);
+  const fileCenterRefreshTimeoutRef = useRef<number | null>(null);
   const lastIssueSignatureRef = useRef('');
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [runtimeLightState, setRuntimeLightState] = useState<RuntimeLightState>(null);
@@ -794,6 +795,17 @@ export default function App() {
       'JOB_CANCELED',
       'JOB_ITEM_FAILED',
       'JOB_ITEM_COMPLETED',
+      'JOB_ITEM_CANCELED',
+    ].includes(event.eventType);
+
+  const isFileCenterRelevantJobEvent = (event: JobStreamEvent) =>
+    [
+      'JOB_COMPLETED',
+      'JOB_FAILED',
+      'JOB_PARTIAL_SUCCESS',
+      'JOB_CANCELED',
+      'JOB_ITEM_COMPLETED',
+      'JOB_ITEM_FAILED',
       'JOB_ITEM_CANCELED',
     ].includes(event.eventType);
 
@@ -1617,12 +1629,57 @@ export default function App() {
         }
       });
     });
-    
+
     return () => {
       disposed = true;
       unsubscribe();
     };
   }, [fileDetail?.id]);
+
+  useEffect(() => {
+    if (activeView !== 'file-center' || !activeLibraryId) {
+      if (fileCenterRefreshTimeoutRef.current !== null) {
+        window.clearTimeout(fileCenterRefreshTimeoutRef.current);
+        fileCenterRefreshTimeoutRef.current = null;
+      }
+      return;
+    }
+
+    let disposed = false;
+    const detailId = fileDetail?.id;
+    const unsubscribe = jobsApi.subscribe((event: JobStreamEvent) => {
+      if (!isFileCenterRelevantJobEvent(event)) {
+        return;
+      }
+
+      if (fileCenterRefreshTimeoutRef.current !== null) {
+        window.clearTimeout(fileCenterRefreshTimeoutRef.current);
+      }
+      fileCenterRefreshTimeoutRef.current = window.setTimeout(() => {
+        fileCenterRefreshTimeoutRef.current = null;
+        setFileCenterVersion((current) => current + 1);
+
+        if (!detailId) {
+          return;
+        }
+
+        void fileCenterApi.loadEntryDetail(detailId).then((detail) => {
+          if (!disposed) {
+            setFileDetail((current) => (current?.id === detailId ? detail : current));
+          }
+        });
+      }, 240);
+    });
+
+    return () => {
+      disposed = true;
+      unsubscribe();
+      if (fileCenterRefreshTimeoutRef.current !== null) {
+        window.clearTimeout(fileCenterRefreshTimeoutRef.current);
+        fileCenterRefreshTimeoutRef.current = null;
+      }
+    };
+  }, [activeLibraryId, activeView, fileDetail?.id]);
   const commitState = (updater: (current: PersistedState) => PersistedState, nextFeedback?: FeedbackState) => {
     setPersisted((current) => {
       return updater(current);

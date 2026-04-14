@@ -633,6 +633,13 @@ export function FileCenterPage(props: {
                           <div className="storage-node-cell">
                             <div className="storage-node-title">
                               <strong>{item.name}</strong>
+                              {hasMissingReplicaRisk(item) ? (
+                                <span
+                                  aria-label="异常：未找到副本"
+                                  className="file-center-missing-indicator has-tooltip"
+                                  data-tooltip="异常：未找到副本"
+                                />
+                              ) : null}
                             </div>
                             {item.tags.length > 0 ? (
                               <div className="endpoint-row file-center-tag-row">
@@ -914,6 +921,10 @@ function resolveActionTooltip(
   fallback?: string,
 ) {
   return availability.reason ?? availability.execution?.summary ?? fallback ?? '';
+}
+
+function hasMissingReplicaRisk(item: Pick<FileCenterEntry, 'riskTags'>) {
+  return item.riskTags.includes('未找到副本');
 }
 
 function EndpointGlyph({ endpoint }: { endpoint: FileCenterEndpoint }) {

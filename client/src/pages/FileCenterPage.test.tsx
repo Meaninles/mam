@@ -32,6 +32,27 @@ const sampleEntry: FileCenterEntry = {
   ],
 };
 
+const missingReplicaFileEntry: FileCenterEntry = {
+  ...sampleEntry,
+  id: 'missing-file',
+  name: 'hell.txt',
+  type: 'file',
+  displayType: '文本文件',
+  fileKind: '文档',
+  riskTags: ['未找到副本'],
+};
+
+const missingReplicaFolderEntry: FileCenterEntry = {
+  ...sampleEntry,
+  id: 'missing-folder',
+  name: 'hell',
+  type: 'folder',
+  displayType: '文件夹',
+  fileKind: '文件夹',
+  size: '0 项',
+  riskTags: ['未找到副本'],
+};
+
 describe('FileCenterPage', () => {
   it('统一使用三种存储状态，并将不可同步端点灰化禁用', () => {
     render(
@@ -98,6 +119,70 @@ describe('FileCenterPage', () => {
     expect(screen.getByRole('button', { name: '本地NVMe 已同步' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '影像NAS 同步中' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '115 未同步' })).not.toBeDisabled();
+  });
+
+  it('文件和文件夹在未找到副本时会在名称旁显示红灯提示', () => {
+    render(
+      <FileCenterPage
+        breadcrumbs={[{ id: null, label: '商业摄影资产库' }]}
+        batchDeleteEndpointActions={[]}
+        batchSyncEndpointActions={[]}
+        canGoBack={false}
+        canGoForward={false}
+        currentEntries={[missingReplicaFolderEntry, missingReplicaFileEntry]}
+        currentPage={1}
+        currentPathChildren={2}
+        fileTypeFilter="全部"
+        loading={false}
+        pageCount={1}
+        pageSize={10}
+        partialSyncEndpointNames={[]}
+        refreshing={false}
+        searchText=""
+        selectedIds={[]}
+        sortDirection="desc"
+        sortValue="修改时间"
+        statusFilterEndpointNames={['本地NVMe', '影像NAS', '115']}
+        statusFilter="全部"
+        theme="light"
+        total={2}
+        onChangeSort={vi.fn()}
+        onClearSelection={vi.fn()}
+        onCreateFolder={vi.fn()}
+        onDeleteAssetDirect={vi.fn()}
+        onDeleteSelected={vi.fn()}
+        onGoBack={vi.fn()}
+        onGoForward={vi.fn()}
+        onNavigateBreadcrumb={vi.fn()}
+        onOpenItem={vi.fn()}
+        onOpenBatchAnnotationEditor={vi.fn()}
+        onOpenBatchTagEditor={vi.fn()}
+        onOpenItemDetail={vi.fn()}
+        onOpenTagEditor={vi.fn()}
+        onRefreshIndex={vi.fn()}
+        onUploadFiles={vi.fn()}
+        onUploadFolder={vi.fn()}
+        onRequestBatchDeleteEndpoint={vi.fn()}
+        onRequestBatchSyncEndpoint={vi.fn()}
+        onRequestDeleteEndpoint={vi.fn()}
+        onRequestSyncEndpoint={vi.fn()}
+        onSetCurrentPage={vi.fn()}
+        onSetFileTypeFilter={vi.fn()}
+        onSetPageSize={vi.fn()}
+        onSetSearchText={vi.fn()}
+        onSetStatusFilter={vi.fn()}
+        onClearPartialSyncEndpoints={vi.fn()}
+        onTogglePartialSyncEndpoint={vi.fn()}
+        onToggleSortDirection={vi.fn()}
+        onToggleSelect={vi.fn()}
+        onToggleSelectVisible={vi.fn()}
+      />,
+    );
+
+    const alerts = screen.getAllByLabelText('异常：未找到副本');
+    expect(alerts).toHaveLength(2);
+    expect(alerts[0]).toHaveAttribute('data-tooltip', '异常：未找到副本');
+    expect(alerts[1]).toHaveAttribute('data-tooltip', '异常：未找到副本');
   });
 
   it('更多操作会根据当前端点状态决定同步和删除是否可点', async () => {

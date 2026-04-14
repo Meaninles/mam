@@ -85,6 +85,94 @@ func TestServiceExecutesCreatedJob(t *testing.T) {
 	}
 }
 
+func TestCreateUploadJobUsesImportIntentForFileCenterUploads(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	defer pool.Close()
+	resetSchema(t, ctx, pool)
+
+	migrator := db.NewMigrator()
+	if _, err := migrator.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	service := jobs.NewService(pool)
+	now := time.Now().UTC()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO libraries (id, code, name, root_label, status, created_at, updated_at)
+		VALUES ('photo', 'photo', '商业摄影资产库', '/', 'ACTIVE', $1, $1)
+	`, now); err != nil {
+		t.Fatalf("insert library: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO storage_nodes (id, code, name, node_type, address, access_mode, enabled, created_at, updated_at)
+		VALUES ('cloud-node-1', 'cloud-node-1', '云节点', 'CLOUD', '/remote-root', 'CD2', true, $1, $1)
+	`, now); err != nil {
+		t.Fatalf("insert storage node: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO mounts (
+			id, code, library_id, library_name, storage_node_id, name, mount_source_type, mount_mode,
+			source_path, relative_root_path, heartbeat_policy, scan_policy, enabled, sort_order, created_at, updated_at
+		) VALUES (
+			'mount-cloud-1', 'mount-cloud-1', 'photo', '商业摄影资产库', 'cloud-node-1', '云挂载', 'CLOUD_FOLDER', 'READ_WRITE',
+			'/remote-root', '/', 'NEVER', 'MANUAL', true, 0, $1, $1
+		)
+	`, now); err != nil {
+		t.Fatalf("insert mount: %v", err)
+	}
+	plan := assets.UploadPlan{
+		LibraryID:      "photo",
+		LibraryName:    "商业摄影资产库",
+		EndpointName:   "云挂载",
+		TargetMountID:  "mount-cloud-1",
+		TargetNodeType: "CLOUD",
+		RouteType:      "UPLOAD",
+		RequestedCount: 1,
+		StagingRoot:    "C:\\temp\\mare-upload",
+		Items: []assets.UploadPlanItem{
+			{
+				ItemKey:             "/nested/cover.jpg",
+				Title:               "cover.jpg",
+				LogicalPath:         "/nested/cover.jpg",
+				SourcePath:          "C:\\temp\\mare-upload\\nested\\cover.jpg",
+				TargetPath:          "/remote-root/nested/cover.jpg",
+				TargetMountID:       "mount-cloud-1",
+				TargetStorageNodeID: "cloud-node-1",
+				SizeBytes:           11,
+			},
+		},
+	}
+
+	result, err := service.CreateUploadJob(ctx, plan)
+	if err != nil {
+		t.Fatalf("create upload job: %v", err)
+	}
+
+	detail, err := service.LoadJobDetail(ctx, result.JobID)
+	if err != nil {
+		t.Fatalf("load job detail: %v", err)
+	}
+	if detail.Job.JobIntent != jobs.JobIntentImport {
+		t.Fatalf("expected import job intent, got %#v", detail.Job)
+	}
+	if detail.Job.SourceDomain != jobs.SourceDomainFileCenter {
+		t.Fatalf("expected file center source domain, got %#v", detail.Job)
+	}
+	if detail.Job.RouteType == nil || *detail.Job.RouteType != "UPLOAD" {
+		t.Fatalf("expected upload route type, got %#v", detail.Job.RouteType)
+	}
+	if len(detail.Items) != 1 || detail.Items[0].ItemType != jobs.ItemTypeAssetReplicaTransfer {
+		t.Fatalf("unexpected job items: %#v", detail.Items)
+	}
+}
+
 func TestServicePauseAndResumeJob(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in short mode")
@@ -157,6 +245,72 @@ func TestServicePauseAndResumeJob(t *testing.T) {
 	final := waitForJobStatus(t, ctx, service, result.JobID, jobs.StatusCompleted)
 	if final.Job.SuccessItems != 2 {
 		t.Fatalf("expected resumed job to finish, got %+v", final.Job)
+	}
+}
+
+func TestServiceRapidPauseThenResumeDoesNotMarkInterruptedItemFailed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	defer pool.Close()
+	resetSchema(t, ctx, pool)
+
+	migrator := db.NewMigrator()
+	if _, err := migrator.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	service := jobs.NewService(pool)
+	resumeIssued := make(chan struct{})
+	attempts := 0
+	service.RegisterExecutor(jobs.JobIntentScanDirectory, func(ctx context.Context, execution jobs.ExecutionContext) error {
+		attempts++
+		if attempts == 1 {
+			<-ctx.Done()
+			<-resumeIssued
+			return ctx.Err()
+		}
+		return nil
+	})
+	service.Start(ctx)
+
+	result, err := service.CreateJob(ctx, jobs.CreateJobInput{
+		JobFamily:     jobs.JobFamilyMaintenance,
+		JobIntent:     jobs.JobIntentScanDirectory,
+		Title:         "扫描目录：/",
+		Summary:       "快速暂停恢复测试",
+		SourceDomain:  jobs.SourceDomainFileCenter,
+		Priority:      jobs.PriorityNormal,
+		CreatedByType: jobs.CreatedByUser,
+		Items: []jobs.CreateItemInput{
+			{ItemKey: "mount:first", ItemType: jobs.ItemTypeDirectoryScan, Title: "扫描 first", Summary: "扫描 first"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	waitForItemStatus(t, ctx, service, result.JobID, "mount:first", jobs.ItemStatusRunning)
+	if _, err := service.PauseJob(ctx, result.JobID); err != nil {
+		t.Fatalf("pause job: %v", err)
+	}
+	if _, err := service.ResumeJob(ctx, result.JobID); err != nil {
+		t.Fatalf("resume job: %v", err)
+	}
+	close(resumeIssued)
+
+	final := waitForJobStatus(t, ctx, service, result.JobID, jobs.StatusCompleted)
+	assertItemStatus(t, final.Items, "mount:first", jobs.ItemStatusCompleted)
+	if final.Job.FailedItems != 0 {
+		t.Fatalf("expected no failed items after rapid resume, got %+v", final.Job)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected interrupted item to be retried once, got %d attempts", attempts)
 	}
 }
 
@@ -1510,9 +1664,11 @@ func waitForItemStatus(t *testing.T, ctx context.Context, service *jobs.Service,
 	t.Helper()
 
 	deadline := time.Now().Add(10 * time.Second)
+	var lastDetail jobdto.Detail
 	for time.Now().Before(deadline) {
 		detail, err := service.LoadJobDetail(ctx, jobID)
 		if err == nil {
+			lastDetail = detail
 			for _, item := range detail.Items {
 				if item.ItemKey == itemKey && item.Status == expected {
 					return detail
@@ -1521,7 +1677,7 @@ func waitForItemStatus(t *testing.T, ctx context.Context, service *jobs.Service,
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatalf("expected item %s status %s", itemKey, expected)
+	t.Fatalf("expected item %s status %s, last detail=%+v", itemKey, expected, lastDetail)
 	return jobdto.Detail{}
 }
 

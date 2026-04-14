@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -318,6 +319,13 @@ func (fakeJobService) CreateDirectoryScanJob(context.Context, assets.DirectorySc
 	return fakeCreateJobResponse("目录扫描任务已创建"), nil
 }
 
+func (fakeJobService) CreateUploadJob(context.Context, assets.UploadPlan) (jobdto.CreateResponse, error) {
+	response := fakeCreateJobResponse("已创建上传作业")
+	response.Job.JobFamily = jobs.JobFamilyTransfer
+	response.Job.JobIntent = jobs.JobIntentImport
+	return response, nil
+}
+
 func (fakeJobService) CreateReplicateJob(context.Context, assets.ReplicatePlan) (jobdto.CreateResponse, error) {
 	response := fakeCreateJobResponse("已创建同步作业")
 	response.Job.JobFamily = jobs.JobFamilyTransfer
@@ -600,10 +608,28 @@ func (fakeAssetService) CreateDirectory(_ context.Context, libraryID string, req
 	}, nil
 }
 
-func (fakeAssetService) UploadSelection(_ context.Context, _ string, request assetdto.UploadSelectionRequest) (assetdto.UploadSelectionResponse, error) {
-	return assetdto.UploadSelectionResponse{
-		Message:      "已上传文件",
-		CreatedCount: len(request.Files),
+func (fakeAssetService) PrepareUploadPlan(_ context.Context, libraryID string, request assetdto.UploadSelectionRequest) (assets.UploadPlan, error) {
+	return assets.UploadPlan{
+		LibraryID:      libraryID,
+		LibraryName:    "商业摄影资产库",
+		EndpointName:   "本地挂载",
+		TargetMountID:  "mount-target",
+		TargetNodeType: "LOCAL",
+		RouteType:      "COPY",
+		RequestedCount: len(request.Files),
+		StagingRoot:    "C:\\temp\\mare-upload",
+		Items: []assets.UploadPlanItem{
+			{
+				ItemKey:             "/cover.jpg",
+				Title:               "cover.jpg",
+				LogicalPath:         "/cover.jpg",
+				SourcePath:          "C:\\temp\\mare-upload\\cover.jpg",
+				TargetPath:          "D:\\Assets\\cover.jpg",
+				TargetMountID:       "mount-target",
+				TargetStorageNodeID: "storage-target",
+				SizeBytes:           1,
+			},
+		},
 	}, nil
 }
 
@@ -1445,6 +1471,51 @@ func TestDeleteEntryRouteReturnsSuccess(t *testing.T) {
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+}
+
+func TestUploadSelectionRouteCreatesImportJob(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(Dependencies{
+		Runtime:      fakeRuntimeService{},
+		Agents:       fakeAgentService{},
+		LocalNodes:   fakeLocalNodeService{},
+		NasNodes:     fakeNASNodeService{},
+		LocalFolders: fakeLocalFolderService{},
+		Assets:       fakeAssetService{},
+		Jobs:         fakeJobService{},
+	})
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("mode", "files"); err != nil {
+		t.Fatalf("write mode field: %v", err)
+	}
+	if err := writer.WriteField("manifest", `[{"field":"file0","name":"cover.jpg","relativePath":"cover.jpg"}]`); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	fileWriter, err := writer.CreateFormFile("file0", "cover.jpg")
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := fileWriter.Write([]byte("x")); err != nil {
+		t.Fatalf("write form file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/libraries/photo/uploads", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", recorder.Code)
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte(`"jobId":"job-1"`)) {
+		t.Fatalf("expected upload response to include job id, got %s", recorder.Body.String())
 	}
 }
 

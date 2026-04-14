@@ -2,6 +2,7 @@ package assets
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	apperrors "mare/services/center/internal/errors"
+	"mare/services/center/internal/integration"
 	assetdto "mare/shared/contracts/dto/asset"
 )
 
@@ -264,29 +266,43 @@ func loadAssetReplicaDeletions(ctx context.Context, pool *pgxpool.Pool, assetID 
 
 type writableMount struct {
 	ID               string
+	StorageNodeID    string
+	Name             string
 	SourcePath       string
 	RelativeRootPath string
+	MountMode        string
 	NodeType         string
+	ProviderVendor   string
+	ProviderPayload  integration.CloudProviderPayload
 	Username         string
 	SecretCiphertext string
+	SortOrder        int
 }
 
 func (s *Service) loadWritableMounts(ctx context.Context, libraryID string) ([]writableMount, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT
 			m.id,
+			m.storage_node_id,
+			m.name,
 			m.source_path,
 			m.relative_root_path,
+			m.mount_mode,
 			sn.node_type,
+			COALESCE(cp.provider_vendor, COALESCE(sn.vendor, '')),
+			COALESCE(cp.provider_payload, '{}'::jsonb),
 			COALESCE(snc.username, ''),
-			COALESCE(snc.secret_ciphertext, '')
+			COALESCE(snc.secret_ciphertext, ''),
+			m.sort_order
 		FROM mounts m
 		INNER JOIN storage_nodes sn ON sn.id = m.storage_node_id
+		LEFT JOIN cloud_node_profiles cp ON cp.storage_node_id = sn.id
 		LEFT JOIN storage_node_credentials snc ON snc.storage_node_id = sn.id
 		WHERE m.library_id = $1
 		  AND m.deleted_at IS NULL
 		  AND m.enabled = TRUE
 		  AND m.mount_mode = 'READ_WRITE'
+		ORDER BY m.sort_order ASC, m.created_at ASC, m.id ASC
 	`, libraryID)
 	if err != nil {
 		return nil, err
@@ -296,7 +312,24 @@ func (s *Service) loadWritableMounts(ctx context.Context, libraryID string) ([]w
 	items := make([]writableMount, 0)
 	for rows.Next() {
 		var row writableMount
-		if err := rows.Scan(&row.ID, &row.SourcePath, &row.RelativeRootPath, &row.NodeType, &row.Username, &row.SecretCiphertext); err != nil {
+		var providerPayload []byte
+		if err := rows.Scan(
+			&row.ID,
+			&row.StorageNodeID,
+			&row.Name,
+			&row.SourcePath,
+			&row.RelativeRootPath,
+			&row.MountMode,
+			&row.NodeType,
+			&row.ProviderVendor,
+			&providerPayload,
+			&row.Username,
+			&row.SecretCiphertext,
+			&row.SortOrder,
+		); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(providerPayload, &row.ProviderPayload); err != nil {
 			return nil, err
 		}
 		items = append(items, row)

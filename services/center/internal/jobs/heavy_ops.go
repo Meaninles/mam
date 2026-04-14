@@ -69,6 +69,56 @@ func (s *Service) CreateReplicateJob(ctx context.Context, plan assets.ReplicateP
 	})
 }
 
+func (s *Service) CreateUploadJob(ctx context.Context, plan assets.UploadPlan) (jobdto.CreateResponse, error) {
+	libraryID := plan.LibraryID
+	routeType := plan.RouteType
+
+	items := make([]CreateItemInput, 0, len(plan.Items))
+	for _, item := range plan.Items {
+		targetMountID := item.TargetMountID
+		targetStorageNodeID := item.TargetStorageNodeID
+		items = append(items, CreateItemInput{
+			ItemKey:    item.LogicalPath,
+			ItemType:   ItemTypeAssetReplicaTransfer,
+			RouteType:  ptr(itemRouteType(routeType)),
+			Title:      item.Title,
+			Summary:    fmt.Sprintf("上传到 %s", plan.EndpointName),
+			SourcePath: &item.SourcePath,
+			TargetPath: &item.TargetPath,
+			Links: []CreateObjectLinkInput{
+				{LinkRole: LinkRoleTargetMount, ObjectType: ObjectTypeMount, MountID: &targetMountID},
+				{LinkRole: LinkRoleTargetStorageNode, ObjectType: ObjectTypeStorageNode, StorageNodeID: &targetStorageNodeID},
+			},
+		})
+	}
+
+	return s.CreateJob(ctx, CreateJobInput{
+		LibraryID:     &libraryID,
+		JobFamily:     JobFamilyTransfer,
+		JobIntent:     JobIntentImport,
+		RouteType:     ptr(itemRouteType(routeType)),
+		Title:         fmt.Sprintf("文件中心上传到：%s", plan.EndpointName),
+		Summary:       fmt.Sprintf("已纳入 %d 项上传任务", len(items)),
+		SourceDomain:  SourceDomainFileCenter,
+		Priority:      PriorityNormal,
+		CreatedByType: CreatedByUser,
+		SourceSnapshot: map[string]any{
+			"kind":           "FILE_CENTER_UPLOAD",
+			"libraryId":      plan.LibraryID,
+			"libraryName":    plan.LibraryName,
+			"endpointName":   plan.EndpointName,
+			"targetMountId":  plan.TargetMountID,
+			"targetNodeType": plan.TargetNodeType,
+			"stagingRoot":    plan.StagingRoot,
+			"plannedCount":   len(items),
+		},
+		Items: items,
+		Links: []CreateObjectLinkInput{
+			{LinkRole: LinkRoleTargetMount, ObjectType: ObjectTypeMount, MountID: &plan.TargetMountID},
+		},
+	})
+}
+
 func deriveReplicateJobRouteType(plan assets.ReplicatePlan) string {
 	if len(plan.Items) == 0 {
 		return "COPY"
@@ -81,6 +131,13 @@ func deriveReplicateJobRouteType(plan assets.ReplicatePlan) string {
 	}
 	if current == "UPLOAD" || current == "DOWNLOAD" {
 		return current
+	}
+	return "COPY"
+}
+
+func itemRouteType(routeType string) string {
+	if routeType == "UPLOAD" || routeType == "DOWNLOAD" {
+		return routeType
 	}
 	return "COPY"
 }

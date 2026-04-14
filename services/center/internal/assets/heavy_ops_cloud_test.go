@@ -2,6 +2,7 @@ package assets
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -68,9 +69,15 @@ type fakeDownloadEngine struct {
 	canceledTaskIDs []string
 }
 
+type testUploadSource struct{}
+type fakeSizedUploadSource struct{ size int64 }
+
 type fakeCloudDriver struct {
 	pausedTaskIDs   []string
 	canceledTaskIDs []string
+	startUploadCalls int
+	waitUploadErr error
+	listEntries []integration.CloudFileEntry
 }
 
 func (f *fakeCloudDriver) Vendor() string { return "115" }
@@ -87,12 +94,16 @@ func (f *fakeCloudDriver) ConsumeQRCodeSession(context.Context, string) (integra
 	return integration.ProviderAuthResult{}, nil
 }
 func (f *fakeCloudDriver) EnsureRemoteRoot(context.Context, integration.CloudProviderPayload, string) error { return nil }
+func (f *fakeCloudDriver) ListRemoteEntries(context.Context, integration.CloudProviderPayload, string) ([]integration.CloudFileEntry, error) {
+	return append([]integration.CloudFileEntry(nil), f.listEntries...), nil
+}
 func (f *fakeCloudDriver) StartUpload(context.Context, integration.CloudProviderPayload, string, string, integration.UploadSource) (string, string, error) {
+	f.startUploadCalls++
 	return "", "", nil
 }
 func (f *fakeCloudDriver) AttachUpload(context.Context, string, string, integration.UploadSource) error { return nil }
 func (f *fakeCloudDriver) WaitUpload(context.Context, string, string, func(integration.TransferProgress)) error {
-	return nil
+	return f.waitUploadErr
 }
 func (f *fakeCloudDriver) ResetUploadSession(context.Context) error { return nil }
 func (f *fakeCloudDriver) PauseUpload(_ context.Context, externalTaskID string) error {
@@ -108,6 +119,17 @@ func (f *fakeCloudDriver) ResolveDownloadSource(context.Context, integration.Clo
 	return integration.DownloadSource{}, nil
 }
 func (f *fakeCloudDriver) DeleteFile(context.Context, integration.CloudProviderPayload, string, string) error { return nil }
+
+func (testUploadSource) Size() int64 { return 0 }
+func (testUploadSource) ReadChunk(context.Context, int64, int64) ([]byte, bool, error) {
+	return nil, true, nil
+}
+func (testUploadSource) Close() error { return nil }
+func (fakeSizedUploadSource) Close() error { return nil }
+func (s fakeSizedUploadSource) Size() int64 { return s.size }
+func (s fakeSizedUploadSource) ReadChunk(context.Context, int64, int64) ([]byte, bool, error) {
+	return nil, true, nil
+}
 
 func (f *fakeDownloadEngine) Name() string          { return "ARIA2" }
 func (f *fakeDownloadEngine) Start(context.Context) {}
@@ -240,6 +262,85 @@ func TestHandleCanceledCloudUploadLeavesRunningTaskForRecreate(t *testing.T) {
 	}
 	if len(runtime.updateCalls) != 0 {
 		t.Fatalf("did not expect external task updates, got %+v", runtime.updateCalls)
+	}
+}
+
+func TestWaitForCD2UploadWithRecoveryDoesNotRestartWhenContextAlreadyCanceled(t *testing.T) {
+	driver := &fakeCloudDriver{waitUploadErr: context.Canceled}
+	service := &Service{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := service.waitForCD2UploadWithRecovery(
+		ctx,
+		"job-1",
+		"item-1",
+		driver,
+		uploadSourceDescriptor{ReferenceID: "source-1"},
+		testUploadSource{},
+		operationMount{SourcePath: "/remote-root", ProviderVendor: "115"},
+		"upload-1",
+		"/remote-root/file.bin",
+		nil,
+	)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled, got %v", err)
+	}
+	if driver.startUploadCalls != 0 {
+		t.Fatalf("did not expect canceled execution to recreate upload task, got %d start calls", driver.startUploadCalls)
+	}
+}
+
+func TestWaitForCD2UploadWithRecoveryTreatsConfirmedRemoteFileAsSuccess(t *testing.T) {
+	driver := &fakeCloudDriver{
+		waitUploadErr: fmt.Errorf("CloudDrive2 上传完成状态长时间未得到确认，请稍后重试"),
+		listEntries: []integration.CloudFileEntry{
+			{Name: "file.bin", SizeBytes: 1024},
+		},
+	}
+	service := &Service{}
+	completed := false
+
+	path, err := service.waitForCD2UploadWithRecovery(
+		context.Background(),
+		"job-1",
+		"item-1",
+		driver,
+		uploadSourceDescriptor{ReferenceID: "source-1"},
+		fakeSizedUploadSource{size: 1024},
+		operationMount{SourcePath: "/remote-root", ProviderVendor: "115"},
+		"upload-1",
+		"/remote-root/folder/file.bin",
+		func(string) error {
+			completed = true
+			return nil
+		},
+	)
+
+	if err != nil {
+		t.Fatalf("expected timeout to be converted into success when remote file exists, got %v", err)
+	}
+	if !completed {
+		t.Fatalf("expected completion callback to run")
+	}
+	if path != "/remote-root/folder/file.bin" {
+		t.Fatalf("unexpected completed path: %s", path)
+	}
+	if driver.startUploadCalls != 0 {
+		t.Fatalf("did not expect remote confirmed upload to recreate task")
+	}
+}
+
+func TestRelativePathFromCloudDestinationStripsCloudRootAndRemoteRoot(t *testing.T) {
+	got := relativePathFromCloudDestination(
+		integration.CloudProviderPayload{CloudPath: "/115open"},
+		"新网盘测试/测试库2-临时-只有网盘",
+		"/115open/新网盘测试/测试库2-临时-只有网盘/uia-test/IMG20251228092802.jpg",
+	)
+
+	if got != "uia-test/IMG20251228092802.jpg" {
+		t.Fatalf("expected relative cloud path without duplicated roots, got %q", got)
 	}
 }
 

@@ -553,6 +553,16 @@ func TestScanDirectoryMarksMissingEntriesWithoutConnBusy(t *testing.T) {
 		if item.Endpoints[0].State != "未同步" {
 			t.Fatalf("expected missing entry to be marked unsynced, got %#v", item.Endpoints)
 		}
+		foundRiskTag := false
+		for _, tag := range item.RiskTags {
+			if tag == "未找到副本" {
+				foundRiskTag = true
+				break
+			}
+		}
+		if !foundRiskTag {
+			t.Fatalf("expected missing entry to carry 未找到副本 risk tag, got %#v", item.RiskTags)
+		}
 		foundMissing = true
 	}
 	if !foundMissing {

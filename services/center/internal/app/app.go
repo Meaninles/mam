@@ -159,7 +159,33 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 		}
 		return assetService.ExecuteReplicaVerification(ctx, *replicaID)
 	})
-	jobService.RegisterExecutor(jobs.JobIntentImport, importService.ExecuteImportJobItem)
+	jobService.RegisterExecutor(jobs.JobIntentImport, func(ctx context.Context, execution jobs.ExecutionContext) error {
+		if execution.Job.SourceDomain == jobs.SourceDomainFileCenter {
+			sourcePath := ""
+			if execution.Item.SourcePath != nil {
+				sourcePath = *execution.Item.SourcePath
+			}
+			var targetPath *string
+			if execution.Item.TargetPath != nil {
+				targetPath = execution.Item.TargetPath
+			}
+			targetMountID := findTargetMountLinkID(execution.ItemLinks)
+			if execution.Job.LibraryID == nil || targetMountID == nil {
+				return errors.New("文件中心上传作业缺少资产库或目标挂载关联")
+			}
+			return assetService.ExecuteFileCenterUploadJobItem(
+				ctx,
+				execution.Job.ID,
+				execution.Item.ID,
+				*execution.Job.LibraryID,
+				execution.Item.ItemKey,
+				sourcePath,
+				targetPath,
+				*targetMountID,
+			)
+		}
+		return importService.ExecuteImportJobItem(ctx, execution)
+	})
 	runtimeService := runtime.NewService(
 		cfg.ServiceName,
 		cfg.ServiceVersion,

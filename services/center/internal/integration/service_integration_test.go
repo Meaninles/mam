@@ -50,6 +50,10 @@ func (f fakeGatewayDriver) EnsureRemoteRoot(context.Context, CloudProviderPayloa
 	return nil
 }
 
+func (f fakeGatewayDriver) ListRemoteEntries(context.Context, CloudProviderPayload, string) ([]CloudFileEntry, error) {
+	return nil, nil
+}
+
 func (f fakeGatewayDriver) StartUpload(context.Context, CloudProviderPayload, string, string, UploadSource) (string, string, error) {
 	return "", "", nil
 }

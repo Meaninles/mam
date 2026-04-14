@@ -80,7 +80,7 @@ type AssetService interface {
 	ListLibraries(ctx context.Context) ([]assetdto.LibraryRecord, error)
 	CreateLibrary(ctx context.Context, request assetdto.CreateLibraryRequest) (assetdto.CreateLibraryResponse, error)
 	CreateDirectory(ctx context.Context, libraryID string, request assetdto.CreateDirectoryRequest) (assetdto.CreateDirectoryResponse, error)
-	UploadSelection(ctx context.Context, libraryID string, request assetdto.UploadSelectionRequest) (assetdto.UploadSelectionResponse, error)
+	PrepareUploadPlan(ctx context.Context, libraryID string, request assetdto.UploadSelectionRequest) (assets.UploadPlan, error)
 	UpdateAnnotations(ctx context.Context, id string, request assetdto.UpdateAnnotationsRequest) (assetdto.UpdateAnnotationsResponse, error)
 	DeleteEntry(ctx context.Context, id string) (assetdto.DeleteEntryResponse, error)
 	PrepareReplicatePlan(ctx context.Context, request assetdto.CreateReplicateJobRequest) (assets.ReplicatePlan, error)
@@ -108,6 +108,7 @@ type TagService interface {
 type JobService interface {
 	CreateMountScanJob(ctx context.Context, plan storage.MountScanPlan) (jobdto.CreateResponse, error)
 	CreateDirectoryScanJob(ctx context.Context, plan assets.DirectoryScanPlan) (jobdto.CreateResponse, error)
+	CreateUploadJob(ctx context.Context, plan assets.UploadPlan) (jobdto.CreateResponse, error)
 	CreateReplicateJob(ctx context.Context, plan assets.ReplicatePlan) (jobdto.CreateResponse, error)
 	CreateDeleteReplicaJob(ctx context.Context, plan assets.DeleteReplicaPlan) (jobdto.CreateResponse, error)
 	CreateDeleteAssetJob(ctx context.Context, plan assets.DeleteAssetPlan) (jobdto.CreateResponse, error)
@@ -549,12 +550,25 @@ func NewRouter(deps Dependencies) http.Handler {
 			return
 		}
 
-		result, err := deps.Assets.UploadSelection(r.Context(), r.PathValue("libraryId"), payload)
+		plan, err := deps.Assets.PrepareUploadPlan(r.Context(), r.PathValue("libraryId"), payload)
 		if err != nil {
 			writeError(deps.Logger, w, err)
 			return
 		}
-		response.WriteSuccess(w, http.StatusOK, result)
+		jobResult, err := deps.Jobs.CreateUploadJob(r.Context(), plan)
+		if err != nil {
+			writeError(deps.Logger, w, err)
+			return
+		}
+		message := "已提交上传作业，任务已加入队列"
+		if strings.TrimSpace(jobResult.Message) != "" {
+			message = jobResult.Message
+		}
+		response.WriteSuccess(w, http.StatusAccepted, assetdto.UploadSelectionResponse{
+			Message:      message,
+			CreatedCount: len(plan.Items),
+			JobID:        jobResult.JobID,
+		})
 	})
 
 	mux.HandleFunc("GET /api/libraries/{libraryId}/browse", func(w http.ResponseWriter, r *http.Request) {

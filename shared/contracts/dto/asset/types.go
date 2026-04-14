@@ -129,6 +129,7 @@ type UploadSelectionRequest struct {
 type UploadSelectionResponse struct {
 	Message      string `json:"message"`
 	CreatedCount int    `json:"createdCount"`
+	JobID        string `json:"jobId,omitempty"`
 }
 
 type UpdateAnnotationsRequest struct {

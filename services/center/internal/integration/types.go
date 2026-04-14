@@ -98,6 +98,7 @@ type CloudProviderDriver interface {
 	GetQRCodeSession(ctx context.Context, sessionID string) (QRCodeSession, error)
 	ConsumeQRCodeSession(ctx context.Context, sessionID string) (ProviderAuthResult, error)
 	EnsureRemoteRoot(ctx context.Context, payload CloudProviderPayload, remoteRootPath string) error
+	ListRemoteEntries(ctx context.Context, payload CloudProviderPayload, remoteRootPath string) ([]CloudFileEntry, error)
 	StartUpload(ctx context.Context, payload CloudProviderPayload, remoteRootPath string, relativePath string, source UploadSource) (string, string, error)
 	AttachUpload(ctx context.Context, externalTaskID string, destinationPath string, source UploadSource) error
 	WaitUpload(ctx context.Context, externalTaskID string, destinationPath string, notify func(TransferProgress)) error

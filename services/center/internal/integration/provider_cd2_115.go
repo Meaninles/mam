@@ -45,9 +45,12 @@ type cd2UploadSession struct {
 	done        chan struct{}
 	createdAt   time.Time
 	firstReadAt *time.Time
+	finishedAt  *time.Time
 	hashMu      sync.Mutex
 	hashJobs    map[string]context.CancelFunc
 }
+
+const cd2UploadFinishConfirmationTimeout = 2 * time.Minute
 
 func NewCD2115Driver(service *Service) *CD2115Driver {
 	return &CD2115Driver{
@@ -488,14 +491,27 @@ func (d *CD2115Driver) WaitUpload(ctx context.Context, externalTaskID string, de
 				firstReadAt := session.firstReadAt
 				createdAt := session.createdAt
 				status := session.status
+				finishedAt := session.finishedAt
 				session.hashMu.Unlock()
 				select {
 				case <-session.done:
 					if session.err != nil {
 						return session.err
 					}
+					if finishedAt != nil {
+						if err := confirmCD2FinishedAt(*finishedAt, time.Now().UTC()); err != nil {
+							return err
+						}
+						continue
+					}
 					return nil
 				default:
+				}
+				if finishedAt != nil {
+					if err := confirmCD2FinishedAt(*finishedAt, time.Now().UTC()); err != nil {
+						return err
+					}
+					continue
 				}
 				if firstReadAt == nil && (status == cd2pb.UploadFileInfo_Preprocessing || status == cd2pb.UploadFileInfo_WaitforPreprocessing || status == cd2pb.UploadFileInfo_Inqueue) && time.Since(createdAt) > time.Minute {
 					return fmt.Errorf("UPLOAD_CHANNEL_IDLE_TIMEOUT: StartRemoteUpload 后 1 分钟仍未收到 read_data/hash_data 请求")
@@ -771,6 +787,10 @@ func (d *CD2115Driver) handleUploadStatusChanged(uploadID string, changed *cd2pb
 	switch changed.GetStatus() {
 	case cd2pb.UploadFileInfo_Finish:
 		d.cancelHashJobs(session)
+		now := time.Now().UTC()
+		session.hashMu.Lock()
+		session.finishedAt = &now
+		session.hashMu.Unlock()
 		closeSession(session)
 	case cd2pb.UploadFileInfo_Cancelled:
 		d.cancelHashJobs(session)
@@ -786,8 +806,14 @@ func (d *CD2115Driver) handleUploadStatusChanged(uploadID string, changed *cd2pb
 		closeSession(session)
 	case cd2pb.UploadFileInfo_Pause:
 		d.cancelHashJobs(session)
+		session.hashMu.Lock()
 		session.firstReadAt = nil
+		session.finishedAt = nil
+		session.hashMu.Unlock()
 	default:
+		session.hashMu.Lock()
+		session.finishedAt = nil
+		session.hashMu.Unlock()
 	}
 }
 
@@ -1178,6 +1204,13 @@ func buildCD2UploadTerminalError(progress TransferProgress) error {
 		return buildCD2UploadStatusError("", progress.ErrorMessage)
 	}
 	return buildCD2UploadStatusError(progress.ExternalStatus, progress.ErrorMessage)
+}
+
+func confirmCD2FinishedAt(finishedAt time.Time, now time.Time) error {
+	if now.Sub(finishedAt) > cd2UploadFinishConfirmationTimeout {
+		return fmt.Errorf("CloudDrive2 上传完成状态长时间未得到确认，请稍后重试")
+	}
+	return nil
 }
 
 func isCD2UploadSessionNotFoundError(err error) bool {

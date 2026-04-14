@@ -117,6 +117,18 @@ func TestBuildCD2UploadStatusErrorUsesDefaults(t *testing.T) {
 	}
 }
 
+func TestConfirmCD2FinishedAtRequiresPollingConfirmation(t *testing.T) {
+	now := time.Now().UTC()
+	if err := confirmCD2FinishedAt(now.Add(-30*time.Second), now); err != nil {
+		t.Fatalf("expected recent finish marker to keep waiting, got %v", err)
+	}
+
+	err := confirmCD2FinishedAt(now.Add(-cd2UploadFinishConfirmationTimeout-time.Second), now)
+	if err == nil {
+		t.Fatalf("expected overdue finish marker to fail")
+	}
+}
+
 func TestAttachUploadRegistersRecoveredSession(t *testing.T) {
 	driver := &CD2115Driver{
 		deviceID:     "test-device",

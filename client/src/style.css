@@ -2892,6 +2892,55 @@ button {
   gap: 8px;
 }
 
+.file-center-missing-indicator {
+  position: relative;
+  width: 10px;
+  height: 10px;
+  flex: 0 0 10px;
+  border-radius: 999px;
+  background: #e15b64;
+  box-shadow: 0 0 0 2px rgba(225, 91, 100, 0.18);
+}
+
+.file-center-missing-indicator.has-tooltip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 10px);
+  transform: translateX(-50%) translateY(4px);
+  opacity: 0;
+  pointer-events: none;
+  white-space: nowrap;
+  border-radius: 10px;
+  padding: 6px 10px;
+  background: rgba(25, 31, 40, 0.92);
+  color: #f8fbff;
+  font-size: 0.78rem;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.22);
+  transition: opacity 140ms ease, transform 140ms ease;
+  z-index: 12;
+}
+
+.file-center-missing-indicator.has-tooltip::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 4px);
+  width: 8px;
+  height: 8px;
+  background: rgba(25, 31, 40, 0.92);
+  transform: translateX(-50%) rotate(45deg) translateY(6px);
+  opacity: 0;
+  transition: opacity 140ms ease, transform 140ms ease;
+  z-index: 11;
+}
+
+.file-center-missing-indicator.has-tooltip:hover::after,
+.file-center-missing-indicator.has-tooltip:hover::before {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
 .file-rating {
   display: inline-flex;
   align-items: center;
