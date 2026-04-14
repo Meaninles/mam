@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CircleEllipsis, Search, Settings2 } from 'lucide-react';
+import { CircleEllipsis, Search } from 'lucide-react';
 import type { NoticeJumpTargetKind, NoticeRecord } from '../data';
 import { ActionButton, EmptyState, IconButton, SelectPill } from '../components/Shared';
 import { resolveCloudIssueTargetKind, resolveNoticeCloudKind } from '../lib/cloudIssueRouting';

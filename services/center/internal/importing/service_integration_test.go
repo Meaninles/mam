@@ -226,7 +226,7 @@ func TestServiceRefreshesSessionsAndCompletesImportJob(t *testing.T) {
 	}
 }
 
-func TestServiceLoadDashboardIncludesCloudTargets(t *testing.T) {
+func TestServiceLoadDashboardIncludesNASTargets(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in short mode")
 	}
@@ -271,35 +271,36 @@ func TestServiceLoadDashboardIncludesCloudTargets(t *testing.T) {
 		t.Fatalf("save local folder: %v", err)
 	}
 
+	nasRoot := t.TempDir()
 	now := time.Now().UTC()
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO storage_nodes (
 			id, code, name, node_type, vendor, address, access_mode, account_alias, enabled, created_at, updated_at
 		) VALUES (
-			'cloud-node-1', 'cloud-node-1', '115 云归档', 'CLOUD', '115', '/MareArchive', 'QR', '115 云归档', true, $1, $1
+			'nas-node-1', 'nas-node-1', '影像 NAS 01', 'NAS', 'SMB', '\\\\192.168.10.20\\media', 'DIRECT', 'mare-sync', true, $1, $1
 		)
 	`, now); err != nil {
-		t.Fatalf("insert cloud node: %v", err)
+		t.Fatalf("insert NAS node: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO mounts (
 			id, code, library_id, library_name, storage_node_id, name, mount_source_type, mount_mode,
 			source_path, relative_root_path, heartbeat_policy, scan_policy, enabled, created_at, updated_at
 		) VALUES (
-			'mount-cloud-1', 'mount-cloud-1', 'photo', '商业摄影资产库', 'cloud-node-1', '115 云归档', 'CLOUD_FOLDER',
-			'READ_WRITE', '/MareArchive', '/', 'NEVER', 'MANUAL', true, $1, $1
+			'mount-nas-1', 'mount-nas-1', 'photo', '商业摄影资产库', 'nas-node-1', '影像 NAS 01', 'NAS_SHARE',
+			'READ_WRITE', $2, '/', 'NEVER', 'MANUAL', true, $1, $1
 		)
-	`, now); err != nil {
-		t.Fatalf("insert cloud mount: %v", err)
+	`, now, nasRoot); err != nil {
+		t.Fatalf("insert NAS mount: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO mount_runtime (
 			id, mount_id, scan_status, auth_status, health_status, created_at, updated_at
 		) VALUES (
-			'mount-runtime-cloud-1', 'mount-cloud-1', 'IDLE', 'AUTHORIZED', 'ONLINE', $1, $1
+			'mount-runtime-nas-1', 'mount-nas-1', 'IDLE', 'AUTHORIZED', 'ONLINE', $1, $1
 		)
 	`, now); err != nil {
-		t.Fatalf("insert cloud mount runtime: %v", err)
+		t.Fatalf("insert NAS mount runtime: %v", err)
 	}
 
 	bridge := &fakeAgentBridge{
@@ -342,23 +343,23 @@ func TestServiceLoadDashboardIncludesCloudTargets(t *testing.T) {
 	}
 
 	if len(dashboard.TargetEndpoints) < 2 {
-		t.Fatalf("expected local and cloud targets, got %+v", dashboard.TargetEndpoints)
+		t.Fatalf("expected local and NAS targets, got %+v", dashboard.TargetEndpoints)
 	}
 
-	foundCloudTarget := false
+	foundNASTarget := false
 	for _, target := range dashboard.TargetEndpoints {
-		if target.ID == "mount-cloud-1" {
-			foundCloudTarget = true
-			if target.Type != "115网盘" {
-				t.Fatalf("expected cloud target type 115网盘, got %+v", target)
+		if target.ID == "mount-nas-1" {
+			foundNASTarget = true
+			if target.Type != "NAS/SMB" {
+				t.Fatalf("expected NAS target type NAS/SMB, got %+v", target)
 			}
 			if target.StatusLabel != "可用" {
-				t.Fatalf("expected cloud target status 可用, got %+v", target)
+				t.Fatalf("expected NAS target status 可用, got %+v", target)
 			}
 		}
 	}
-	if !foundCloudTarget {
-		t.Fatalf("expected cloud target to be listed, got %+v", dashboard.TargetEndpoints)
+	if !foundNASTarget {
+		t.Fatalf("expected NAS target to be listed, got %+v", dashboard.TargetEndpoints)
 	}
 
 	if len(dashboard.Drafts) != 1 {
@@ -374,8 +375,8 @@ func TestServiceLoadDashboardIncludesCloudTargets(t *testing.T) {
 	if len(dashboard.Devices) != 1 {
 		t.Fatalf("expected one device session, got %+v", dashboard.Devices)
 	}
-	if !containsString(dashboard.Devices[0].AvailableTargetEndpointIDs, "mount-cloud-1") {
-		t.Fatalf("expected cloud target to be available for device session, got %+v", dashboard.Devices[0].AvailableTargetEndpointIDs)
+	if !containsString(dashboard.Devices[0].AvailableTargetEndpointIDs, "mount-nas-1") {
+		t.Fatalf("expected NAS target to be available for device session, got %+v", dashboard.Devices[0].AvailableTargetEndpointIDs)
 	}
 }
 

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { __FILE_CENTER_TESTING__, fileCenterApi, resetFileCenterMock } from './fileCenterApi';
 
 vi.mock('./runtimeConfig', () => ({
@@ -9,10 +9,6 @@ vi.mock('./runtimeConfig', () => ({
 }));
 
 describe('fileCenterApi', () => {
-  beforeEach(() => {
-    (window as Window & { __MARE_ENABLE_FILE_CENTER_MOCK_SYNC__?: boolean }).__MARE_ENABLE_FILE_CENTER_MOCK_SYNC__ = false;
-  });
-
   afterEach(async () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();

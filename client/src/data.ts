@@ -122,7 +122,7 @@ export type ImportSessionStatus =
 export type ImportDraftStatus = '草稿中' | '待提交' | '导入中' | '已提交';
 export type ImportFileStatus = '待导入' | '已排队' | '传输中' | '校验中' | '已完成' | '失败' | '冲突' | '已跳过';
 export type ImportCheckStatus = 'passed' | 'risk' | 'blocking';
-export type ImportTargetEndpointType = '本机磁盘' | 'NAS/SMB' | '115网盘';
+export type ImportTargetEndpointType = '本机磁盘' | 'NAS/SMB';
 
 export interface ImportCapacitySummary {
   total: string;

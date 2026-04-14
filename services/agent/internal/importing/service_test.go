@@ -155,10 +155,11 @@ func TestServiceExecutesLocalFileCopyAndPreservesMtime(t *testing.T) {
 	}
 }
 
-func TestServiceContinuesOtherTargetsWhenOneTargetFails(t *testing.T) {
+func TestServiceSupportsLocalAndNASWrites(t *testing.T) {
 	root := t.TempDir()
 	sourcePath := filepath.Join(root, "source.mov")
 	successTargetPath := filepath.Join(root, "success", "imported.mov")
+	nasTargetPath := filepath.Join(root, "nas", "share", "imported.mov")
 	if err := os.WriteFile(sourcePath, []byte("payload"), 0o644); err != nil {
 		t.Fatalf("write source: %v", err)
 	}
@@ -172,15 +173,15 @@ func TestServiceContinuesOtherTargetsWhenOneTargetFails(t *testing.T) {
 		SourcePath: sourcePath,
 		Targets: []ExecuteImportTarget{
 			{
-				TargetID:      "target-success",
+				TargetID:      "target-local",
 				NodeType:      "LOCAL",
 				PhysicalPath:  successTargetPath,
 				PreserveMtime: true,
 			},
 			{
-				TargetID:      "target-failed",
+				TargetID:      "target-nas",
 				NodeType:      "NAS",
-				PhysicalPath:  `\\nas\share\imported.mov`,
+				PhysicalPath:  nasTargetPath,
 				PreserveMtime: true,
 			},
 		},
@@ -194,10 +195,13 @@ func TestServiceContinuesOtherTargetsWhenOneTargetFails(t *testing.T) {
 	if result.Targets[0].Status != "SUCCEEDED" {
 		t.Fatalf("expected first target success, got %+v", result.Targets[0])
 	}
-	if result.Targets[1].Status != "FAILED" {
-		t.Fatalf("expected second target failure, got %+v", result.Targets[1])
+	if result.Targets[1].Status != "SUCCEEDED" {
+		t.Fatalf("expected second target success, got %+v", result.Targets[1])
 	}
 	if _, statErr := os.Stat(successTargetPath); statErr != nil {
 		t.Fatalf("expected successful target file written: %v", statErr)
+	}
+	if _, statErr := os.Stat(nasTargetPath); statErr != nil {
+		t.Fatalf("expected NAS target file written: %v", statErr)
 	}
 }

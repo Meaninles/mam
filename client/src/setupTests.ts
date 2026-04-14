@@ -2,7 +2,6 @@ import '@testing-library/jest-dom/vitest';
 import { beforeEach, vi } from 'vitest';
 
 beforeEach(() => {
-  (window as Window & { __MARE_ENABLE_FILE_CENTER_MOCK_SYNC__?: boolean }).__MARE_ENABLE_FILE_CENTER_MOCK_SYNC__ = true;
   class MockEventSource {
     onmessage: ((event: MessageEvent<string>) => void) | null = null;
 
@@ -20,12 +19,165 @@ beforeEach(() => {
     'fetch',
     vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes('sql-wasm.wasm')) {
-        const { readFile } = await import('node:fs/promises');
-        const { resolve } = await import('node:path');
-        const wasmBinary = await readFile(resolve(process.cwd(), 'node_modules/sql.js/dist/sql-wasm.wasm'));
-        return new Response(wasmBinary, { status: 200 });
+      if (/\/api\/libraries\/[^/]+\/browse/.test(url)) {
+        return {
+          ok: true,
+          json: async () => ({
+            data: {
+              breadcrumbs: [{ id: null, label: '商业摄影资产库' }],
+              items: [
+                {
+                  id: 'dir-raw',
+                  libraryId: 'photo',
+                  parentId: null,
+                  type: 'folder',
+                  lifecycleState: 'ACTIVE',
+                  name: '拍摄原片',
+                  fileKind: '文件夹',
+                  displayType: '文件夹',
+                  modifiedAt: '今天 09:18',
+                  createdAt: '2026-04-12 09:18',
+                  size: '12 项',
+                  path: '商业摄影资产库 / 拍摄原片',
+                  sourceLabel: '统一目录树',
+                  lastTaskText: '暂无任务',
+                  lastTaskTone: 'info',
+                  rating: 0,
+                  colorLabel: '无',
+                  badges: [],
+                  riskTags: [],
+                  tags: [],
+                  endpoints: [
+                    {
+                      name: '本地NVMe',
+                      state: '已同步',
+                      tone: 'success',
+                      lastSyncAt: '今天 09:18',
+                      endpointType: 'local',
+                    },
+                    {
+                      name: '影像NAS',
+                      state: '部分同步',
+                      tone: 'warning',
+                      lastSyncAt: '今天 09:22',
+                      endpointType: 'nas',
+                    },
+                    {
+                      name: '115',
+                      state: '未同步',
+                      tone: 'critical',
+                      lastSyncAt: '尚未开始',
+                      endpointType: 'cloud',
+                    },
+                  ],
+                },
+                {
+                  id: 'asset-cover',
+                  libraryId: 'photo',
+                  parentId: null,
+                  type: 'file',
+                  lifecycleState: 'ACTIVE',
+                  name: 'cover.jpg',
+                  fileKind: '图片',
+                  displayType: 'JPG 图片',
+                  modifiedAt: '今天 09:30',
+                  createdAt: '2026-04-12 09:30',
+                  size: '12 MB',
+                  path: '商业摄影资产库 / cover.jpg',
+                  sourceLabel: '统一资产',
+                  lastTaskText: '等待同步到 115',
+                  lastTaskTone: 'warning',
+                  rating: 4,
+                  colorLabel: '红标',
+                  badges: ['RAW'],
+                  riskTags: ['待同步'],
+                  tags: ['封面图'],
+                  endpoints: [
+                    {
+                      name: '本地NVMe',
+                      state: '已同步',
+                      tone: 'success',
+                      lastSyncAt: '今天 09:18',
+                      endpointType: 'local',
+                    },
+                    {
+                      name: '影像NAS',
+                      state: '同步中',
+                      tone: 'warning',
+                      lastSyncAt: '刚刚',
+                      endpointType: 'nas',
+                    },
+                    {
+                      name: '115',
+                      state: '未同步',
+                      tone: 'critical',
+                      lastSyncAt: '尚未开始',
+                      endpointType: 'cloud',
+                    },
+                  ],
+                },
+              ],
+              total: 2,
+              currentPathChildren: 2,
+              endpointNames: ['本地NVMe', '影像NAS', '115'],
+            },
+          }),
+        } as Response;
       }
+
+      if (/\/api\/file-entries\/[^/]+$/.test(url)) {
+        return {
+          ok: true,
+          json: async () => ({
+            data: {
+              id: 'asset-cover',
+              libraryId: 'photo',
+              parentId: null,
+              type: 'file',
+              lifecycleState: 'ACTIVE',
+              name: 'cover.jpg',
+              fileKind: '图片',
+              displayType: 'JPG 图片',
+              modifiedAt: '今天 09:30',
+              createdAt: '2026-04-12 09:30',
+              size: '12 MB',
+              path: '商业摄影资产库 / cover.jpg',
+              sourceLabel: '统一资产',
+              lastTaskText: '等待同步到 115',
+              lastTaskTone: 'warning',
+              rating: 4,
+              colorLabel: '红标',
+              badges: ['RAW'],
+              riskTags: ['待同步'],
+              tags: ['封面图'],
+              endpoints: [
+                {
+                  name: '本地NVMe',
+                  state: '已同步',
+                  tone: 'success',
+                  lastSyncAt: '今天 09:18',
+                  endpointType: 'local',
+                },
+                {
+                  name: '影像NAS',
+                  state: '同步中',
+                  tone: 'warning',
+                  lastSyncAt: '刚刚',
+                  endpointType: 'nas',
+                },
+                {
+                  name: '115',
+                  state: '未同步',
+                  tone: 'critical',
+                  lastSyncAt: '尚未开始',
+                  endpointType: 'cloud',
+                },
+              ],
+            },
+          }),
+        } as Response;
+      }
+
       if (url.includes('/api/libraries')) {
         return {
           ok: true,

@@ -41,7 +41,7 @@ function renderImportCenter() {
 }
 
 describe('ImportCenterPage', () => {
-  it('支持从待导入端列表打开设备会话并显示来源摘要', async () => {
+  it('支持从待导入设备列表打开会话并显示来源摘要', async () => {
     renderImportCenter();
 
     const deviceRow = (await screen.findAllByText(primaryDeviceLabel))[0]?.closest('article');
@@ -71,7 +71,7 @@ describe('ImportCenterPage', () => {
     expect(screen.getByText(/提交后会在后台递归扫描所选文件夹和文件/)).toBeInTheDocument();
   });
 
-  it('当前层级浏览支持为目录和文件分配目标端', async () => {
+  it('当前层级浏览支持为目录和文件分配本地或 NAS 目标端', async () => {
     const user = userEvent.setup();
     const onSaveSelectionTargets = vi.fn();
 
@@ -110,51 +110,9 @@ describe('ImportCenterPage', () => {
     expect(onSaveSelectionTargets).toHaveBeenCalled();
   });
 
-  it('正式暴露 CLOUD 目标端并允许把导入对象分配到 115 网盘', async () => {
+  it('不展示导入到网盘的目标端，只保留本地与 NAS 目标', async () => {
     const user = userEvent.setup();
-    const onSaveSelectionTargets = vi.fn();
-
-    render(
-      <ImportCenterPage
-        libraries={importFixtureLibraries}
-        devices={[
-          {
-            ...importFixtureDevices[0],
-            availableTargetEndpointIds: ['target-local', 'target-nas', 'target-cloud'],
-          },
-        ]}
-        drafts={importFixtureDrafts}
-        issues={[]}
-        reports={importFixtureReports}
-        targetEndpoints={[
-          ...importFixtureTargets,
-          {
-            id: 'target-cloud',
-            endpointId: 'mount-cloud-1',
-            label: '115 云归档',
-            type: '115网盘',
-            writable: true,
-            availableSpace: '—',
-            statusLabel: '可用',
-            tone: 'success',
-          },
-        ]}
-        browserState={importFixtureBrowserState}
-        browserLoading={false}
-        onBrowseSession={vi.fn()}
-        onOpenFolder={vi.fn()}
-        onGoToParentFolder={vi.fn()}
-        onOpenFileCenter={vi.fn()}
-        onOpenIssueCenter={vi.fn()}
-        onOpenStorageNodes={vi.fn()}
-        onOpenTaskCenter={vi.fn()}
-        onRefreshDevices={vi.fn()}
-        onSelectLibrary={vi.fn()}
-        onRefreshPrecheck={vi.fn()}
-        onSaveSelectionTargets={onSaveSelectionTargets}
-        onSubmitImport={vi.fn()}
-      />,
-    );
+    renderImportCenter();
 
     const deviceRow = (await screen.findAllByText(primaryDeviceLabel))[0]?.closest('article');
     expect(deviceRow).not.toBeNull();
@@ -162,14 +120,8 @@ describe('ImportCenterPage', () => {
 
     const row = (await screen.findAllByText('cover.jpg'))[0]?.closest('tr');
     expect(row).not.toBeNull();
-    await user.click(within(row as HTMLElement).getByLabelText('115 云归档'));
-
-    expect(onSaveSelectionTargets).toHaveBeenCalledWith(
-      'device-cfexpress-a',
-      expect.objectContaining({
-        relativePath: 'cover.jpg',
-        targetEndpointIds: ['target-cloud'],
-      }),
-    );
+    expect(within(row as HTMLElement).queryByLabelText('115 云归档')).toBeNull();
+    expect(within(row as HTMLElement).getByLabelText('本地 NVMe 主盘')).toBeInTheDocument();
+    expect(within(row as HTMLElement).getByLabelText('影像 NAS 01')).toBeInTheDocument();
   });
 });

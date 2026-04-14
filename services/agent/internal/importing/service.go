@@ -255,7 +255,7 @@ func (s *Service) ExecuteImport(ctx context.Context, request ExecuteImportReques
 			PhysicalPath: target.PhysicalPath,
 			VerifyMode: "LIGHT",
 		}
-		if target.NodeType != "LOCAL" {
+		if target.NodeType != "LOCAL" && target.NodeType != "NAS" {
 			result.Status = "FAILED"
 			result.VerifyStatus = "SKIPPED"
 			result.VerifySummary = "未执行校验"
