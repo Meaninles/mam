@@ -82,7 +82,7 @@ func (s *Service) loadJobItems(ctx context.Context, jobID string) ([]jobdto.Item
 				ORDER BY je.created_at DESC
 				LIMIT 1
 			) AS external_task_status,
-			attempt_count, issue_count, latest_error_code, latest_error_message, result_summary,
+			attempt_count, issue_count, latest_error_code, latest_error_message, result_summary, next_retry_at,
 			started_at, finished_at, canceled_at, updated_at, created_at
 		FROM job_items
 		WHERE job_id = $1
@@ -133,7 +133,7 @@ func (s *Service) loadItemRows(ctx context.Context, jobID string) ([]itemRow, er
 				ORDER BY je.created_at DESC
 				LIMIT 1
 			) AS external_task_status,
-			attempt_count, issue_count, latest_error_code, latest_error_message, result_summary,
+			attempt_count, issue_count, latest_error_code, latest_error_message, result_summary, next_retry_at,
 			started_at, finished_at, canceled_at, updated_at, created_at
 		FROM job_items
 		WHERE job_id = $1
@@ -184,7 +184,7 @@ func (s *Service) loadJobItemRecord(ctx context.Context, itemID string) (jobdto.
 			ORDER BY je.created_at DESC
 			LIMIT 1
 		) AS external_task_status,
-		attempt_count, issue_count, latest_error_code, latest_error_message, result_summary,
+		attempt_count, issue_count, latest_error_code, latest_error_message, result_summary, next_retry_at,
 		started_at, finished_at, canceled_at, updated_at, created_at
 	FROM job_items
 		WHERE id = $1
@@ -225,7 +225,7 @@ func (s *Service) loadItemRowTx(ctx context.Context, tx pgx.Tx, itemID string) (
 				ORDER BY je.created_at DESC
 				LIMIT 1
 			) AS external_task_status,
-			attempt_count, issue_count, latest_error_code, latest_error_message, result_summary,
+			attempt_count, issue_count, latest_error_code, latest_error_message, result_summary, next_retry_at,
 			started_at, finished_at, canceled_at, updated_at, created_at
 		FROM job_items
 		WHERE id = $1
@@ -454,6 +454,7 @@ func scanItemRow(row pgx.Row) (itemRow, error) {
 		&item.LatestErrorCode,
 		&item.LatestErrorMessage,
 		&item.ResultSummary,
+		&item.NextRetryAt,
 		&item.StartedAt,
 		&item.FinishedAt,
 		&item.CanceledAt,

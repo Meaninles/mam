@@ -231,6 +231,7 @@ type itemRow struct {
 	LatestErrorCode    *string
 	LatestErrorMessage *string
 	ResultSummary      *string
+	NextRetryAt        *time.Time
 	StartedAt          *time.Time
 	FinishedAt         *time.Time
 	CanceledAt         *time.Time

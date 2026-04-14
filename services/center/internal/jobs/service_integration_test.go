@@ -3,6 +3,7 @@ package jobs_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -16,9 +17,11 @@ import (
 
 	"mare/services/center/internal/assets"
 	"mare/services/center/internal/db"
+	"mare/services/center/internal/issues"
 	"mare/services/center/internal/jobs"
 	"mare/services/center/internal/storage"
 	assetdto "mare/shared/contracts/dto/asset"
+	issuedto "mare/shared/contracts/dto/issue"
 	jobdto "mare/shared/contracts/dto/job"
 	storagedto "mare/shared/contracts/dto/storage"
 )
@@ -243,6 +246,205 @@ func TestServicePauseAndResumeJobSyncsExternalTaskStatus(t *testing.T) {
 		t.Fatalf("expected external resume call, got %#v", controller.resumedCalls)
 	}
 	close(firstItemRelease)
+}
+
+func TestServiceAutomaticallyRetriesRecoverableConnectionTestJob(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	defer pool.Close()
+	resetSchema(t, ctx, pool)
+
+	migrator := db.NewMigrator()
+	if _, err := migrator.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	service := jobs.NewService(pool)
+	service.SetRetryBaseDelay(100 * time.Millisecond)
+	attempts := 0
+	service.RegisterExecutor(jobs.JobIntentConnectionTest, func(ctx context.Context, execution jobs.ExecutionContext) error {
+		attempts++
+		if attempts == 1 {
+			return errors.New("连接测试失败：根目录不可达")
+		}
+		return nil
+	})
+	service.Start(ctx)
+
+	result, err := service.CreateJob(ctx, jobs.CreateJobInput{
+		JobFamily:     jobs.JobFamilyMaintenance,
+		JobIntent:     jobs.JobIntentConnectionTest,
+		Title:         "巡检挂载",
+		Summary:       "自动重试测试",
+		SourceDomain:  jobs.SourceDomainScheduled,
+		Priority:      jobs.PriorityNormal,
+		CreatedByType: jobs.CreatedBySystem,
+		Items: []jobs.CreateItemInput{
+			{ItemKey: "mount:test:heartbeat", ItemType: jobs.ItemTypeConnectivityCheck, Title: "挂载巡检", Summary: "挂载巡检"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	waiting := waitForJobStatus(t, ctx, service, result.JobID, jobs.StatusWaitingRetry)
+	if waiting.Job.Status != jobs.StatusWaitingRetry {
+		t.Fatalf("expected waiting retry status, got %+v code=%s message=%s", waiting.Job, derefString(waiting.Job.LatestErrorCode), derefString(waiting.Job.LatestErrorMessage))
+	}
+	final := waitForJobStatus(t, ctx, service, result.JobID, jobs.StatusCompleted)
+	if final.Job.SuccessItems != 1 {
+		t.Fatalf("expected successful retry completion, got %+v", final.Job)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected 2 execution attempts, got %d", attempts)
+	}
+}
+
+func TestServiceStopsAutoRetryAfterBudgetExhausted(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	defer pool.Close()
+	resetSchema(t, ctx, pool)
+
+	migrator := db.NewMigrator()
+	if _, err := migrator.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	service := jobs.NewService(pool)
+	service.SetRetryBaseDelay(50 * time.Millisecond)
+	attempts := 0
+	service.RegisterExecutor(jobs.JobIntentConnectionTest, func(ctx context.Context, execution jobs.ExecutionContext) error {
+		attempts++
+		return errors.New("连接测试失败：根目录不可达")
+	})
+	service.Start(ctx)
+
+	result, err := service.CreateJob(ctx, jobs.CreateJobInput{
+		JobFamily:     jobs.JobFamilyMaintenance,
+		JobIntent:     jobs.JobIntentConnectionTest,
+		Title:         "巡检挂载",
+		Summary:       "自动重试预算测试",
+		SourceDomain:  jobs.SourceDomainScheduled,
+		Priority:      jobs.PriorityNormal,
+		CreatedByType: jobs.CreatedBySystem,
+		Items: []jobs.CreateItemInput{
+			{ItemKey: "mount:test:heartbeat", ItemType: jobs.ItemTypeConnectivityCheck, Title: "挂载巡检", Summary: "挂载巡检"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	final := waitForJobStatus(t, ctx, service, result.JobID, jobs.StatusFailed)
+	if final.Job.FailedItems != 1 {
+		t.Fatalf("expected failed item after retry budget exhausted, got %+v code=%s message=%s", final.Job, derefString(final.Job.LatestErrorCode), derefString(final.Job.LatestErrorMessage))
+	}
+	if attempts != 3 {
+		t.Fatalf("expected 3 attempts with retry budget, got %d", attempts)
+	}
+}
+
+func TestServiceVerifyReplicaJobCreatesVerifyIssueOnMismatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	defer pool.Close()
+	resetSchema(t, ctx, pool)
+
+	migrator := db.NewMigrator()
+	if _, err := migrator.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	rootDir := t.TempDir()
+	localFolders := storage.NewLocalFolderService(pool)
+	node, err := localFolders.SaveLocalNode(ctx, storagedto.SaveLocalNodeRequest{
+		Name:     "本地校验盘",
+		RootPath: rootDir,
+	})
+	if err != nil {
+		t.Fatalf("save local node: %v", err)
+	}
+	mount, err := localFolders.SaveLocalFolder(ctx, storagedto.SaveLocalFolderRequest{
+		Name:            "校验挂载",
+		LibraryID:       "photo",
+		LibraryName:     "商业摄影资产库",
+		NodeID:          node.Record.ID,
+		MountMode:       "可写",
+		HeartbeatPolicy: "从不",
+		RelativePath:    "verify",
+	})
+	if err != nil {
+		t.Fatalf("save mount: %v", err)
+	}
+
+	sourceDir := filepath.Join(rootDir, "verify")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("mkdir source dir: %v", err)
+	}
+	sourceFile := filepath.Join(sourceDir, "cover.jpg")
+	if err := os.WriteFile(sourceFile, []byte("version-a"), 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	if _, err := localFolders.RunLocalFolderScan(ctx, []string{mount.Record.ID}); err != nil {
+		t.Fatalf("run scan: %v", err)
+	}
+
+	var replicaID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM asset_replicas LIMIT 1`).Scan(&replicaID); err != nil {
+		t.Fatalf("query replica id: %v", err)
+	}
+	assetService := assets.NewService(pool)
+	if err := assetService.ExecuteReplicaVerification(ctx, replicaID); err != nil {
+		t.Fatalf("seed replica verification: %v", err)
+	}
+	if err := os.WriteFile(sourceFile, []byte("version-b"), 0o644); err != nil {
+		t.Fatalf("rewrite source file: %v", err)
+	}
+
+	service := jobs.NewService(pool)
+	issueService := issues.NewService(pool, service)
+	service.SetIssueSynchronizer(issueService)
+	service.RegisterExecutor(jobs.JobIntentVerifyReplica, func(ctx context.Context, execution jobs.ExecutionContext) error {
+		var targetReplicaID string
+		for _, link := range execution.ItemLinks {
+			if link.AssetReplicaID != nil {
+				targetReplicaID = *link.AssetReplicaID
+			}
+		}
+		return assetService.ExecuteReplicaVerification(ctx, targetReplicaID)
+	})
+	service.Start(ctx)
+
+	result, err := service.CreateVerifyReplicaJob(ctx, replicaID)
+	if err != nil {
+		t.Fatalf("create verify replica job: %v", err)
+	}
+
+	waitForJobStatus(t, ctx, service, result.JobID, jobs.StatusFailed)
+	issueList := waitForIssueCount(t, ctx, issueService, 1)
+	if issueList.Items[0].IssueCategory != issues.CategoryVerify {
+		t.Fatalf("expected verify category issue, got %+v", issueList.Items[0])
+	}
 }
 
 func TestServiceCancelJobSyncsExternalTaskStatus(t *testing.T) {
@@ -1058,7 +1260,7 @@ func waitForJobStatus(t *testing.T, ctx context.Context, service *jobs.Service, 
 	if err != nil {
 		t.Fatalf("load job detail: %v", err)
 	}
-	t.Fatalf("expected job status %s, got %+v", expected, detail.Job)
+	t.Fatalf("expected job status %s, got %+v code=%s message=%s", expected, detail.Job, derefString(detail.Job.LatestErrorCode), derefString(detail.Job.LatestErrorMessage))
 	return jobdto.Detail{}
 }
 
@@ -1323,6 +1525,24 @@ func waitForItemStatus(t *testing.T, ctx context.Context, service *jobs.Service,
 	return jobdto.Detail{}
 }
 
+func waitForIssueCount(t *testing.T, ctx context.Context, service *issues.Service, expected int) issuedto.ListResponse {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		result, err := service.ListIssues(ctx, issues.ListQuery{Page: 1, PageSize: 20})
+		if err == nil && len(result.Items) == expected {
+			return result
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	result, err := service.ListIssues(ctx, issues.ListQuery{Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatalf("list issues: %v", err)
+	}
+	t.Fatalf("expected %d issues, got %+v", expected, result.Items)
+	return issuedto.ListResponse{}
+}
+
 func findItemID(t *testing.T, items []jobdto.ItemRecord, itemKey string) string {
 	t.Helper()
 
@@ -1333,6 +1553,13 @@ func findItemID(t *testing.T, items []jobdto.ItemRecord, itemKey string) string 
 	}
 	t.Fatalf("expected item %s", itemKey)
 	return ""
+}
+
+func derefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func findItemByKey(t *testing.T, items []jobdto.ItemRecord, itemKey string) jobdto.ItemRecord {

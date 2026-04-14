@@ -173,6 +173,24 @@ func (s *Service) DeleteEntry(ctx context.Context, id string) (assetdto.DeleteEn
 	if _, err := s.loadAssetByID(ctx, id); err != nil {
 		return assetdto.DeleteEntryResponse{}, err
 	}
+	if s.deleteJobCreator != nil {
+		plan, err := s.PrepareDeleteAssetPlan(ctx, assetdto.CreateDeleteAssetJobRequest{EntryIDs: []string{id}})
+		if err != nil {
+			return assetdto.DeleteEntryResponse{}, err
+		}
+		if _, err := s.deleteJobCreator.CreateDeleteAssetJob(ctx, plan); err != nil {
+			return assetdto.DeleteEntryResponse{}, err
+		}
+		if _, err := s.pool.Exec(ctx, `
+			UPDATE assets
+			SET lifecycle_state = 'DELETE_PENDING',
+			    updated_at = $2
+			WHERE id = $1
+		`, id, s.now().UTC()); err != nil {
+			return assetdto.DeleteEntryResponse{}, err
+		}
+		return assetdto.DeleteEntryResponse{Message: "删除请求已提交，资产进入后台清理"}, nil
+	}
 
 	replicas, err := loadAssetReplicaDeletions(ctx, s.pool, id)
 	if err != nil {

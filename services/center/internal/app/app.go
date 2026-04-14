@@ -11,6 +11,7 @@ import (
 	"mare/services/center/internal/assets"
 	"mare/services/center/internal/config"
 	"mare/services/center/internal/db"
+	"mare/services/center/internal/governance"
 	httpapi "mare/services/center/internal/http"
 	"mare/services/center/internal/importing"
 	"mare/services/center/internal/integration"
@@ -65,20 +66,30 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 	integrationService := integration.NewService(pool)
 	integrationService.RegisterProvider(integration.NewCD2115Driver(integrationService))
 	integrationService.RegisterDownloader(integration.NewAria2Manager())
+	governanceService := governance.NewService(pool, governance.Options{
+		JobService:            jobService,
+		ScheduledScanInterval: time.Hour,
+		TickInterval:          time.Second,
+	})
 	localFolderService.SetIntegrationService(integrationService)
 	assetService.SetCloudResolver(integrationService)
 	assetService.SetJobRuntime(jobService)
+	assetService.SetDeleteJobCreator(jobService)
 	jobService.SetExternalTaskController(integrationService)
 	cloudNodeService := storage.NewCloudNodeService(pool, integrationService)
 	importService := importing.NewService(pool, importing.NewHTTPAgentBridge(30*time.Second), jobService, assetService)
 	issueService := issues.NewService(pool, jobService)
 	notificationService := notifications.NewService(pool)
+	governanceService.SetMissingReplicaSyncer(issueService)
 	jobService.SetIssueSynchronizer(issueService)
 	jobService.SetNotificationSynchronizer(notificationService)
 	issueService.SetNotificationSynchronizer(notificationService)
 	jobService.RegisterExecutor(jobs.JobIntentScanDirectory, func(ctx context.Context, execution jobs.ExecutionContext) error {
+		mountID := findMountLinkID(execution.ItemLinks)
+		if mountID != nil && (execution.Job.SourceDomain == jobs.SourceDomainStorageNodes || execution.Job.SourceDomain == jobs.SourceDomainScheduled || execution.Job.SourceDomain == jobs.SourceDomainSystemPolicy) {
+			return localFolderService.RunSingleMountScan(ctx, *mountID)
+		}
 		if execution.Job.SourceDomain == jobs.SourceDomainStorageNodes {
-			mountID := findMountLinkID(execution.ItemLinks)
 			if mountID == nil {
 				return errors.New("挂载扫描作业缺少目标挂载关联")
 			}
@@ -117,6 +128,37 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 		}
 		return errors.New("资产删除作业缺少资产或目录关联")
 	})
+	jobService.RegisterExecutor(jobs.JobIntentConnectionTest, func(ctx context.Context, execution jobs.ExecutionContext) error {
+		mountID := findMountLinkID(execution.ItemLinks)
+		if mountID != nil {
+			result, err := localFolderService.RunLocalFolderConnectionTest(ctx, []string{*mountID})
+			if err != nil {
+				return err
+			}
+			if len(result.Results) == 0 {
+				return errors.New("连接测试未返回结果")
+			}
+			if result.Results[0].OverallTone != "success" {
+				return errors.New(result.Results[0].Summary)
+			}
+			return nil
+		}
+		return errors.New("连接测试作业缺少目标挂载关联")
+	})
+	jobService.RegisterExecutor(jobs.JobIntentVerifyReplica, func(ctx context.Context, execution jobs.ExecutionContext) error {
+		replicaID := findReplicaLinkID(execution.ItemLinks)
+		if replicaID == nil {
+			return errors.New("副本校验作业缺少副本关联")
+		}
+		return assetService.ExecuteReplicaVerification(ctx, *replicaID)
+	})
+	jobService.RegisterExecutor(jobs.JobIntentVerifyAsset, func(ctx context.Context, execution jobs.ExecutionContext) error {
+		replicaID := findReplicaLinkID(execution.ItemLinks)
+		if replicaID == nil {
+			return errors.New("资产校验作业缺少副本关联")
+		}
+		return assetService.ExecuteReplicaVerification(ctx, *replicaID)
+	})
 	jobService.RegisterExecutor(jobs.JobIntentImport, importService.ExecuteImportJobItem)
 	runtimeService := runtime.NewService(
 		cfg.ServiceName,
@@ -153,7 +195,7 @@ func NewServer(ctx context.Context, cfg config.Config) (*ServerApplication, erro
 			Handler:           router,
 			ReadHeaderTimeout: 5 * time.Second,
 		},
-		jobService: multiStarter{jobService, integrationService},
+		jobService: multiStarter{jobService, integrationService, governanceService},
 		dbPool:     pool,
 	}, nil
 }

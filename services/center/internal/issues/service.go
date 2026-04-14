@@ -84,6 +84,7 @@ type Service struct {
 	jobController    JobController
 	notificationSync interface {
 		SyncJobNotifications(ctx context.Context, jobID string) error
+		SyncIssueNotification(ctx context.Context, issueID string) error
 	}
 }
 
@@ -101,6 +102,7 @@ func (s *Service) SetJobController(jobController JobController) {
 
 func (s *Service) SetNotificationSynchronizer(sync interface {
 	SyncJobNotifications(ctx context.Context, jobID string) error
+	SyncIssueNotification(ctx context.Context, issueID string) error
 }) {
 	s.notificationSync = sync
 }
@@ -329,4 +331,11 @@ func (s *Service) syncJobNotifications(ctx context.Context, jobID string) {
 		return
 	}
 	_ = s.notificationSync.SyncJobNotifications(ctx, jobID)
+}
+
+func (s *Service) syncIssueNotification(ctx context.Context, issueID string) {
+	if s.notificationSync == nil || strings.TrimSpace(issueID) == "" {
+		return
+	}
+	_ = s.notificationSync.SyncIssueNotification(ctx, issueID)
 }

@@ -204,6 +204,67 @@ func (s *Service) SyncJobNotifications(ctx context.Context, jobID string) error 
 	return nil
 }
 
+func (s *Service) SyncIssueNotification(ctx context.Context, issueID string) error {
+	if strings.TrimSpace(issueID) == "" {
+		return nil
+	}
+
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	issue, found, err := s.loadIssueProjectionByID(ctx, tx, issueID)
+	if err != nil {
+		return err
+	}
+
+	changes := make([]notificationdto.StreamEvent, 0, 1)
+	if found {
+		event, changed, err := s.upsertIssueNotice(ctx, tx, jobProjection{}, issue)
+		if err != nil {
+			return err
+		}
+		if changed {
+			changes = append(changes, event)
+		}
+	} else {
+		now := s.now().UTC()
+		tag, err := tx.Exec(ctx, `
+			UPDATE notifications
+			SET lifecycle_status = 'STALE',
+			    stale_at = $2,
+			    updated_at = $2
+			WHERE source_type = 'ISSUE'
+			  AND source_id = $1
+			  AND lifecycle_status <> 'STALE'
+		`, issueID, now)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() > 0 {
+			status := LifecycleStale
+			changes = append(changes, notificationdto.StreamEvent{
+				EventID:         buildCode("notification-stream", now),
+				Topic:           "NOTIFICATION",
+				EventType:       StreamEventStale,
+				NotificationID:  noticeID(SourceTypeIssue, issueID),
+				LifecycleStatus: &status,
+				CreatedAt:       now.Format(time.RFC3339),
+			})
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	for _, event := range changes {
+		s.broker.Publish(event)
+	}
+	return nil
+}
+
 type jobProjection struct {
 	ID                 string
 	LibraryID          *string
@@ -297,12 +358,46 @@ func (s *Service) loadIssueProjections(ctx context.Context, tx pgx.Tx, jobID str
 	return items, rows.Err()
 }
 
+func (s *Service) loadIssueProjectionByID(ctx context.Context, tx pgx.Tx, issueID string) (issueProjection, bool, error) {
+	row := tx.QueryRow(ctx, `
+		SELECT id, library_id, issue_category, nature, source_domain, severity, title, summary, object_label, source_snapshot, updated_at
+		FROM issues
+		WHERE id = $1
+		  AND status IN ('OPEN', 'AWAITING_CONFIRMATION', 'IN_PROGRESS')
+	`, issueID)
+
+	var item issueProjection
+	if err := row.Scan(
+		&item.ID,
+		&item.LibraryID,
+		&item.IssueCategory,
+		&item.Nature,
+		&item.SourceDomain,
+		&item.Severity,
+		&item.Title,
+		&item.Summary,
+		&item.ObjectLabel,
+		&item.SourceSnapshot,
+		&item.UpdatedAt,
+	); err != nil {
+		if err == pgx.ErrNoRows {
+			return issueProjection{}, false, nil
+		}
+		return issueProjection{}, false, err
+	}
+	return item, true, nil
+}
+
 func (s *Service) upsertIssueNotice(ctx context.Context, tx pgx.Tx, job jobProjection, issue issueProjection) (notificationdto.StreamEvent, bool, error) {
 	source, jumpParams, capabilities := buildIssuePayload(issue)
+	var jobID *string
+	if strings.TrimSpace(job.ID) != "" {
+		jobID = &job.ID
+	}
 	return s.upsertNotice(ctx, tx, upsertInput{
 		SourceType:        SourceTypeIssue,
 		SourceID:          issue.ID,
-		JobID:             &job.ID,
+		JobID:             jobID,
 		IssueID:           &issue.ID,
 		LibraryID:         issue.LibraryID,
 		Kind:              KindActionRequired,

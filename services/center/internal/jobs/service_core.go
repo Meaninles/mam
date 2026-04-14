@@ -27,6 +27,8 @@ type Service struct {
 	wakeCh           chan struct{}
 	startOnce        sync.Once
 	backgroundCtx    context.Context
+	retryBaseDelay   time.Duration
+	retryMaxAttempts int
 }
 
 func NewService(pool *pgxpool.Pool) *Service {
@@ -37,6 +39,14 @@ func NewService(pool *pgxpool.Pool) *Service {
 		executors:    make(map[string]ItemExecutor),
 		runningItems: make(map[string]context.CancelFunc),
 		wakeCh:       make(chan struct{}, 1),
+		retryBaseDelay:   30 * time.Second,
+		retryMaxAttempts: 3,
+	}
+}
+
+func (s *Service) SetRetryBaseDelay(delay time.Duration) {
+	if delay > 0 {
+		s.retryBaseDelay = delay
 	}
 }
 

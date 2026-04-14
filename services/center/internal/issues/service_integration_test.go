@@ -12,6 +12,7 @@ import (
 	"mare/services/center/internal/db"
 	"mare/services/center/internal/issues"
 	"mare/services/center/internal/jobs"
+	"mare/services/center/internal/notifications"
 	"mare/services/center/internal/storage"
 	issuedto "mare/shared/contracts/dto/issue"
 	storagedto "mare/shared/contracts/dto/storage"
@@ -181,6 +182,133 @@ func TestServiceListsIssuesByJobIDs(t *testing.T) {
 	}
 	if len(items) != 1 {
 		t.Fatalf("expected one job-linked issue, got %+v", items)
+	}
+}
+
+func TestServiceSyncMissingReplicaIssuesCreatesIssueAndNotification(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	defer pool.Close()
+	resetSchema(t, ctx, pool)
+
+	migrator := db.NewMigrator()
+	if _, err := migrator.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	now := time.Now().UTC()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO libraries (id, code, name, root_label, status, created_at, updated_at)
+		VALUES ('photo', 'library-photo', '商业摄影资产库', '/', 'ACTIVE', $1, $1)
+	`, now); err != nil {
+		t.Fatalf("insert library: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO library_directories (id, library_id, relative_path, name, parent_path, depth, source_kind, status, sort_name, created_at, updated_at)
+		VALUES ('dir-root', 'photo', '/', '/', NULL, 0, 'MANUAL', 'ACTIVE', '/', $1, $1)
+	`, now); err != nil {
+		t.Fatalf("insert root directory: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO storage_nodes (
+			id, code, name, node_type, address, access_mode, enabled, created_at, updated_at
+		) VALUES (
+			'local-node-1', 'local-node-1', '本地节点', 'LOCAL', 'C:/mare', 'DIRECT', true, $1, $1
+		)
+	`, now); err != nil {
+		t.Fatalf("insert storage node: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO storage_node_runtime (
+			id, storage_node_id, health_status, auth_status, created_at, updated_at
+		) VALUES (
+			'local-node-runtime-1', 'local-node-1', 'ONLINE', 'NOT_REQUIRED', $1, $1
+		)
+	`, now); err != nil {
+		t.Fatalf("insert storage runtime: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO mounts (
+			id, code, library_id, library_name, storage_node_id, name, mount_source_type, mount_mode,
+			source_path, relative_root_path, heartbeat_policy, scan_policy, enabled, sort_order, created_at, updated_at
+		) VALUES (
+			'mount-1', 'mount-1', 'photo', '商业摄影资产库', 'local-node-1', '本地挂载', 'LOCAL_PATH', 'READ_ONLY',
+			'C:/mare/assets', '/', 'NEVER', 'MANUAL', true, 0, $1, $1
+		)
+	`, now); err != nil {
+		t.Fatalf("insert mount: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO mount_runtime (
+			id, mount_id, scan_status, auth_status, health_status, created_at, updated_at
+		) VALUES (
+			'mount-runtime-1', 'mount-1', 'SUCCESS', 'NOT_REQUIRED', 'ONLINE', $1, $1
+		)
+	`, now); err != nil {
+		t.Fatalf("insert mount runtime: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO assets (
+			id, library_id, directory_id, relative_path, name, extension, size_bytes, file_kind, lifecycle_state,
+			rating, color_label, created_at, updated_at
+		) VALUES (
+			'asset-1', 'photo', 'dir-root', '/lost-file.jpg', 'lost-file.jpg', 'jpg', 1024, 'IMAGE', 'ACTIVE',
+			0, 'NONE', $1, $1
+		)
+	`, now); err != nil {
+		t.Fatalf("insert asset: %v", err)
+	}
+	missingAt := now.Add(-time.Minute)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO asset_replicas (
+			id, asset_id, mount_id, physical_path, size_bytes, modified_at, replica_state, sync_state, verification_state,
+			last_seen_at, missing_detected_at, created_at, updated_at
+		) VALUES (
+			'replica-1', 'asset-1', 'mount-1', 'C:/mare/assets/lost-file.jpg', 1024, $1, 'MISSING', 'OUT_OF_SYNC', 'UNVERIFIED',
+			$1, $2, $1, $1
+		)
+	`, now, missingAt); err != nil {
+		t.Fatalf("insert missing replica: %v", err)
+	}
+
+	jobService := jobs.NewService(pool)
+	issueService := issues.NewService(pool, jobService)
+	notificationService := notifications.NewService(pool)
+	issueService.SetNotificationSynchronizer(notificationService)
+
+	if err := issueService.SyncMissingReplicaIssues(ctx); err != nil {
+		t.Fatalf("sync missing replica issues: %v", err)
+	}
+
+	result, err := issueService.ListIssues(ctx, issues.ListQuery{Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatalf("list issues: %v", err)
+	}
+	if len(result.Items) != 1 {
+		t.Fatalf("expected 1 issue, got %+v", result.Items)
+	}
+	if result.Items[0].SourceDomain != issues.SourceDomainGovernance {
+		t.Fatalf("expected governance source domain, got %+v", result.Items[0])
+	}
+	if result.Items[0].Source.EndpointID == nil || *result.Items[0].Source.EndpointID != "mount-1" {
+		t.Fatalf("expected mount link in issue source, got %+v", result.Items[0].Source)
+	}
+
+	notices, err := notificationService.ListNotifications(ctx, notifications.ListQuery{Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatalf("list notifications: %v", err)
+	}
+	if len(notices.Items) != 1 {
+		t.Fatalf("expected 1 notification, got %+v", notices.Items)
+	}
+	if notices.Items[0].IssueID == nil || *notices.Items[0].IssueID != result.Items[0].ID {
+		t.Fatalf("expected issue-backed notification, got %+v", notices.Items[0])
 	}
 }
 

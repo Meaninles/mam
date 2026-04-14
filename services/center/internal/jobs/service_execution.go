@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
 
 func (s *Service) claimNextJob(ctx context.Context) (*jobRow, error) {
+	now := s.now().UTC()
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return nil, err
@@ -19,13 +21,23 @@ func (s *Service) claimNextJob(ctx context.Context) (*jobRow, error) {
 	err = tx.QueryRow(ctx, `
 		SELECT id
 		FROM jobs
-		WHERE status IN ('PENDING', 'QUEUED', 'WAITING_RETRY')
+		WHERE status IN ('PENDING', 'QUEUED')
+		   OR (
+			status = 'WAITING_RETRY'
+			AND EXISTS (
+				SELECT 1
+				FROM job_items ji
+				WHERE ji.job_id = jobs.id
+				  AND ji.status = 'WAITING_RETRY'
+				  AND (ji.next_retry_at IS NULL OR ji.next_retry_at <= $1)
+			)
+		   )
 		ORDER BY
 			CASE priority WHEN 'HIGH' THEN 0 WHEN 'NORMAL' THEN 1 ELSE 2 END,
 			created_at ASC
 		FOR UPDATE SKIP LOCKED
 		LIMIT 1
-	`).Scan(&id)
+	`, now).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -33,7 +45,6 @@ func (s *Service) claimNextJob(ctx context.Context) (*jobRow, error) {
 		return nil, err
 	}
 
-	now := s.now().UTC()
 	_, err = tx.Exec(ctx, `
 		UPDATE jobs
 		SET status = $2,
@@ -89,6 +100,7 @@ func (s *Service) executeJob(ctx context.Context, job jobRow) {
 	}
 
 	for _, item := range items {
+		currentTime := s.now().UTC()
 		latest, err := s.loadJobRecord(ctx, job.ID)
 		if err != nil {
 			_ = s.failJobWithError(ctx, job.ID, "reload_job_failed", err.Error())
@@ -101,6 +113,9 @@ func (s *Service) executeJob(ctx context.Context, job jobRow) {
 			return
 		}
 		if item.Status != ItemStatusPending && item.Status != ItemStatusQueued && item.Status != ItemStatusWaitingRetry {
+			continue
+		}
+		if item.Status == ItemStatusWaitingRetry && item.NextRetryAt != nil && item.NextRetryAt.After(currentTime) {
 			continue
 		}
 
@@ -150,7 +165,9 @@ func (s *Service) executeJob(ctx context.Context, job jobRow) {
 		_ = s.finishItemCompleted(ctx, job.ID, item.ID, jobAttemptID)
 	}
 
-	_ = s.finalizeJob(ctx, job.ID)
+	if err := s.finalizeJob(ctx, job.ID); err != nil {
+		_ = s.failJobWithError(ctx, job.ID, "finalize_job_failed", err.Error())
+	}
 }
 
 func (s *Service) startItem(ctx context.Context, jobID string, itemID string) (*string, error) {
@@ -184,6 +201,7 @@ func (s *Service) startItem(ctx context.Context, jobID string, itemID string) (*
 		    phase = 'EXECUTING',
 		    progress_percent = CASE WHEN progress_percent <= 0 THEN 1 ELSE progress_percent END,
 		    attempt_count = $3,
+		    next_retry_at = NULL,
 		    started_at = COALESCE(started_at, $4),
 		    updated_at = $4
 		WHERE id = $1
@@ -301,6 +319,85 @@ func (s *Service) finishItemFailed(ctx context.Context, jobID string, itemID str
 	if message == "" {
 		message = "执行失败"
 	}
+	job, err := s.loadJobRowTx(ctx, tx, jobID)
+	if err != nil {
+		return err
+	}
+	item, err := s.loadItemRowTx(ctx, tx, itemID)
+	if err != nil {
+		return err
+	}
+	if s.shouldAutoRetry(job, item, message) {
+		nextRetryAt := now.Add(s.computeRetryDelay(item.AttemptCount))
+		_, err = tx.Exec(ctx, `
+			UPDATE job_items
+			SET status = $2,
+			    phase = 'WAITING_RETRY',
+			    progress_percent = 0,
+			    latest_error_code = 'execution_failed',
+			    latest_error_message = $3,
+			    result_summary = '等待自动重试',
+			    next_retry_at = $4,
+			    finished_at = NULL,
+			    updated_at = $5
+			WHERE id = $1
+		`, itemID, ItemStatusWaitingRetry, message, nextRetryAt, now)
+		if err != nil {
+			return err
+		}
+		if attemptID != nil {
+			_, err = tx.Exec(ctx, `
+				UPDATE job_attempts
+				SET status = 'FAILED',
+				    error_code = 'execution_failed',
+				    error_message = $2,
+				    finished_at = $3
+				WHERE id = $1
+			`, *attemptID, message, now)
+			if err != nil {
+				return err
+			}
+		}
+		_, err = tx.Exec(ctx, `
+			UPDATE jobs
+			SET status = $2,
+			    latest_error_code = 'execution_failed',
+			    latest_error_message = $3,
+			    outcome_summary = '等待自动重试',
+			    finished_at = NULL,
+			    updated_at = $4
+			WHERE id = $1
+		`, jobID, StatusWaitingRetry, message, now)
+		if err != nil {
+			return err
+		}
+		if err := s.refreshJobAggregateTx(ctx, tx, jobID, now); err != nil {
+			return err
+		}
+		event, err := s.insertEvent(ctx, tx, eventInsertInput{
+			JobID:      jobID,
+			JobItemID:  &itemID,
+			AttemptID:  attemptID,
+			EventType:  EventItemFailed,
+			Message:    "作业子项执行失败，等待自动重试",
+			JobStatus:  ptr(StatusWaitingRetry),
+			ItemStatus: ptr(ItemStatusWaitingRetry),
+			Payload: map[string]any{
+				"error":       message,
+				"nextRetryAt": nextRetryAt.Format(time.RFC3339),
+			},
+			CreatedAt: now,
+		})
+		if err != nil {
+			return err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
+		s.publish(event)
+		s.wake()
+		return nil
+	}
 	_, err = tx.Exec(ctx, `
 		UPDATE job_items
 		SET status = $2,
@@ -309,6 +406,7 @@ func (s *Service) finishItemFailed(ctx context.Context, jobID string, itemID str
 		    latest_error_code = 'execution_failed',
 		    latest_error_message = $3,
 		    result_summary = '执行失败',
+		    next_retry_at = NULL,
 		    finished_at = $4,
 		    updated_at = $4
 		WHERE id = $1
@@ -392,14 +490,16 @@ func (s *Service) finalizeJob(ctx context.Context, jobID string) error {
 	var completed int
 	var failed int
 	var canceled int
+	var waitingRetry int
 	if err := tx.QueryRow(ctx, `
 		SELECT
 			COUNT(*) FILTER (WHERE status = 'COMPLETED'),
 			COUNT(*) FILTER (WHERE status = 'FAILED'),
-			COUNT(*) FILTER (WHERE status = 'CANCELED')
+			COUNT(*) FILTER (WHERE status = 'CANCELED'),
+			COUNT(*) FILTER (WHERE status = 'WAITING_RETRY')
 		FROM job_items
 		WHERE job_id = $1
-	`, jobID).Scan(&completed, &failed, &canceled); err != nil {
+	`, jobID).Scan(&completed, &failed, &canceled, &waitingRetry); err != nil {
 		return err
 	}
 
@@ -407,6 +507,10 @@ func (s *Service) finalizeJob(ctx context.Context, jobID string) error {
 	eventType := EventJobCompleted
 	message := "作业执行完成"
 	switch {
+	case waitingRetry > 0:
+		status = StatusWaitingRetry
+		eventType = EventJobRetried
+		message = "作业等待自动重试"
 	case completed == 0 && failed > 0:
 		status = StatusFailed
 		eventType = EventJobFailed
@@ -424,9 +528,9 @@ func (s *Service) finalizeJob(ctx context.Context, jobID string) error {
 	_, err = tx.Exec(ctx, `
 		UPDATE jobs
 		SET status = $2,
-		    finished_at = CASE WHEN $2 IN ('COMPLETED', 'FAILED', 'PARTIAL_SUCCESS', 'CANCELED') THEN $3 ELSE finished_at END,
-		    canceled_at = CASE WHEN $2 = 'CANCELED' THEN COALESCE(canceled_at, $3) ELSE canceled_at END,
-		    updated_at = $3
+		    finished_at = CASE WHEN $2 IN ('COMPLETED', 'FAILED', 'PARTIAL_SUCCESS', 'CANCELED') THEN $3::timestamptz ELSE NULL END,
+		    canceled_at = CASE WHEN $2 = 'CANCELED' THEN COALESCE(canceled_at, $3::timestamptz) ELSE canceled_at END,
+		    updated_at = $3::timestamptz
 		WHERE id = $1
 	`, jobID, status, now)
 	if err != nil {
@@ -449,8 +553,10 @@ func (s *Service) finalizeJob(ctx context.Context, jobID string) error {
 		return err
 	}
 	s.publish(event)
-	s.syncJobIssues(ctx, jobID)
-	s.syncJobNotifications(ctx, jobID)
+	if status != StatusWaitingRetry {
+		s.syncJobIssues(ctx, jobID)
+		s.syncJobNotifications(ctx, jobID)
+	}
 	return nil
 }
 

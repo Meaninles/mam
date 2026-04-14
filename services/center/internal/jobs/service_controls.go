@@ -465,6 +465,7 @@ func (s *Service) RetryJob(ctx context.Context, id string) (jobdto.MutationRespo
 		    latest_error_code = NULL,
 		    latest_error_message = NULL,
 		    result_summary = NULL,
+		    next_retry_at = NULL,
 		    progress_percent = CASE WHEN status = 'COMPLETED' THEN progress_percent ELSE 0 END,
 		    started_at = CASE WHEN status = 'COMPLETED' THEN started_at ELSE NULL END,
 		    finished_at = CASE WHEN status = 'COMPLETED' THEN finished_at ELSE NULL END,

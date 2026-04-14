@@ -284,10 +284,10 @@ func TestServiceLoadDashboardIncludesCloudTargets(t *testing.T) {
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO mounts (
 			id, code, library_id, library_name, storage_node_id, name, mount_source_type, mount_mode,
-			source_path, relative_root_path, heartbeat_policy, enabled, capacity_bytes, created_at, updated_at
+			source_path, relative_root_path, heartbeat_policy, scan_policy, enabled, created_at, updated_at
 		) VALUES (
 			'mount-cloud-1', 'mount-cloud-1', 'photo', '商业摄影资产库', 'cloud-node-1', '115 云归档', 'CLOUD_FOLDER',
-			'READ_WRITE', '/MareArchive', '/', 'NEVER', true, 0, $1, $1
+			'READ_WRITE', '/MareArchive', '/', 'NEVER', 'MANUAL', true, $1, $1
 		)
 	`, now); err != nil {
 		t.Fatalf("insert cloud mount: %v", err)
@@ -325,6 +325,16 @@ func TestServiceLoadDashboardIncludesCloudTargets(t *testing.T) {
 		},
 	}
 
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO agents (
+			agent_id, version, hostname, platform, mode, process_id, callback_base_url, registered_at, last_heartbeat_at
+		) VALUES (
+			'agent-dev-1', 'dev', 'workstation', 'windows/amd64', 'attached', 1024, 'http://127.0.0.1:61337', $1, $1
+		)
+	`, now); err != nil {
+		t.Fatalf("insert agent: %v", err)
+	}
+
 	service := importing.NewService(pool, bridge, jobs.NewService(pool), assets.NewService(pool))
 	dashboard, err := service.RefreshDashboard(ctx)
 	if err != nil {
@@ -351,6 +361,16 @@ func TestServiceLoadDashboardIncludesCloudTargets(t *testing.T) {
 		t.Fatalf("expected cloud target to be listed, got %+v", dashboard.TargetEndpoints)
 	}
 
+	if len(dashboard.Drafts) != 1 {
+		t.Fatalf("expected one draft, got %+v", dashboard.Drafts)
+	}
+	if _, err := service.SetDraftLibrary(ctx, dashboard.Drafts[0].ID, "photo"); err != nil {
+		t.Fatalf("set draft library: %v", err)
+	}
+	dashboard, err = service.LoadDashboard(ctx)
+	if err != nil {
+		t.Fatalf("reload dashboard: %v", err)
+	}
 	if len(dashboard.Devices) != 1 {
 		t.Fatalf("expected one device session, got %+v", dashboard.Devices)
 	}

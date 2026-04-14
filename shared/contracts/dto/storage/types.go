@@ -186,6 +186,7 @@ type SaveLocalFolderRequest struct {
 	NodeID          string `json:"nodeId"`
 	MountMode       string `json:"mountMode"`
 	HeartbeatPolicy string `json:"heartbeatPolicy"`
+	ScanPolicy      string `json:"scanPolicy,omitempty"`
 	RelativePath    string `json:"relativePath"`
 	Notes           string `json:"notes"`
 }

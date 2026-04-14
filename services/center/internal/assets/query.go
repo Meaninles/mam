@@ -14,6 +14,7 @@ import (
 	apperrors "mare/services/center/internal/errors"
 	"mare/services/center/internal/integration"
 	assetdto "mare/shared/contracts/dto/asset"
+	jobdto "mare/shared/contracts/dto/job"
 )
 
 type Service struct {
@@ -31,6 +32,9 @@ type Service struct {
 		UpdateExternalTask(ctx context.Context, jobID string, itemID string, engine string, taskID string, status string, payload map[string]any, resumeToken *string) error
 		UpdateItemTransferProgress(ctx context.Context, jobID string, itemID string, status string, bytesDone int64, bytesTotal int64, speedBPS int64, message string) error
 		LoadExternalTaskState(ctx context.Context, itemID string) (string, *string, *string, *string, *string, error)
+	}
+	deleteJobCreator interface {
+		CreateDeleteAssetJob(ctx context.Context, plan DeleteAssetPlan) (jobdto.CreateResponse, error)
 	}
 }
 
@@ -104,6 +108,12 @@ func (s *Service) SetJobRuntime(runtime interface {
 	LoadExternalTaskState(ctx context.Context, itemID string) (string, *string, *string, *string, *string, error)
 }) {
 	s.jobRuntime = runtime
+}
+
+func (s *Service) SetDeleteJobCreator(creator interface {
+	CreateDeleteAssetJob(ctx context.Context, plan DeleteAssetPlan) (jobdto.CreateResponse, error)
+}) {
+	s.deleteJobCreator = creator
 }
 
 func (s *Service) ListLibraries(ctx context.Context) ([]assetdto.LibraryRecord, error) {

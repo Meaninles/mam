@@ -13,8 +13,10 @@ import (
 
 	"mare/services/center/internal/assets"
 	"mare/services/center/internal/db"
+	"mare/services/center/internal/jobs"
 	"mare/services/center/internal/storage"
 	assetdto "mare/shared/contracts/dto/asset"
+	jobdto "mare/shared/contracts/dto/job"
 	storagedto "mare/shared/contracts/dto/storage"
 )
 
@@ -285,6 +287,174 @@ func TestScanDirectoryIndexesOnlyCurrentLevelUntilChildDirectoryIsScanned(t *tes
 	}
 	if childAfter.Total != 1 || childAfter.Items[0].Name != "final.txt" {
 		t.Fatalf("expected final.txt after nested scan, got %#v", childAfter.Items)
+	}
+}
+
+func TestServiceVerifyReplicaMarksReplicaAsPassed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	defer pool.Close()
+	resetSchema(t, ctx, pool)
+
+	migrator := db.NewMigrator()
+	if _, err := migrator.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	rootDir := t.TempDir()
+	localNodes := storage.NewLocalFolderService(pool)
+	node, err := localNodes.SaveLocalNode(ctx, storagedto.SaveLocalNodeRequest{
+		Name:     "本地校验盘",
+		RootPath: rootDir,
+	})
+	if err != nil {
+		t.Fatalf("save local node: %v", err)
+	}
+
+	mount, err := localNodes.SaveLocalFolder(ctx, storagedto.SaveLocalFolderRequest{
+		Name:            "校验挂载",
+		LibraryID:       "photo",
+		LibraryName:     "商业摄影资产库",
+		NodeID:          node.Record.ID,
+		MountMode:       "可写",
+		HeartbeatPolicy: "从不",
+		RelativePath:    "verify",
+	})
+	if err != nil {
+		t.Fatalf("save local folder: %v", err)
+	}
+
+	sourceDir := filepath.Join(rootDir, "verify")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("mkdir source dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "cover.jpg"), []byte("verify-me"), 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	if _, err := localNodes.RunLocalFolderScan(ctx, []string{mount.Record.ID}); err != nil {
+		t.Fatalf("run scan: %v", err)
+	}
+
+	service := assets.NewService(pool)
+	var replicaID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM asset_replicas LIMIT 1`).Scan(&replicaID); err != nil {
+		t.Fatalf("load replica id: %v", err)
+	}
+
+	if err := service.ExecuteReplicaVerification(ctx, replicaID); err != nil {
+		t.Fatalf("verify replica: %v", err)
+	}
+
+	var verificationState string
+	var quickHash string
+	if err := pool.QueryRow(ctx, `SELECT verification_state, COALESCE(quick_hash, '') FROM asset_replicas WHERE id = $1`, replicaID).Scan(&verificationState, &quickHash); err != nil {
+		t.Fatalf("query verification state: %v", err)
+	}
+	if verificationState != "PASSED" {
+		t.Fatalf("expected PASSED verification state, got %s", verificationState)
+	}
+	if quickHash == "" {
+		t.Fatalf("expected quick hash written after verification")
+	}
+}
+
+func TestServiceDeleteEntryCreatesBackgroundCleanupJob(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	defer pool.Close()
+	resetSchema(t, ctx, pool)
+
+	migrator := db.NewMigrator()
+	if _, err := migrator.Apply(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	rootDir := t.TempDir()
+	localNodes := storage.NewLocalFolderService(pool)
+	node, err := localNodes.SaveLocalNode(ctx, storagedto.SaveLocalNodeRequest{
+		Name:     "本地清理盘",
+		RootPath: rootDir,
+	})
+	if err != nil {
+		t.Fatalf("save local node: %v", err)
+	}
+
+	mount, err := localNodes.SaveLocalFolder(ctx, storagedto.SaveLocalFolderRequest{
+		Name:            "清理挂载",
+		LibraryID:       "photo",
+		LibraryName:     "商业摄影资产库",
+		NodeID:          node.Record.ID,
+		MountMode:       "可写",
+		HeartbeatPolicy: "从不",
+		RelativePath:    "cleanup",
+	})
+	if err != nil {
+		t.Fatalf("save local folder: %v", err)
+	}
+
+	sourceDir := filepath.Join(rootDir, "cleanup")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("mkdir source dir: %v", err)
+	}
+	targetFile := filepath.Join(sourceDir, "cover.jpg")
+	if err := os.WriteFile(targetFile, []byte("delete-me"), 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	if _, err := localNodes.RunLocalFolderScan(ctx, []string{mount.Record.ID}); err != nil {
+		t.Fatalf("run scan: %v", err)
+	}
+
+	service := assets.NewService(pool)
+	jobService := jobs.NewService(pool)
+	service.SetDeleteJobCreator(jobService)
+	jobService.RegisterExecutor(jobs.JobIntentDeleteAsset, func(ctx context.Context, execution jobs.ExecutionContext) error {
+		assetID := ""
+		for _, link := range execution.ItemLinks {
+			if link.AssetID != nil {
+				assetID = *link.AssetID
+			}
+		}
+		return service.ExecuteAssetDeletion(ctx, assetID)
+	})
+	jobService.Start(ctx)
+
+	root, err := service.BrowseLibrary(ctx, "photo", assetdto.BrowseQuery{
+		Page:          1,
+		PageSize:      20,
+		FileType:      "全部",
+		StatusFilter:  "全部",
+		SortValue:     "名称",
+		SortDirection: "asc",
+	})
+	if err != nil {
+		t.Fatalf("browse library: %v", err)
+	}
+	if len(root.Items) != 1 {
+		t.Fatalf("expected one asset, got %+v", root.Items)
+	}
+
+	if _, err := service.DeleteEntry(ctx, root.Items[0].ID); err != nil {
+		t.Fatalf("delete entry: %v", err)
+	}
+
+	waitForCleanupJobStatus(t, ctx, jobService, jobs.StatusCompleted)
+
+	if _, err := os.Stat(targetFile); !os.IsNotExist(err) {
+		t.Fatalf("expected source file deleted, stat err=%v", err)
 	}
 }
 
@@ -1025,6 +1195,23 @@ func TestUpdateAnnotationsPersistsDirectoryTags(t *testing.T) {
 	if len(filtered.Items) != 1 || filtered.Items[0].ID != folderID {
 		t.Fatalf("expected tagged directory returned by browse, got %#v", filtered.Items)
 	}
+}
+
+func waitForCleanupJobStatus(t *testing.T, ctx context.Context, service *jobs.Service, expected string) jobdto.Detail {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		result, err := service.ListJobs(ctx, jobs.ListQuery{Page: 1, PageSize: 20})
+		if err == nil && len(result.Items) > 0 {
+			detail, detailErr := service.LoadJobDetail(ctx, result.Items[0].ID)
+			if detailErr == nil && detail.Job.Status == expected {
+				return detail
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for cleanup job status %s", expected)
+	return jobdto.Detail{}
 }
 
 func openTestPool(t *testing.T, ctx context.Context) *pgxpool.Pool {

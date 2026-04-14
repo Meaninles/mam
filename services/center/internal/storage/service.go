@@ -224,6 +224,10 @@ func (s *LocalFolderService) SaveLocalFolder(ctx context.Context, request storag
 	if heartbeatPolicy == "" {
 		return storagedto.SaveLocalFolderResponse{}, apperrors.BadRequest("心跳策略无效")
 	}
+	scanPolicy := dbScanPolicy(request.ScanPolicy)
+	if scanPolicy == "" {
+		return storagedto.SaveLocalFolderResponse{}, apperrors.BadRequest("扫描策略无效")
+	}
 
 	node, err := s.loadStorageNodeForMount(ctx, request.NodeID)
 	if err != nil {
@@ -268,6 +272,7 @@ func (s *LocalFolderService) SaveLocalFolder(ctx context.Context, request storag
 
 	now := s.now().UTC()
 	nextHeartbeat := computeNextHeartbeat(now, heartbeatPolicy)
+	nextScanAt := computeNextScanAt(now, scanPolicy)
 
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -303,7 +308,7 @@ func (s *LocalFolderService) SaveLocalFolder(ctx context.Context, request storag
 			INSERT INTO mounts (
 				id, code, library_id, library_name, storage_node_id, name, mount_source_type, mount_mode,
 				source_path, relative_root_path, heartbeat_policy, scan_policy, enabled, sort_order, created_at, updated_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'MANUAL', true, 0, $12, $12)
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, true, 0, $13, $13)
 		`,
 			mountID,
 			buildCode("mount", now),
@@ -316,6 +321,7 @@ func (s *LocalFolderService) SaveLocalFolder(ctx context.Context, request storag
 			sourcePath,
 			relativePath,
 			heartbeatPolicy,
+			scanPolicy,
 			now,
 		)
 		if err != nil {
@@ -324,9 +330,9 @@ func (s *LocalFolderService) SaveLocalFolder(ctx context.Context, request storag
 
 		_, err = tx.Exec(ctx, `
 			INSERT INTO mount_runtime (
-				id, mount_id, scan_status, next_heartbeat_at, auth_status, health_status, created_at, updated_at
-			) VALUES ($1, $2, 'IDLE', $3, $4, 'UNKNOWN', $5, $5)
-		`, buildCode("mount-runtime-id", now), mountID, nextHeartbeat, initialMountAuthStatus(node.NodeType), now)
+				id, mount_id, scan_status, next_scan_at, next_heartbeat_at, auth_status, health_status, created_at, updated_at
+			) VALUES ($1, $2, 'IDLE', $3, $4, $5, 'UNKNOWN', $6, $6)
+		`, buildCode("mount-runtime-id", now), mountID, nextScanAt, nextHeartbeat, initialMountAuthStatus(node.NodeType), now)
 		if err != nil {
 			return storagedto.SaveLocalFolderResponse{}, err
 		}
@@ -344,10 +350,11 @@ func (s *LocalFolderService) SaveLocalFolder(ctx context.Context, request storag
 			    source_path = $8,
 			    relative_root_path = $9,
 			    heartbeat_policy = $10,
-			    updated_at = $11
+			    scan_policy = $11,
+			    updated_at = $12
 			WHERE id = $1
 			  AND deleted_at IS NULL
-		`, request.ID, request.Name, request.LibraryID, request.LibraryName, request.NodeID, mountSourceType, mountMode, sourcePath, relativePath, heartbeatPolicy, now)
+		`, request.ID, request.Name, request.LibraryID, request.LibraryName, request.NodeID, mountSourceType, mountMode, sourcePath, relativePath, heartbeatPolicy, scanPolicy, now)
 		if err != nil {
 			return storagedto.SaveLocalFolderResponse{}, err
 		}
@@ -357,11 +364,12 @@ func (s *LocalFolderService) SaveLocalFolder(ctx context.Context, request storag
 
 		_, err = tx.Exec(ctx, `
 			UPDATE mount_runtime
-			SET next_heartbeat_at = $2,
-			    auth_status = $3,
-			    updated_at = $4
+			SET next_scan_at = $2,
+			    next_heartbeat_at = $3,
+			    auth_status = $4,
+			    updated_at = $5
 			WHERE mount_id = $1
-		`, request.ID, nextHeartbeat, initialMountAuthStatus(node.NodeType), now)
+		`, request.ID, nextScanAt, nextHeartbeat, initialMountAuthStatus(node.NodeType), now)
 		if err != nil {
 			return storagedto.SaveLocalFolderResponse{}, err
 		}
@@ -888,6 +896,19 @@ func uiHeartbeatPolicy(value string) string {
 	}
 }
 
+func dbScanPolicy(value string) string {
+	switch strings.TrimSpace(value) {
+	case "", "手动扫描":
+		return "MANUAL"
+	case "启动时扫描":
+		return "ON_START"
+	case "定时扫描":
+		return "SCHEDULED"
+	default:
+		return ""
+	}
+}
+
 func computeNextHeartbeat(now time.Time, policy string) *time.Time {
 	switch policy {
 	case "HOURLY":
@@ -904,6 +925,16 @@ func computeNextHeartbeat(now time.Time, policy string) *time.Time {
 		for next.Weekday() != time.Saturday || !next.After(now) {
 			next = next.Add(24 * time.Hour)
 		}
+		return &next
+	default:
+		return nil
+	}
+}
+
+func computeNextScanAt(now time.Time, policy string) *time.Time {
+	switch policy {
+	case "SCHEDULED":
+		next := now.Add(time.Hour)
 		return &next
 	default:
 		return nil
